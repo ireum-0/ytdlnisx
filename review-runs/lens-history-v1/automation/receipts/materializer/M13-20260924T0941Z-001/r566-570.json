@@ -1,0 +1,236 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "segment_range": [
+    566,
+    570
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M13-20260924T0941Z-001/r561-565.json",
+    "blob_sha": "b81bae267b154f9031ad4e9ce8ac0d8bd4049b8c"
+  },
+  "rank_receipts": [
+    {
+      "rank": 566,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r566.json",
+      "blob_sha": "3f1447be22b0d619bd9584851846a079e9e1e10f"
+    },
+    {
+      "rank": 567,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r567.json",
+      "blob_sha": "5bb2deaa399b2d8b298188089dc943606fe7c835"
+    },
+    {
+      "rank": 568,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r568.json",
+      "blob_sha": "d8ca613a218c4b2fa8760e3481d9d568c8460d28"
+    },
+    {
+      "rank": 569,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r569.json",
+      "blob_sha": "3ed03567e0f9fdbc58e2591f01a92d920b7d0c24"
+    },
+    {
+      "rank": 570,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r570.json",
+      "blob_sha": "6cd38e873b01f48cef817c6262c70c0f3501c1f1"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      566,
+      567,
+      568,
+      569,
+      570
+    ],
+    "triggers": [
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-GROUP-TXN-01 and disposition NEW / P2 / OPEN",
+        "rank": 566,
+        "source_blob_sha": "e889991739d22b27b3d3a89a4fbb210748219821"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly reconciles preceding P2 24 plus the distinct new root to P2 25",
+        "rank": 566,
+        "source_blob_sha": "e889991739d22b27b3d3a89a4fbb210748219821"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly reconciles the new root against preceding inventory so ordinary Download handoff and History deletion aliases are not double-counted",
+        "rank": 566,
+        "source_blob_sha": "e889991739d22b27b3d3a89a4fbb210748219821"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the final P0/P1/P2 inventory provisional",
+        "rank": 566,
+        "source_blob_sha": "e889991739d22b27b3d3a89a4fbb210748219821"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent JVM/instrumentation/emulator/device execution as NOT_VERIFIED and carries existing closures unless contradicted by current-source evidence",
+        "rank": 566,
+        "source_blob_sha": "e889991739d22b27b3d3a89a4fbb210748219821"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint retains final recount/certification work and lacks an explicit supported structural kind",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly states NEW P2 candidate confirmed OPEN — BUG-GROUP-TXN-01 and disposition NEW / P2 / OPEN",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-GROUP-TXN-01",
+        "evidence": "source explicitly reconciles preceding P2 24 plus one new distinct root to P2 25",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the severity inventory provisional",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source notes scheduler START/END subcases from fresh review records but explicitly does not independently reclassify them here",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source preserves previously established fixed closures absent current-source counterevidence and records independent JVM/instrumentation/emulator/device execution as NOT_VERIFIED",
+        "rank": 567,
+        "source_blob_sha": "52780ebad2c8ac0b0ac5e5ad179985b9a59f4a82"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint records review setup and lacks an explicit supported structural kind",
+        "rank": 568,
+        "source_blob_sha": "ff6bdb0add29317bcd1926a78d7656fb161c0582"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly marks P0/P1/P2 prior inventory as requiring current-source recount and gives no new current-SHA conclusion yet",
+        "rank": 568,
+        "source_blob_sha": "ff6bdb0add29317bcd1926a78d7656fb161c0582"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves current production OPEN roots, WorkManager handoffs, destructive maintenance, archive semantics, consumer closure, and checklist-external Master Plan violations for independent revalidation",
+        "rank": 568,
+        "source_blob_sha": "ff6bdb0add29317bcd1926a78d7656fb161c0582"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says earlier review-record candidates are not accepted solely from prior review text",
+        "rank": 568,
+        "source_blob_sha": "ff6bdb0add29317bcd1926a78d7656fb161c0582"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly reclassifies ordinary-download-handoff as additional evidence for the already-counted BUG-DOWNLOAD-HANDOFF-01 root and corrects its increment to +0",
+        "rank": 569,
+        "source_blob_sha": "fe4f4e95aca053cef5afbe71304a9022a177de60"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-01",
+        "evidence": "source explicitly treats BUG-HISTORY-FILE-DELETE-TXN-01 as an evidentiary alias/subcase of F17/P2-N BUG-HISTORY-01 and corrects its increment to +0",
+        "rank": 569,
+        "source_blob_sha": "fe4f4e95aca053cef5afbe71304a9022a177de60"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-SCHEDULE-01",
+        "evidence": "source explicitly preserves END/START consumer-generation findings as subcases of already-counted BUG-SCHEDULE-01 with +0",
+        "rank": 569,
+        "source_blob_sha": "fe4f4e95aca053cef5afbe71304a9022a177de60"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly starts from trusted P2 23, retains distinct BUG-GROUP-TXN-01 at +1, removes two duplicate increments and scheduler subcase increments, and records corrected canonical P2 24 instead of recent P2 25/26 recounts",
+        "rank": 569,
+        "source_blob_sha": "fe4f4e95aca053cef5afbe71304a9022a177de60"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 569,
+        "source_blob_sha": "fe4f4e95aca053cef5afbe71304a9022a177de60"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness checkpoint contains a NEW finding but lacks an allowed positive whole-document structural-kind marker",
+        "rank": 570,
+        "source_blob_sha": "3e6e2dc2543c4cad176bef956b0a4b643db35a18"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-HISTORY-FILE-DELETE-TXN-01",
+        "evidence": "source explicitly labels NEW P2 — BUG-HISTORY-FILE-DELETE-TXN-01",
+        "rank": 570,
+        "source_blob_sha": "3e6e2dc2543c4cad176bef956b0a4b643db35a18"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-FILE-DELETE-TXN-01",
+        "evidence": "source explicitly changes canonical P2 count from 25 to 26 by adding one root",
+        "rank": 570,
+        "source_blob_sha": "3e6e2dc2543c4cad176bef956b0a4b643db35a18"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-FILE-DELETE-TXN-01",
+        "evidence": "source explicitly distinguishes this external-file to durable-record two-system commit root from F17/P2-N History relational/Undo authority",
+        "rank": 570,
+        "source_blob_sha": "3e6e2dc2543c4cad176bef956b0a4b643db35a18"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 570,
+        "source_blob_sha": "3e6e2dc2543c4cad176bef956b0a4b643db35a18"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 541-590 is receipted"
+  }
+}
