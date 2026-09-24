@@ -1,0 +1,151 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "rank": 585,
+  "materializer_state_blob": "03426e72ce228e03f83548debad934d8c7f53e6e",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r584.json",
+    "blob_sha": "084f567596c7489adc2ce4fd08c32f0b787f4d40"
+  },
+  "history": {
+    "commit_sha": "531538a973e325b16dae53513d9a089b1bc164b5",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=585"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10__1a3f7d2c__independent-full-wave-review.md",
+        "status": "added",
+        "source_blob_sha": "9fcd89d309a60f5371210abacf425ffc8e4df42f",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "9fcd89d309a60f5371210abacf425ffc8e4df42f",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10__1a3f7d2c__independent-full-wave-review.md",
+    "status": "added",
+    "source_blob_sha": "9fcd89d309a60f5371210abacf425ffc8e4df42f",
+    "frozen_blob_sha": "9fcd89d309a60f5371210abacf425ffc8e4df42f",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "1a3f7d2c81f79454426e42b394d3328cfb7683d3",
+      "evidence": "source explicitly records Reviewed completed SHA and verifies implementation branch remote HEAD at that reviewed SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "document positively identifies itself only as an Independent full-wave review; it does not identify itself as a finding/addendum/reconciliation/scope-expansion record or a run-final checkpoint under document-identity-v1"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "P2-K",
+          "disposition": "CLOSED / source-level CLEAN"
+        },
+        {
+          "finding_id": "P2-C",
+          "disposition": "CLOSED for canonical provider-replay defect"
+        },
+        {
+          "finding_id": "P2-J",
+          "disposition": "CLOSED for ordinary committed-History primary-success authority"
+        },
+        {
+          "finding_id": "P2-B",
+          "disposition": "REMAINS OPEN / NOT CLEAN with B5/B7/B10/B11 residuals"
+        }
+      ],
+      "count_delta": {
+        "state": "DIRECT",
+        "value": -3,
+        "evidence": "source explicitly states preceding P2 26 and closes P2-C, P2-J, P2-K while P2-B remains open, yielding P2 23"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "Independent full-wave review is not an allowed positive structural identity and does not claim run-final checkpoint identity"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-K",
+      "evidence": "source explicitly records P2-K CLOSED / source-level CLEAN"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-C",
+      "evidence": "source explicitly records P2-C CLOSED for the canonical provider-replay defect"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-J",
+      "evidence": "source explicitly records P2-J CLOSED for ordinary committed-History primary-success authority"
+    },
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly preserves P2-B OPEN with B5 semantic compatibility, B7 producer/post-processing/no-output finality, B10 archive identity, and B11 fsync-ordering residuals"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly changes working P2 count from 26 to 23 by closing P2-C/P2-J/P2-K while adding no new canonical root for B11"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED and explicitly does not advance the contiguous independently-CLEAN Review Basis because P2-B remains open"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
