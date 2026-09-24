@@ -1,0 +1,143 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M13-20260924T0941Z-001",
+  "stage": "MATERIALIZE_541_590",
+  "logical_rank_range": [
+    541,
+    590
+  ],
+  "rank": 558,
+  "materializer_state_blob": "65ca1b0d184036dd901b233e9d277589bba7a82f",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "a120e3bdc35ecd67760258d2c11ccead53ffac7c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M13-20260924T0941Z-001/r557.json",
+    "blob_sha": "f8eb30664c04966e1695ad41f7208ea8dea4d87c"
+  },
+  "history": {
+    "commit_sha": "d915b214394cb2aceff712bd9c32e82d1d173e0d",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=558"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10__c2294c87__observe-generation-severity-reclassification.md",
+        "status": "added",
+        "source_blob_sha": "379515af2acc76d027832f5458c7b8ff617e5723",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "379515af2acc76d027832f5458c7b8ff617e5723",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10__c2294c87__observe-generation-severity-reclassification.md",
+    "status": "added",
+    "source_blob_sha": "379515af2acc76d027832f5458c7b8ff617e5723",
+    "frozen_blob_sha": "379515af2acc76d027832f5458c7b8ff617e5723",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "NOT_VERIFIED",
+      "reason": "source explicitly records a Fixed Review Basis SHA but does not label it as implementation SHA/frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "document is titled Independent Track A checkpoint; severity-reclassification content is substantive but does not satisfy the document-identity-v1 positive whole-document kind marker requirement"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OBSERVE-HANDOFF-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing root reclassified P2 -> P0 after newly confirmed stale-generation destructive authority; no new root"
+      },
+      "confirmed_residual": {
+        "state": "DIRECT",
+        "value": "superseded ordinary Observe worker can overwrite newer source state, schedule a stale successor, and perform syncWithSource History media-file deletion after edit/STOP has durably revoked its generation"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly states root count is unchanged while canonical severity counts transfer from P0 2 / P1 3 / P2 25 to P0 3 / P1 3 / P2 24"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "Track A severity-reclassification checkpoint lacks an allowed positive whole-document structural-kind marker"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source expands the already-counted root with newly confirmed stale-consumer safety/destructive impact rather than adding a second root"
+    },
+    {
+      "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source adds consumer-side generation validation failures across source writes, successor publication, and destructive History mutation to the existing root"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source explicitly raises the existing root severity from P2 to P0"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source applies severity transfer P0 +1 / P2 -1 with root count unchanged, yielding P0 3 / P1 3 / P2 24"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
