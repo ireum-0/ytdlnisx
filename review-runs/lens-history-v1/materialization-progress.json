@@ -24,10 +24,10 @@
       "value": 8
     },
     "inventory_batches": {
-      "completed": 62,
-      "history_entries_materialized": 590,
-      "newest_history_rank_materialized_through": 590,
-      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0062-newest-581-590.jsonl",
+      "completed": 67,
+      "history_entries_materialized": 640,
+      "newest_history_rank_materialized_through": 640,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0067-newest-631-640.jsonl",
       "batch_0001_checks": {
         "commit_detail_file_binding": "COMPLETE",
         "frozen_tree_presence": "COMPLETE",
@@ -576,13 +576,58 @@
         "source_to_frozen_blob_identity": "10/10 MATCH",
         "internal_partition_validation": "581-585 PASS; 586-590 PASS",
         "substantive_provenance": "exact M13 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0063_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "591-595 PASS; 596-600 PASS",
+        "substantive_provenance": "exact M14 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0064_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "601-605 PASS; 606-610 PASS",
+        "substantive_provenance": "exact M14 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0065_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "611-615 PASS; 616-620 PASS",
+        "substantive_provenance": "exact M14 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0066_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "621-625 PASS; 626-630 PASS",
+        "substantive_provenance": "exact M14 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0067_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "631-635 PASS; 636-640 PASS",
+        "substantive_provenance": "exact M14 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
       }
     },
     "ledger_batches": {
-      "completed": 62,
-      "records_materialized": 590,
-      "newest_history_rank_materialized_through": 590,
-      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0062-newest-581-590.jsonl",
+      "completed": 67,
+      "records_materialized": 640,
+      "newest_history_rank_materialized_through": 640,
+      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0067-newest-631-640.jsonl",
       "cumulative_eligible_structured_finals_materialized": [
         "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
         "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
@@ -689,9 +734,14 @@
         "review-runs/lens-history-v1/validation/ledger-batch-0059.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0060.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0061.json",
-        "review-runs/lens-history-v1/validation/ledger-batch-0062.json"
+        "review-runs/lens-history-v1/validation/ledger-batch-0062.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0063.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0064.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0065.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0066.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0067.json"
       ],
-      "records_checked": 590,
+      "records_checked": 640,
       "invalid_records": 0,
       "effective_ledger_remediation": {
         "run_id": "M11-20260922T0646Z-001",
@@ -714,7 +764,7 @@
       }
     },
     "next_strategy": [
-      "continue bounded history extraction from rank 591 in adaptive materialization batches, with internal five-rank validation and exact checkpoint-path binding",
+      "continue bounded history extraction from rank 641 in adaptive materialization batches, with internal five-rank validation and exact checkpoint-path binding",
       "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
       "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
       "materialize one lens-history-v1 ledger record per frozen checkpoint document",
@@ -740,7 +790,7 @@
     "document_identity": "review-runs/lens-history-v1/rules/document-identity-v1.md"
   },
   "next_strategy": [
-    "continue bounded history extraction from rank 591 in adaptive materialization batches, with internal five-rank validation and exact checkpoint-path binding",
+    "continue bounded history extraction from rank 641 in adaptive materialization batches, with internal five-rank validation and exact checkpoint-path binding",
     "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
     "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
     "materialize one lens-history-v1 ledger record per frozen checkpoint document",
