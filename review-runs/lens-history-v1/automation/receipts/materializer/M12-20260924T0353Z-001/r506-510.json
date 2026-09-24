@@ -1,0 +1,190 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    506,
+    510
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r501-505.json",
+    "blob_sha": "a152f05df1f14e691e7e835090b574a9190a9df9"
+  },
+  "rank_receipts": [
+    {
+      "rank": 506,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r506.json",
+      "blob_sha": "9ac1718a0048b44fb68929892e274cf82058846e"
+    },
+    {
+      "rank": 507,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r507.json",
+      "blob_sha": "e4548f5568cc81b30f149863dd13ac29704279dd"
+    },
+    {
+      "rank": 508,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r508.json",
+      "blob_sha": "f16d23ce46f215aebbe012f1f6b0874a34983a61"
+    },
+    {
+      "rank": 509,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r509.json",
+      "blob_sha": "6fef0d4d6605cc6612e158968fd7755bf2141dc5"
+    },
+    {
+      "rank": 510,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r510.json",
+      "blob_sha": "c92d9015a8647e52eb0d5edc77261312c200c871"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      506,
+      507,
+      508,
+      509,
+      510
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint is explicitly in-progress and lacks an explicit supported whole-document structural kind field",
+        "rank": 506,
+        "source_blob_sha": "388fa8962aea3fa24a60ba633b56d5e78017478d"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source carries provisional P0 3 / P1 3 / P2 26 pending current-source recount and remediation evaluation",
+        "rank": 506,
+        "source_blob_sha": "388fa8962aea3fa24a60ba633b56d5e78017478d"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves full BUG-HISTORY-DUPLICATE-IDENTITY-01 closure, adjacent History deletion/undo, identity consumers, and final recount unresolved",
+        "rank": 506,
+        "source_blob_sha": "388fa8962aea3fa24a60ba633b56d5e78017478d"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly reconciles historical BUG-QUEUE-03 into the already-counted ordinary Download handoff root and distinguishes scheduler-boundary behavior",
+        "rank": 507,
+        "source_blob_sha": "4a0674ddc4c6e94411adbc88ff1c21104e45347d"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source confirms direct immediate/future WorkManager submissions, retry/resume/requeue producers and priority semantics as concrete same-root handoff subcases",
+        "rank": 507,
+        "source_blob_sha": "4a0674ddc4c6e94411adbc88ff1c21104e45347d"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DOWNLOAD-HANDOFF-01",
+        "evidence": "source explicitly records canonical root-count delta 0 and P0 3 / P1 3 / P2 26",
+        "rank": 507,
+        "source_blob_sha": "4a0674ddc4c6e94411adbc88ff1c21104e45347d"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level reconciliation records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 507,
+        "source_blob_sha": "4a0674ddc4c6e94411adbc88ff1c21104e45347d"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly confirms a new serialized-downloadPath substring-collision subfinding under the existing LocalAdd identity/suppression root",
+        "rank": 508,
+        "source_blob_sha": "6edc5abf1874a911163225120af6e8eef7b241d6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source explicitly records canonical root-count delta 0 and P0 3 / P1 3 / P2 26",
+        "rank": 508,
+        "source_blob_sha": "6edc5abf1874a911163225120af6e8eef7b241d6"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states runtime/instrumentation/device reproduction and independent execution remain NOT_VERIFIED",
+        "rank": 508,
+        "source_blob_sha": "6edc5abf1874a911163225120af6e8eef7b241d6"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic numbered correctness review checkpoint has provisional inventory and remaining scope but no explicit structural kind",
+        "rank": 509,
+        "source_blob_sha": "9608a7b921be07bdcfe5bf5a57300038cb10183f"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source provides a concrete serialized-downloadPath substring-collision reproduction that can silently suppress a distinct LocalAdd entry",
+        "rank": 509,
+        "source_blob_sha": "9608a7b921be07bdcfe5bf5a57300038cb10183f"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "finding_id": "BUG-LOCALADD-01",
+        "evidence": "source records P0 3 / P1 3 / P2 26 and root-count delta 0 provisionally pending final classification/recount",
+        "rank": 509,
+        "source_blob_sha": "9608a7b921be07bdcfe5bf5a57300038cb10183f"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves final root classification, surrounding call-chain proof, other identity/handoff surfaces, and runtime/device execution unresolved",
+        "rank": 509,
+        "source_blob_sha": "9608a7b921be07bdcfe5bf5a57300038cb10183f"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has provisional inventory and remaining scope without an explicit structural kind",
+        "rank": 510,
+        "source_blob_sha": "3d71427f2d6e8fd98c9fb446774a2a03d22d95c3"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries provisional P0 3 / P1 3 / P2 26 with no new finding/status change yet",
+        "rank": 510,
+        "source_blob_sha": "3d71427f2d6e8fd98c9fb446774a2a03d22d95c3"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says previously closed BUG-OUTPUT-01 subcases are only review targets and cannot substitute for current-source revalidation",
+        "rank": 510,
+        "source_blob_sha": "3d71427f2d6e8fd98c9fb446774a2a03d22d95c3"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves History/LocalAdd identity, asynchronous scheduler handoff, suppression/deduplication surfaces, exact upstream semantics, root classification/recount, and final checkpoint unresolved",
+        "rank": 510,
+        "source_blob_sha": "3d71427f2d6e8fd98c9fb446774a2a03d22d95c3"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
