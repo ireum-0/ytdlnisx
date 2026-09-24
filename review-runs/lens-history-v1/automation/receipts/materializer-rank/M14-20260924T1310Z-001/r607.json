@@ -1,0 +1,135 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "rank": 607,
+  "materializer_state_blob": "e306f9633859b059375603d824a51c3ceec930d8",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r606.json",
+    "blob_sha": "cf3dff73385117489417e7e506e99ece88a462db"
+  },
+  "history": {
+    "commit_sha": "bd7c4bb6396e523238bc6f27c641d62443599b19",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=607"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10__c2294c87__track-a-source-authority.md",
+        "status": "added",
+        "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10__c2294c87__track-a-source-authority.md",
+    "status": "added",
+    "source_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc",
+    "frozen_blob_sha": "9d64b2c586c7786948c96c55dee872a17e6fabfc",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "NOT_VERIFIED",
+      "reason": "source explicitly records a Fixed Review Basis SHA but does not label it as implementation SHA/frozen implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "document is titled Independent Track A checkpoint with source-authority regression/recount correction content, but it does not positively identify itself as an allowed whole-document finding/addendum/reconciliation/scope-expansion identity under document-identity-v1"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "BUG-OBSERVE-01/F3",
+          "disposition": "CONFIRMED OPEN P0"
+        },
+        {
+          "finding_id": "BUG-KEYWORD-01/F12",
+          "disposition": "CONFIRMED OPEN P1"
+        }
+      ],
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "canonical working count P0 1 / P1 1 / P2 8"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OBSERVE-01/F3",
+      "evidence": "source explicitly records F3 / BUG-OBSERVE-01 — CONFIRMED OPEN P0"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-KEYWORD-01/F12",
+      "evidence": "source explicitly records F12 / BUG-KEYWORD-01 — CONFIRMED OPEN P1"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly corrects the preceding six-P2 scheduled checkpoint inventory and records canonical working P0 1 / P1 1 / P2 8"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "evidence": "source explicitly states the preceding six-P2 checkpoint is insufficient as a full remediation inventory and restores still-open Master Plan F3/F12 into the working inventory"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
