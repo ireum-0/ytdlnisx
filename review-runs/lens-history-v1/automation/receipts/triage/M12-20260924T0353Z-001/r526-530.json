@@ -1,0 +1,106 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "microsegment_rank_range": [
+    526,
+    530
+  ],
+  "data_head": "a2366ac3859e3902180e89b310454423664c567a",
+  "complete_state_blob": "fa01a13bc145d7d74061e2ddcb57bbc4f4910c4a",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r526-530.json",
+    "blob_sha": "b084fd0deab8b519fa473105f16db9bb9dc61b33"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "7c7997ef07f238926a5eb7fbd2932ee21cf785fc",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M12-20260924T0353Z-001/r521-525.json",
+    "blob_sha": "bdbab8ffa5fdb823f6b075a6b079932b1eb3ca8e"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 526,
+      "source_blob": "7409667c485e915f48a72b8a0adb1d384cf52025",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED"
+    },
+    {
+      "rank": 527,
+      "source_blob": "ba2602ad05b77df5a929a008e7afe50dac1c735c",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED"
+    },
+    {
+      "rank": 528,
+      "source_blob": "f65c2549483d8e0dcc625f5230ef89652c9590a2",
+      "independent_exception_triggers": [
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED"
+    },
+    {
+      "rank": 529,
+      "source_blob": "891e906bd49ae7e420643807595389dab8c05ec4",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED"
+    },
+    {
+      "rank": 530,
+      "source_blob": "64933435fed8151f03230a60e959f56a57f2fc7c",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED"
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      526,
+      527,
+      528,
+      529,
+      530
+    ],
+    "materializer_flagged_exception_ranks": [
+      526,
+      527,
+      528,
+      529,
+      530
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
