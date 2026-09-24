@@ -1,0 +1,207 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "rank": 613,
+  "materializer_state_blob": "6b008f9c75518f17fbbda8d9a5dc757813d534af",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r612.json",
+    "blob_sha": "7780f2f376403f21a7dec7bb50a33244c7e9a21d"
+  },
+  "history": {
+    "commit_sha": "9d63b872a8074fec9b94436dfd89bc097ea63b60",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=613"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10__09af51d9__independent-full-wave-review.md",
+        "status": "added",
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10__09af51d9__independent-full-wave-review.md",
+    "status": "added",
+    "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f",
+    "frozen_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "09af51d92209d6735e283622fa7d3680414523bc",
+      "evidence": "source explicitly records Exact reviewed remote HEAD for the implementation branch"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "document positively identifies itself as an independent full-wave review, not as an allowed finding/addendum/reconciliation/scope-expansion record or run-final checkpoint under document-identity-v1"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "P2-D",
+          "disposition": "CLOSED"
+        },
+        {
+          "finding_id": "P2-E",
+          "disposition": "CLOSED"
+        },
+        {
+          "finding_id": "P2-F",
+          "disposition": "CLOSED"
+        },
+        {
+          "finding_id": "P2-G",
+          "disposition": "CLOSED"
+        },
+        {
+          "finding_id": "P2-H",
+          "disposition": "CLOSED"
+        },
+        {
+          "finding_id": "P2-B",
+          "disposition": "OPEN / NOT_CLEAN"
+        },
+        {
+          "finding_id": "P2-C",
+          "disposition": "OPEN / NOT_CLEAN"
+        },
+        {
+          "finding_id": "P2-J",
+          "disposition": "OPEN / NOT_CLEAN"
+        },
+        {
+          "finding_id": "P2-K",
+          "disposition": "OPEN / NOT_CLEAN"
+        },
+        {
+          "finding_id": "P2-L",
+          "disposition": "OPEN"
+        },
+        {
+          "finding_id": "P2-M",
+          "disposition": "OPEN"
+        }
+      ],
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "pre-wave P0 0 / P1 0 / P2 11 -> updated P0 0 / P1 0 / P2 6"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "independent full-wave review is not an allowed positive structural identity and does not claim run-final checkpoint identity"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-D",
+      "evidence": "source explicitly records P2-D CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-E",
+      "evidence": "source explicitly records P2-E CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-F",
+      "evidence": "source explicitly records P2-F CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-G",
+      "evidence": "source explicitly records P2-G CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-H",
+      "evidence": "source explicitly records P2-H CLOSED"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-B OPEN / NOT_CLEAN"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-C",
+      "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-C OPEN / NOT_CLEAN"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-J",
+      "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-J OPEN / NOT_CLEAN"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-K",
+      "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-K OPEN / NOT_CLEAN"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records pre-wave P0 0 / P1 0 / P2 11, closes D/E/F/G/H, and updates canonical count to P0 0 / P1 0 / P2 6"
+    },
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "evidence": "source explicitly identifies a conflicting scheduled checkpoint that counted only two P2s and treated B/C/J/K as fixed, and records the independent semantic decision not to adopt that recount"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
