@@ -1,0 +1,133 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "rank": 521,
+  "materializer_state_blob": "0bfe4dfe7c7c066b8c9ceb2fcfaad222b6dc8938",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r520.json",
+    "blob_sha": "ffdfe9cb09c53f2c016416b4d46cafbe3ba5a329"
+  },
+  "history": {
+    "commit_sha": "37d8007b8907274e0d72e2ee4d045d0124eb98d8",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=521"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T2156Z__6763fb1b__independent-p2b-residual-closure.md",
+        "status": "added",
+        "source_blob_sha": "2d48386c2b625f139414cd61d2c2d81935c05e38",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "2d48386c2b625f139414cd61d2c2d81935c05e38",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T2156Z__6763fb1b__independent-p2b-residual-closure.md",
+    "status": "added",
+    "source_blob_sha": "2d48386c2b625f139414cd61d2c2d81935c05e38",
+    "frozen_blob_sha": "2d48386c2b625f139414cd61d2c2d81935c05e38",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "6763fb1be188fb000b9e9a665c7b3fe349fd40ca",
+      "evidence": "source explicitly records B7 implementation / reviewed final SHA and remote implementation branch exact match"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DERIVABLE",
+      "value": "SUBSTANTIVE_NON_FINAL",
+      "rule": "lens-history-v1/document-identity-v1",
+      "reason": "source positively identifies a P2-B residual closure review, closes one canonical root, preserves unrelated global blockers, and does not claim whole-run final checkpoint identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_APPLICABLE",
+      "reason": "SUBSTANTIVE_NON_FINAL is excluded from cumulative final-checkpoint effectiveness"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "P2-B"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing canonical P2-B root FIXED / CLOSED after B5 and B7 residual closure"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": -1,
+        "evidence": "source explicitly applies the single-root P2-B closure delta to canonical P2 count, changing P2 27 to P2 26"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+      "finding_id": "P2-B",
+      "evidence": "source reconciles later scheduled/narrow checkpoints against the authoritative handoff and applies only the independently established P2-B closure delta"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly changes the canonical P2-B root to FIXED / CLOSED"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly changes canonical count from P0 2 / P1 3 / P2 27 to P0 2 / P1 3 / P2 26 by closing the single P2-B root once"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source states independent JVM/instrumentation/device execution was NOT EXECUTED and reported test results were not independently executed"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
