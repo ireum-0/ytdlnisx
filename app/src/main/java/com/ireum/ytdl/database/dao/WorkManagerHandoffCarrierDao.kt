@@ -37,6 +37,7 @@ interface WorkManagerHandoffCarrierDao {
             "WHERE kind = 'OBSERVE_RETRY_DOWNLOAD' " +
             "AND sourceId = :sourceId AND confirmedUrl = :confirmedUrl " +
             "AND decision = :decision AND configFingerprint = :configFingerprint " +
+            "AND sourceConfigurationGeneration = :sourceConfigurationGeneration " +
             "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED') " +
             "ORDER BY createdAt DESC LIMIT 1"
     )
@@ -45,6 +46,7 @@ interface WorkManagerHandoffCarrierDao {
         confirmedUrl: String,
         decision: String,
         configFingerprint: String,
+        sourceConfigurationGeneration: Long,
     ): WorkManagerHandoffCarrier?
 
     @Query(

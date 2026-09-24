@@ -97,7 +97,7 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         PendingUndoCarrier::class,
         WorkManagerHandoffCarrier::class
     ],
-    version = 62,
+    version = 63,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),

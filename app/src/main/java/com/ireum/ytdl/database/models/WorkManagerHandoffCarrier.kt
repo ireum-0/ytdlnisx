@@ -3,6 +3,7 @@ package com.ireum.ytdl.database.models
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 
 /**
  * Durable owner for an exact one-shot handoff into WorkManager.
@@ -31,6 +32,8 @@ data class WorkManagerHandoffCarrier(
     val confirmedUrl: String = "",
     val decision: String = "",
     val configFingerprint: String = "",
+    @ColumnInfo(defaultValue = "0")
+    val sourceConfigurationGeneration: Long = 0L,
     val boundary: String = "",
     val notBeforeAt: Long = 0L,
     val attempt: Int = 0,

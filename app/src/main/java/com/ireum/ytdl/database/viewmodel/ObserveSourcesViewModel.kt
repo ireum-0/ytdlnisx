@@ -52,54 +52,62 @@ class ObserveSourcesViewModel(private val application: Application) : AndroidVie
         return repository.getByID(id)
     }
 
-    suspend fun insertUpdate(item: ObserveSourcesItem) : Long {
+    suspend fun insertUpdate(item: ObserveSourcesItem, resetProcessedLinks: Boolean = false) : Long {
         if (RestoreGate.isRestoreInProgress(application)) return 0L
         if (item.id > 0) {
+            if (!repository.reconfigure(item, resetProcessedLinks)) return 0L
             notificationUtil.cancelObserveRetryConfirmation(item.id)
-            repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
-            repository.observeTask(item)
             AutomaticKeywordObservationCoverage(application).reconcile()
             return item.id
         }
 
-        val id = repository.insert(item)
-        item.id = id
-        if (id > 0) repository.observeTask(item)
+        val id = repository.insertAndSchedule(item)
         AutomaticKeywordObservationCoverage(application).reconcile()
         return id
     }
 
     suspend fun stopObserving(item: ObserveSourcesItem) {
         if (RestoreGate.isRestoreInProgress(application)) return
+        val cancelledIds = repository.stop(item) ?: return
         notificationUtil.cancelObserveRetryConfirmation(item.id)
-        item.status = ObserveSourcesRepository.SourceStatus.STOPPED
-        repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
-        repository.cancelObservationTaskByID(item.id)
+        cancelledIds.forEach(notificationUtil::cancelMembershipWaitingNotification)
         AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     fun delete(item: ObserveSourcesItem) = viewModelScope.launch(Dispatchers.IO) {
         if (RestoreGate.isRestoreInProgress(application)) return@launch
+        val cancelledIds = repository.delete(item) ?: return@launch
         notificationUtil.cancelObserveRetryConfirmation(item.id)
-        runCatching { repository.cancelObservationTaskByID(item.id) }
-        repository.delete(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
+        cancelledIds.forEach(notificationUtil::cancelMembershipWaitingNotification)
         AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     fun deleteAll() = viewModelScope.launch(Dispatchers.IO) {
         if (RestoreGate.isRestoreInProgress(application)) return@launch
-        getAll().forEach {
-            notificationUtil.cancelObserveRetryConfirmation(it.id)
-            runCatching { repository.cancelObservationTaskByID(it.id) }
-        }
-
+        val beforeDelete = getAll()
         repository.deleteAll().forEach(notificationUtil::cancelMembershipWaitingNotification)
+        beforeDelete.forEach { notificationUtil.cancelObserveRetryConfirmation(it.id) }
         AutomaticKeywordObservationCoverage(application).reconcile()
     }
 
     suspend fun update(item: ObserveSourcesItem) {
         if (RestoreGate.isRestoreInProgress(application)) return
-        repository.update(item).forEach(notificationUtil::cancelMembershipWaitingNotification)
+        if (repository.reconfigure(item, resetProcessedLinks = false)) {
+            notificationUtil.cancelObserveRetryConfirmation(item.id)
+        }
         AutomaticKeywordObservationCoverage(application).reconcile()
     }
+
+    suspend fun reactivate(item: ObserveSourcesItem): Boolean {
+        if (RestoreGate.isRestoreInProgress(application)) return false
+        val active = item.copy(status = ObserveSourcesRepository.SourceStatus.ACTIVE)
+        val updated = repository.reconfigure(active, resetProcessedLinks = false, resetRunCount = true)
+        if (updated) {
+            notificationUtil.cancelObserveRetryConfirmation(item.id)
+            AutomaticKeywordObservationCoverage(application).reconcile()
+        }
+        return updated
+    }
+
+    suspend fun searchNow(item: ObserveSourcesItem): Boolean = repository.observeTaskAndAwait(item)
 }

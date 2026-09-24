@@ -503,6 +503,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
 
                 val observeItem = ObserveSourcesItem(
                     id = currentItem?.id ?: 0,
+                    configurationGeneration = currentItem?.configurationGeneration ?: 1L,
                     name = title.editText!!.text.toString(),
                     url = url.editText!!.text.toString(),
                     downloadItemTemplate = item,
@@ -540,7 +541,7 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                     }else{
                         currentItem?.alreadyProcessedLinks ?: mutableListOf()
                     },
-                    ignoredLinks = if (resetProcessedLinks.isChecked || !getOnlyNewUploads.isChecked){
+                    ignoredLinks = if (resetProcessedLinks.isChecked){
                         mutableListOf()
                     }else{
                         currentItem?.ignoredLinks ?: mutableListOf()
@@ -551,15 +552,23 @@ class ObserveSourcesBottomSheetDialog : BottomSheetDialogFragment() {
                     } else {
                         currentItem?.retryPromptedLinks ?: mutableListOf()
                     },
-                    observedLinks = if (resetProcessedLinks.isChecked || !getOnlyNewUploads.isChecked) {
+                    observedLinks = if (resetProcessedLinks.isChecked) {
                         mutableListOf()
                     } else {
                         currentItem?.observedLinks ?: mutableListOf()
                     }
                 )
 
-                withContext(Dispatchers.IO){
-                    observeSourcesViewModel.insertUpdate(observeItem)
+                val savedId = withContext(Dispatchers.IO) {
+                    observeSourcesViewModel.insertUpdate(observeItem, resetProcessedLinks.isChecked)
+                }
+                if (savedId <= 0L) {
+                    com.google.android.material.snackbar.Snackbar.make(
+                        okButton,
+                        getString(R.string.observe_configuration_changed),
+                        com.google.android.material.snackbar.Snackbar.LENGTH_LONG,
+                    ).show()
+                    return@launch
                 }
                 dismiss()
             }

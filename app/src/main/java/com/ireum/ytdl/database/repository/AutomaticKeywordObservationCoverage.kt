@@ -69,8 +69,8 @@ class AutomaticKeywordObservationCoverage(
             .values
             .forEach { duplicates ->
                 duplicates.drop(1).forEach {
-                    cancelObservation(repository, it.id, authority)
                     observeDao.deleteRecord(it.id)
+                    cancelObservation(repository, it.id, authority)
                 }
             }
 
@@ -81,8 +81,8 @@ class AutomaticKeywordObservationCoverage(
                     managed.managedConditionKey !in requiredByKey ||
                     managed.managedConditionKey in publicActiveKeys
                 ) {
-                    cancelObservation(repository, managed.id, authority)
                     observeDao.deleteRecord(managed.id)
+                    cancelObservation(repository, managed.id, authority)
                 }
             }
 
@@ -109,8 +109,11 @@ class AutomaticKeywordObservationCoverage(
                     }
                 }
             } else if (existing.status != ObserveSourcesRepository.SourceStatus.ACTIVE) {
-                val active = existing.copy(status = ObserveSourcesRepository.SourceStatus.ACTIVE)
-                    .also { observeDao.update(it) }
+                check(observeDao.reactivateManagedSourceIfGeneration(
+                    existing.id,
+                    existing.configurationGeneration,
+                ) == 1) { "Managed ObserveSource changed during reactivation" }
+                val active = requireNotNull(observeDao.getByIDOrNull(existing.id))
                 check(scheduleObservation(repository, active, authority)) {
                     "Managed ObserveSource scheduling was not accepted"
                 }

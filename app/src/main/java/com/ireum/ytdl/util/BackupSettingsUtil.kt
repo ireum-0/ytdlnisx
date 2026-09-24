@@ -155,7 +155,15 @@ object BackupSettingsUtil {
     }
 
     suspend fun backupObserveSources(observeSourcesRepository: ObserveSourcesRepository): Result<JsonArray> = captureSuspend {
-        toJsonArray(withContext(Dispatchers.IO) { observeSourcesRepository.getAll() })
+        val sources = withContext(Dispatchers.IO) { observeSourcesRepository.getAll() }
+        val gson = Gson()
+        JsonArray().also { array ->
+            sources.forEach { source ->
+                val portable = JsonParser.parseString(gson.toJson(source)).asJsonObject
+                portable.remove("configurationGeneration")
+                array.add(portable)
+            }
+        }
     }
 
     suspend fun backupKeywordGroups(keywordGroupDao: KeywordGroupDao): Result<JsonArray> = captureSuspend {

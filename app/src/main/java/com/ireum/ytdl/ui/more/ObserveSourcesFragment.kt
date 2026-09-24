@@ -16,11 +16,6 @@ import androidx.navigation.fragment.findNavController
 import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.work.Constraints
-import androidx.work.Data
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
@@ -32,7 +27,6 @@ import com.ireum.ytdl.database.viewmodel.ObserveSourcesViewModel
 import com.ireum.ytdl.ui.adapter.ObserveSourcesAdapter
 import com.ireum.ytdl.util.UiUtil
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.ireum.ytdl.work.ObserveSourceWorker
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.chip.Chip
 import com.google.android.material.snackbar.Snackbar
@@ -126,23 +120,12 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
     }
     override fun onItemSearch(item: ObserveSourcesItem) {
         if (RestoreGate.isRestoreInProgress(requireContext())) return
-        runCatching {
-            val workConstraints = Constraints.Builder()
-            val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
-                .addTag("observeSources")
-                .addTag("observation_${item.id}")
-                .addTag(item.id.toString())
-                .setConstraints(workConstraints.build())
-                .setInitialDelay(1000L, TimeUnit.MILLISECONDS)
-                .setInputData(Data.Builder().putLong("id", item.id).build())
-
-            WorkManager.getInstance(requireContext()).enqueueUniqueWork(
-                "OBSERVE${item.id}",
-                ExistingWorkPolicy.REPLACE,
-                workRequest.build()
-            )
-        }.onFailure {
-            Snackbar.make(requireView(), it.message.toString(), Snackbar.LENGTH_SHORT).show()
+        lifecycleScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { observeSourcesViewModel.searchNow(item) }
+            }.onFailure {
+                Snackbar.make(requireView(), it.message.toString(), Snackbar.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -166,9 +149,7 @@ class ObserveSourcesFragment : Fragment(), ObserveSourcesAdapter.OnItemClickList
     override fun onItemStart(item: ObserveSourcesItem, position: Int) {
         lifecycleScope.launch {
             withContext(Dispatchers.IO){
-                item.status = ObserveSourcesRepository.SourceStatus.ACTIVE
-                item.runCount = 0
-                observeSourcesViewModel.insertUpdate(item)
+                observeSourcesViewModel.reactivate(item)
             }
             listAdapter.notifyItemChanged(position)
         }

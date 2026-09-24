@@ -14,6 +14,8 @@ import java.time.Month
 data class ObserveSourcesItem(
     @PrimaryKey(autoGenerate = true)
     var id: Long,
+    @ColumnInfo(defaultValue = "1")
+    var configurationGeneration: Long = 1L,
     var name: String,
     var url: String,
     var downloadItemTemplate: DownloadItem,

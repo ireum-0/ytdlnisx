@@ -70,6 +70,7 @@ class ObserveSourceWorker(
 ) : CoroutineWorker(context, workerParams) {
     companion object {
         const val INPUT_SOURCE_ID = "id"
+        const val INPUT_CONFIGURATION_GENERATION = "configurationGeneration"
         const val INPUT_CONFIRMED_URL = "confirmedUrl"
         const val INPUT_CONFIRMATION_DECISION = "confirmationDecision"
         const val INPUT_HANDOFF_ID = "handoffId"
@@ -156,24 +157,24 @@ class ObserveSourceWorker(
         status: String,
         workerID: Int,
         notificationUtil: NotificationUtil
-    ) {
+    ): Boolean {
         item.runInProgress = inProgress
         item.currentRunStatus = status
-        withContext(Dispatchers.IO) {
-            repo.update(item)
-        }
-        val notification = notificationUtil.createObserveSourcesNotification(item.name, status)
-        if (Build.VERSION.SDK_INT >= 33) {
-            setForeground(
-                ForegroundInfo(
-                    workerID,
-                    notification,
-                    FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        val publication = repo.withActiveGeneration(item.id, item.configurationGeneration) {
+            if (!withContext(Dispatchers.IO) { repo.publishRuntimeIfCurrent(item) }) {
+                return@withActiveGeneration false
+            }
+            val notification = notificationUtil.createObserveSourcesNotification(item.name, status)
+            if (Build.VERSION.SDK_INT >= 33) {
+                setForeground(
+                    ForegroundInfo(workerID, notification, FOREGROUND_SERVICE_TYPE_DATA_SYNC)
                 )
-            )
-        } else {
-            setForeground(ForegroundInfo(workerID, notification))
+            } else {
+                setForeground(ForegroundInfo(workerID, notification))
+            }
+            true
         }
+        return publication is ObserveSourcesRepository.GenerationResult.Current && publication.value
     }
 
     private fun addRunHistory(item: ObserveSourcesItem, message: String, detail: String = "") {
@@ -196,8 +197,6 @@ class ObserveSourceWorker(
 
     private suspend fun finishRunAndSchedule(
         repo: ObserveSourcesRepository,
-        sharedPreferences: SharedPreferences,
-        sourceID: Long,
         item: ObserveSourcesItem,
         message: String,
         detail: String = "",
@@ -213,46 +212,25 @@ class ObserveSourceWorker(
         item.runInProgress = false
         item.currentRunStatus = ""
 
+        val finish = repo.finishRunAndSchedule(item, revoke = isFinished)
+        if (!finish.committed) return Result.success()
         if (isFinished) {
             item.status = ObserveSourcesRepository.SourceStatus.STOPPED
-            withContext(Dispatchers.IO) {
-                val cancelledIds = repo.update(item)
-                AutomaticKeywordObservationCoverage(context).reconcile()
-                cancelledIds
-            }.forEach {
-                NotificationUtil(context).cancelMembershipWaitingNotification(it)
-            }
-            return Result.success()
+            AutomaticKeywordObservationCoverage(context).reconcile()
         }
-
-        withContext(Dispatchers.IO) {
-            repo.update(item)
+        val notificationUtil = NotificationUtil(context)
+        finish.revokedMembershipDownloadIds.forEach { downloadId ->
+            cancelMembershipWaitingNotification(notificationUtil, downloadId)
         }
-
-        val allowMeteredNetworks = sharedPreferences.getBoolean("metered_networks", true)
-        val workConstraints = Constraints.Builder()
-        if (!allowMeteredNetworks) {
-            workConstraints.setRequiredNetworkType(NetworkType.UNMETERED)
-        } else {
-            workConstraints.setRequiredNetworkType(NetworkType.CONNECTED)
-        }
-
-        val initialDelay = (item.calculateNextTimeForObserving() - System.currentTimeMillis()).coerceAtLeast(0L)
-        val workRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
-            .addTag("observeSources")
-            .addTag("observation_$sourceID")
-            .addTag(sourceID.toString())
-            .setConstraints(workConstraints.build())
-            .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
-            .setInputData(Data.Builder().putLong(INPUT_SOURCE_ID, sourceID).build())
-
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            "OBSERVE$sourceID",
-            ExistingWorkPolicy.REPLACE,
-            workRequest.build()
-        )
-
         return Result.success()
+    }
+
+    private fun cancelMembershipWaitingNotification(
+        notificationUtil: NotificationUtil,
+        downloadId: Long,
+    ) {
+        ObserveSourceWorkerEffectTestHooks.membershipWaitingNotificationCancelledForTesting?.invoke(downloadId)
+        notificationUtil.cancelMembershipWaitingNotification(downloadId)
     }
 
     override suspend fun doWork(): Result {
@@ -267,9 +245,31 @@ class ObserveSourceWorker(
         }
     }
 
+    /** Legacy requests cannot act as Observe authority after the generation migration. */
+    private suspend fun reconcileLegacyObservationRequest(sourceId: Long): Result {
+        return try {
+            val dbManager = ObserveSourceWorkerEffectTestHooks.dbManagerForTesting
+                ?: DBManager.getInstance(context)
+            val repository = ObserveSourcesRepository(
+                dbManager.observeSourcesDao,
+                WorkManager.getInstance(context),
+                PreferenceManager.getDefaultSharedPreferences(context),
+                context,
+            )
+            if (repository.reconcileLegacyRequest(sourceId, id.toString())) Result.success() else Result.retry()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            Log.w("ObserveSourceWorker", "Legacy Observe request reconciliation failed", failure)
+            Result.retry()
+        }
+    }
+
     private suspend fun recoverFailedRun(error: Exception): Result {
         val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0L)
+        val expectedGeneration = inputData.getLong(INPUT_CONFIGURATION_GENERATION, 0L)
         if (sourceID == 0L) return Result.failure()
+        if (expectedGeneration <= 0L) return reconcileLegacyObservationRequest(sourceID)
         val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
         val handoffRequestId = inputData.getString(INPUT_HANDOFF_REQUEST_ID).orEmpty()
         return try {
@@ -283,7 +283,9 @@ class ObserveSourceWorker(
                 val source = withContext(Dispatchers.IO) {
                     dbManager.observeSourcesDao.getByIDOrNull(sourceID)
                 }
-                if (source == null || source.status == ObserveSourcesRepository.SourceStatus.STOPPED) {
+                if (source == null || source.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
+                    source.configurationGeneration != expectedGeneration
+                ) {
                     resolveConfirmedRetry(handoffId, handoffRequestId)
                     return Result.success()
                 }
@@ -299,10 +301,11 @@ class ObserveSourceWorker(
             val item = withContext(Dispatchers.IO) {
                 dbManager.observeSourcesDao.getByIDOrNull(sourceID)
             } ?: return Result.success()
+            if (item.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
+                item.configurationGeneration != expectedGeneration
+            ) return Result.success()
             finishRunAndSchedule(
                 repo = repo,
-                sharedPreferences = sharedPreferences,
-                sourceID = sourceID,
                 item = item,
                 message = context.getString(com.ireum.ytdl.R.string.observe_log_run_failed),
                 detail = error.javaClass.simpleName,
@@ -317,7 +320,9 @@ class ObserveSourceWorker(
 
     private suspend fun runSourceWork(): Result {
         val sourceID = inputData.getLong(INPUT_SOURCE_ID, 0)
+        val expectedGeneration = inputData.getLong(INPUT_CONFIGURATION_GENERATION, 0L)
         if (sourceID == 0L) return Result.success()
+        if (expectedGeneration <= 0L) return reconcileLegacyObservationRequest(sourceID)
         val confirmedCanonicalUrl = inputData.getString(INPUT_CONFIRMED_URL)?.let(::canonicalUrl)
         val confirmationDecision = inputData.getString(INPUT_CONFIRMATION_DECISION).orEmpty()
         val handoffId = inputData.getString(INPUT_HANDOFF_ID).orEmpty()
@@ -347,7 +352,17 @@ class ObserveSourceWorker(
 
         val ytdlpUtil = YTDLPUtil(context, commandTemplateDao)
 
-        val item = repo.getByID(sourceID)
+        val item = repo.getByIDOrNull(sourceID)
+        if (item == null) {
+            if (handoffId.isNotBlank()) resolveConfirmedRetry(handoffId, handoffRequestId)
+            return Result.success()
+        }
+        if (item.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
+            item.configurationGeneration != expectedGeneration
+        ) {
+            if (handoffId.isNotBlank()) resolveConfirmedRetry(handoffId, handoffRequestId)
+            return Result.success()
+        }
         if (
             handoffId.isNotBlank() &&
             handoffConfigFingerprint.isNotBlank() &&
@@ -365,51 +380,56 @@ class ObserveSourceWorker(
         }
 
         if (confirmedCanonicalUrl == null && confirmationDecision.isBlank()) {
-            val requeuedIds = withContext(Dispatchers.IO) {
-                dbManager.observeSourcesDao.requeueMembershipWaiting(sourceID)
-            }
-            if (requeuedIds.isNotEmpty()) {
-                try {
-                    val requeuedItems = withContext(Dispatchers.IO) {
-                        downloadRepo.getAllItemsByIDs(requeuedIds)
-                            .filter {
-                                it.status == DownloadRepository.Status.Queued.toString()
-                            }
-                    }
-                    if (requeuedItems.isNotEmpty()) {
-                        val alarmScheduler = AlarmScheduler(context)
-                        val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
-                        if (
-                            useScheduler &&
-                            !alarmScheduler.isDuringTheScheduledTime() &&
-                            alarmScheduler.canSchedule()
-                        ) {
-                            alarmScheduler.scheduleSuspending()
-                        } else {
-                            startObserveDownloads(downloadRepo, requeuedItems)
-                        }
-                    }
-                } catch (error: Exception) {
-                    withContext(Dispatchers.IO + NonCancellable) {
-                        dbManager.observeSourcesDao.restoreMembershipWaiting(sourceID, requeuedIds)
-                    }
-                    throw error
+            val requeueResult = repo.withActiveGeneration(sourceID, expectedGeneration) {
+                val requeuedIds = withContext(Dispatchers.IO) {
+                    dbManager.observeSourcesDao.requeueMembershipWaiting(sourceID)
                 }
+                if (requeuedIds.isNotEmpty()) {
+                    try {
+                        val requeuedItems = withContext(Dispatchers.IO) {
+                            downloadRepo.getAllItemsByIDs(requeuedIds)
+                                .filter { it.status == DownloadRepository.Status.Queued.toString() }
+                        }
+                        if (requeuedItems.isNotEmpty()) {
+                            val alarmScheduler = AlarmScheduler(context)
+                            val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
+                            if (
+                                useScheduler &&
+                                !alarmScheduler.isDuringTheScheduledTime() &&
+                                alarmScheduler.canSchedule()
+                            ) {
+                                alarmScheduler.scheduleSuspending()
+                            } else {
+                                startObserveDownloads(downloadRepo, requeuedItems)
+                            }
+                        }
+                    } catch (error: Exception) {
+                        withContext(Dispatchers.IO + NonCancellable) {
+                            dbManager.observeSourcesDao.restoreMembershipWaiting(sourceID, requeuedIds)
+                        }
+                        throw error
+                    }
+                }
+                requeuedIds
+            }
+            if (requeueResult is ObserveSourcesRepository.GenerationResult.Stale) return Result.success()
+            val requeuedIds = (requeueResult as ObserveSourcesRepository.GenerationResult.Current).value
+            if (requeuedIds.isNotEmpty()) {
                 requeuedIds.forEach {
-                    notificationUtil.cancelMembershipWaitingNotification(it)
+                    cancelMembershipWaitingNotification(notificationUtil, it)
                 }
             }
         }
 
         val workerID = System.currentTimeMillis().toInt()
-        updateRunStatus(
+        if (!updateRunStatus(
             repo,
             item,
             true,
             context.getString(com.ireum.ytdl.R.string.observe_status_fetching),
             workerID,
             notificationUtil
-        )
+        )) return Result.success()
 
         val sourceConditionKey = item.managedConditionKey.ifBlank {
             AutomaticKeywordNormalizer.playlistConditionKey(item.url).orEmpty()
@@ -439,24 +459,25 @@ class ObserveSourceWorker(
                     sourceSnapshot.diagnostic.ifBlank { "Observe source extraction failed" }
                 )
             if (discoveryRuleSnapshots.isNotEmpty()) {
-                val discoveryAt = System.currentTimeMillis()
-                discoveryRuleSnapshots.forEach { rule ->
-                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
-                        rule.id,
-                        rule.revision,
-                        AutomaticKeywordSyncStatus.FAILED,
-                        discoveryAt,
-                        automaticKeywordError(error)
-                    )
+                val failurePublication = repo.withActiveGeneration(sourceID, expectedGeneration) {
+                    val discoveryAt = System.currentTimeMillis()
+                    discoveryRuleSnapshots.forEach { rule ->
+                        dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+                            rule.id,
+                            rule.revision,
+                            AutomaticKeywordSyncStatus.FAILED,
+                            discoveryAt,
+                            automaticKeywordError(error),
+                        )
+                    }
                 }
+                if (failurePublication is ObserveSourcesRepository.GenerationResult.Stale) return Result.success()
             }
             if (handoffId.isNotBlank()) {
                 throw error
             }
             return finishRunAndSchedule(
                 repo = repo,
-                sharedPreferences = sharedPreferences,
-                sourceID = sourceID,
                 item = item,
                 message = context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed),
                 detail = SensitiveTextRedactor.redactOutput(error.message.orEmpty()),
@@ -490,39 +511,33 @@ class ObserveSourceWorker(
                 discoveriesByKey.getOrPut(key, ::mutableListOf).add(video)
             }
         }
-        if (discoveriesByKey.isNotEmpty() && sourceIsAuthoritative) {
-            val discoveryResult =
-                AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
-            val discoveryAt = System.currentTimeMillis()
-            discoveryResult.ruleResults.forEach { result ->
-                dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
-                    result.ruleId,
-                    result.revision,
-                    if (result.failed == 0) {
-                        AutomaticKeywordSyncStatus.SUCCESS
-                    } else {
-                        AutomaticKeywordSyncStatus.PARTIAL
-                    },
-                    discoveryAt,
-                    if (result.failed == 0) {
-                        AutomaticKeywordSyncError.NONE
-                    } else {
-                        AutomaticKeywordSyncError.DATABASE_PARTIAL
-                    }
-                )
-            }
-        } else if (discoveryRuleSnapshots.isNotEmpty() && !sourceIsAuthoritative) {
-            val discoveryAt = System.currentTimeMillis()
-            discoveryRuleSnapshots.forEach { rule ->
-                dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
-                    rule.id,
-                    rule.revision,
-                    AutomaticKeywordSyncStatus.PARTIAL,
-                    discoveryAt,
-                    AutomaticKeywordSyncError.EXTRACTION,
-                )
+        val discoveryPublication = repo.withActiveGeneration(sourceID, expectedGeneration) {
+            if (discoveriesByKey.isNotEmpty() && sourceIsAuthoritative) {
+                val discoveryResult = AutomaticKeywordRuleEngine(dbManager).recordDiscovery(discoveriesByKey)
+                val discoveryAt = System.currentTimeMillis()
+                discoveryResult.ruleResults.forEach { result ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+                        result.ruleId,
+                        result.revision,
+                        if (result.failed == 0) AutomaticKeywordSyncStatus.SUCCESS else AutomaticKeywordSyncStatus.PARTIAL,
+                        discoveryAt,
+                        if (result.failed == 0) AutomaticKeywordSyncError.NONE else AutomaticKeywordSyncError.DATABASE_PARTIAL,
+                    )
+                }
+            } else if (discoveryRuleSnapshots.isNotEmpty() && !sourceIsAuthoritative) {
+                val discoveryAt = System.currentTimeMillis()
+                discoveryRuleSnapshots.forEach { rule ->
+                    dbManager.automaticKeywordRuleDao.updateDiscoveryStatusIfRevision(
+                        rule.id,
+                        rule.revision,
+                        AutomaticKeywordSyncStatus.PARTIAL,
+                        discoveryAt,
+                        AutomaticKeywordSyncError.EXTRACTION,
+                    )
+                }
             }
         }
+        if (discoveryPublication is ObserveSourcesRepository.GenerationResult.Stale) return Result.success()
         val previouslyObservedCanonicalUrls = item.observedLinks
             .asSequence()
             .map(::canonicalUrl)
@@ -538,8 +553,6 @@ class ObserveSourceWorker(
             resolveConfirmedRetry(handoffId, handoffRequestId)
             return finishRunAndSchedule(
                 repo = repo,
-                sharedPreferences = sharedPreferences,
-                sourceID = sourceID,
                 item = item,
                 message = if (sourceIsAuthoritative) {
                     context.getString(com.ireum.ytdl.R.string.automatic_keyword_discovery_complete)
@@ -591,10 +604,13 @@ class ObserveSourceWorker(
                         trustedDocumentTargets = trustedDocumentTargets.toSet()
                     )
                 }
-                val deletionResult = HistoryReferenceMutationCoordinator.withLock {
-                    HistoryFileDeletionEngine(
-                        deletionGateway
-                    ).let { engine ->
+                val deletionPublication = repo.withActiveGeneration(
+                    sourceID,
+                    expectedGeneration,
+                    ObserveSourcesRepository.FinalEffect.DESTRUCTIVE_SYNC,
+                ) {
+                    HistoryReferenceMutationCoordinator.withLock {
+                        HistoryFileDeletionEngine(deletionGateway).let { engine ->
                         fun currentStoredTargets(): Map<Long, List<String>> =
                             historyRepo.getDeletionReferenceRecordsByIds(selectedIds.toList())
                                 .associate { history -> history.id to history.downloadPath }
@@ -619,8 +635,11 @@ class ObserveSourceWorker(
                             recordsRemoved = removableRecordIds.size,
                             removableRecordIds = removableRecordIds
                         )
+                        }
                     }
                 }
+                if (deletionPublication is ObserveSourcesRepository.GenerationResult.Stale) return Result.success()
+                val deletionResult = (deletionPublication as ObserveSourcesRepository.GenerationResult.Current).value
                 Log.d(
                     OBS_DUP_LOG_TAG,
                     "sync remove result sourceId=$sourceID records=${deletionResult.removableRecordIds.size} " +
@@ -630,14 +649,14 @@ class ObserveSourceWorker(
             }
         }
 
-        updateRunStatus(
+        if (!updateRunStatus(
             repo,
             item,
             true,
             context.getString(com.ireum.ytdl.R.string.observe_status_filtering),
             workerID,
             notificationUtil
-        )
+        )) return Result.success()
 
         // The first-run ignore baseline is only safe when membership is
         // authoritative.  PARTIAL snapshots skip this branch and flow through
@@ -664,11 +683,9 @@ class ObserveSourceWorker(
 
             resolveConfirmedRetry(handoffId, handoffRequestId)
             return finishRunAndSchedule(
-                repo,
-                sharedPreferences,
-                sourceID,
-                item,
-                runMessage,
+                repo = repo,
+                item = item,
+                message = runMessage,
                 detail = "",
                 countRun = canAdvanceRun,
             )
@@ -869,14 +886,19 @@ class ObserveSourceWorker(
 
 
         if (downloadItems.isNotEmpty()){
-            updateRunStatus(
-                repo,
-                item,
-                true,
-                context.getString(com.ireum.ytdl.R.string.observe_status_queueing, downloadItems.size),
-                workerID,
-                notificationUtil
-            )
+            val queuePublication = repo.withActiveGeneration(
+                sourceID,
+                expectedGeneration,
+                ObserveSourcesRepository.FinalEffect.DOWNLOAD_ADMISSION,
+            ) {
+                if (!updateRunStatus(
+                    repo,
+                    item,
+                    true,
+                    context.getString(com.ireum.ytdl.R.string.observe_status_queueing, downloadItems.size),
+                    workerID,
+                    notificationUtil,
+                )) return@withActiveGeneration false
             //QUEUE DOWNLOADS
             val context = App.instance
             val alarmScheduler = AlarmScheduler(context)
@@ -1064,9 +1086,7 @@ class ObserveSourceWorker(
             if (confirmedRetryHandled) {
                 // Persist only after the confirmed target was queued or deliberately
                 // rejected by duplicate policy. A missing fetch result remains retryable.
-                withContext(Dispatchers.IO) {
-                    repo.update(item)
-                }
+                if (!repo.publishRuntimeIfCurrent(item)) return@withActiveGeneration false
             }
 
             if (useScheduler && !alarmScheduler.isDuringTheScheduledTime() && alarmScheduler.canSchedule()){
@@ -1093,14 +1113,18 @@ class ObserveSourceWorker(
             }
 
             queuedItems.forEach { rememberProcessedUrl(canonicalUrl(it.url)) }
+                resolveConfirmedRetry(handoffId, handoffRequestId)
+                true
+            }
+            if (queuePublication is ObserveSourcesRepository.GenerationResult.Stale ||
+                !(queuePublication as ObserveSourcesRepository.GenerationResult.Current).value
+            ) return Result.success()
         }
 
         // The exact Download decision is complete only after the target was
         // inserted or duplicate policy explicitly refused it.  Marking this
         // before the recurring successor is scheduled prevents a process
         // death/late failure from replaying the notification decision.
-        resolveConfirmedRetry(handoffId, handoffRequestId)
-
         if (!sourceIsAuthoritative && !canShowRetryConfirmation) {
             runMessage = context.getString(com.ireum.ytdl.R.string.observe_log_source_fetch_failed)
             runDetail = listOf("PARTIAL_SOURCE_SNAPSHOT", runDetail)
@@ -1114,8 +1138,6 @@ class ObserveSourceWorker(
 
         val result = finishRunAndSchedule(
             repo = repo,
-            sharedPreferences = sharedPreferences,
-            sourceID = sourceID,
             item = item,
             message = runMessage,
             detail = runDetail,
@@ -1127,16 +1149,21 @@ class ObserveSourceWorker(
             canShowRetryConfirmation &&
             item.status == ObserveSourcesRepository.SourceStatus.ACTIVE
         ) {
-            val shown = notificationUtil.showObserveRetryConfirmation(
-                sourceId = sourceID,
-                sourceName = item.name,
-                videoTitle = confirmationCandidate.title,
-                canonicalUrl = canonicalUrl(confirmationCandidate.url),
-                configFingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(item),
-            )
-            if (!shown) notificationUtil.cancelObserveRetryConfirmation(sourceID)
-        } else {
-            notificationUtil.cancelObserveRetryConfirmation(sourceID)
+            repo.withActiveGeneration(sourceID, expectedGeneration) {
+                val shown = notificationUtil.showObserveRetryConfirmation(
+                    sourceId = sourceID,
+                    sourceName = item.name,
+                    videoTitle = confirmationCandidate.title,
+                    canonicalUrl = canonicalUrl(confirmationCandidate.url),
+                    configurationGeneration = expectedGeneration,
+                    configFingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(item),
+                )
+                if (!shown) notificationUtil.cancelObserveRetryConfirmation(sourceID)
+            }
+        } else if (item.status == ObserveSourcesRepository.SourceStatus.STOPPED) {
+            repo.withAutomaticallyStoppedGeneration(expectedGeneration, sourceID) {
+                notificationUtil.cancelObserveRetryConfirmation(sourceID)
+            }
         }
 
         return result
@@ -1207,11 +1234,16 @@ internal object ObserveSourceWorkerEffectTestHooks {
     @Volatile
     internal var retryConfirmationAvailableForTesting: Boolean? = null
 
+    /** Records the real notification-cancellation boundary in production-wiring tests. */
+    @Volatile
+    internal var membershipWaitingNotificationCancelledForTesting: ((Long) -> Unit)? = null
+
     internal fun clearForTesting() {
         dbManagerForTesting = null
         sourceSnapshotForTesting = null
         startDownloadWorkerForTesting = null
         afterFinalAdmissionInsertForTesting = null
         retryConfirmationAvailableForTesting = null
+        membershipWaitingNotificationCancelledForTesting = null
     }
 }

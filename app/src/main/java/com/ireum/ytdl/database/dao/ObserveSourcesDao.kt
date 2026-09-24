@@ -5,7 +5,6 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
-import androidx.room.Update
 import com.ireum.ytdl.database.models.LowQualityRedownloadItem
 import com.ireum.ytdl.database.models.LowQualityRedownloadOperation
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
@@ -399,14 +398,6 @@ interface ObserveSourcesDao {
     }
 
     @Transaction
-    suspend fun updateAndCancelWaiting(item: ObserveSourcesItem): List<Long> {
-        val waitingIds = getMembershipRetryDownloadIds(item.id)
-        update(item)
-        convergeMembershipRevocation(waitingIds)
-        return waitingIds
-    }
-
-    @Transaction
     suspend fun deleteAndCancelWaiting(itemId: Long): List<Long> {
         val waitingIds = getMembershipRetryDownloadIds(itemId)
         deleteRecord(itemId)
@@ -431,6 +422,190 @@ interface ObserveSourcesDao {
     suspend fun deleteAllForRestoreReset(): List<Long> {
         val waitingIds = getAllMembershipRetryDownloadIds()
         deleteAllRecords()
+        convergeMembershipRevocation(waitingIds)
+        return waitingIds
+    }
+
+    @Query("""
+        UPDATE sources
+        SET name=:name,
+            url=:url,
+            downloadItemTemplate=:downloadItemTemplate,
+            everyNr=:everyNr,
+            everyCategory=:everyCategory,
+            everyTime=:everyTime,
+            weeklyConfig=:weeklyConfig,
+            monthlyConfig=:monthlyConfig,
+            status='ACTIVE',
+            startsTime=:startsTime,
+            endsDate=:endsDate,
+            endsAfterCount=:endsAfterCount,
+            getOnlyNewUploads=:getOnlyNewUploads,
+            retryMissingDownloads=:retryMissingDownloads,
+            syncWithSource=:syncWithSource,
+            excludeShorts=:excludeShorts,
+            autoAddKeyword=:autoAddKeyword,
+            configurationGeneration=configurationGeneration+1,
+            runCount=CASE WHEN :resetRunCount THEN 0 ELSE runCount END,
+            ignoredLinks=CASE WHEN :resetProcessedLinks THEN '[]' ELSE ignoredLinks END,
+            alreadyProcessedLinks=CASE WHEN :resetProcessedLinks THEN '[]' ELSE alreadyProcessedLinks END,
+            retryPromptedLinks=CASE WHEN :resetProcessedLinks THEN '[]' ELSE retryPromptedLinks END,
+            observedLinks=CASE WHEN :resetProcessedLinks THEN '[]' ELSE observedLinks END
+        WHERE id=:id
+          AND configurationGeneration=:expectedGeneration
+          AND configurationGeneration < 9223372036854775807
+          AND observationPurpose='USER'
+    """)
+    suspend fun advanceUserConfigurationIfGeneration(
+        id: Long,
+        expectedGeneration: Long,
+        name: String,
+        url: String,
+        downloadItemTemplate: com.ireum.ytdl.database.models.DownloadItem,
+        everyNr: Int,
+        everyCategory: com.ireum.ytdl.database.repository.ObserveSourcesRepository.EveryCategory,
+        everyTime: Long,
+        weeklyConfig: com.ireum.ytdl.database.models.observeSources.ObserveSourcesWeeklyConfig?,
+        monthlyConfig: com.ireum.ytdl.database.models.observeSources.ObserveSourcesMonthlyConfig?,
+        startsTime: Long,
+        endsDate: Long,
+        endsAfterCount: Int,
+        getOnlyNewUploads: Boolean,
+        retryMissingDownloads: Boolean,
+        syncWithSource: Boolean,
+        excludeShorts: Boolean,
+        autoAddKeyword: String,
+        resetRunCount: Boolean,
+        resetProcessedLinks: Boolean,
+    ): Int
+
+    @Query("""
+        UPDATE sources
+        SET status='STOPPED', configurationGeneration=configurationGeneration+1,
+            runInProgress=0, currentRunStatus=''
+        WHERE id=:id
+          AND configurationGeneration=:expectedGeneration
+          AND configurationGeneration < 9223372036854775807
+          AND status='ACTIVE'
+    """)
+    suspend fun revokeActiveGeneration(id: Long, expectedGeneration: Long): Int
+
+    @Query("""
+        UPDATE sources
+        SET status='STOPPED', configurationGeneration=configurationGeneration+1,
+            runCount=:runCount,
+            ignoredLinks=:ignoredLinks,
+            alreadyProcessedLinks=:alreadyProcessedLinks,
+            runHistory=:runHistory,
+            runInProgress=:runInProgress,
+            currentRunStatus=:currentRunStatus,
+            retryPromptedLinks=:retryPromptedLinks,
+            observedLinks=:observedLinks
+        WHERE id=:id AND status='ACTIVE'
+          AND configurationGeneration=:expectedGeneration
+          AND configurationGeneration < 9223372036854775807
+    """)
+    suspend fun finishAndRevokeGeneration(
+        id: Long,
+        expectedGeneration: Long,
+        runCount: Int,
+        ignoredLinks: MutableList<String>,
+        alreadyProcessedLinks: MutableList<String>,
+        runHistory: MutableList<String>,
+        runInProgress: Boolean,
+        currentRunStatus: String,
+        retryPromptedLinks: MutableList<String>,
+        observedLinks: MutableList<String>,
+    ): Int
+
+    @Transaction
+    suspend fun finishAndRevokeAndCancelWaitingIfGeneration(item: ObserveSourcesItem): List<Long>? {
+        val waitingIds = getMembershipRetryDownloadIds(item.id)
+        val updated = finishAndRevokeGeneration(
+            id = item.id,
+            expectedGeneration = item.configurationGeneration,
+            runCount = item.runCount,
+            ignoredLinks = item.ignoredLinks,
+            alreadyProcessedLinks = item.alreadyProcessedLinks,
+            runHistory = item.runHistory,
+            runInProgress = item.runInProgress,
+            currentRunStatus = item.currentRunStatus,
+            retryPromptedLinks = item.retryPromptedLinks,
+            observedLinks = item.observedLinks,
+        )
+        if (updated != 1) return null
+        convergeMembershipRevocation(waitingIds)
+        return waitingIds
+    }
+
+    @Query("""
+        UPDATE sources
+        SET runCount=:runCount,
+            ignoredLinks=:ignoredLinks,
+            alreadyProcessedLinks=:alreadyProcessedLinks,
+            runHistory=:runHistory,
+            runInProgress=:runInProgress,
+            currentRunStatus=:currentRunStatus,
+            retryPromptedLinks=:retryPromptedLinks,
+            observedLinks=:observedLinks
+        WHERE id=:id AND status='ACTIVE' AND configurationGeneration=:expectedGeneration
+    """)
+    suspend fun updateRuntimeIfGeneration(
+        id: Long,
+        expectedGeneration: Long,
+        runCount: Int,
+        ignoredLinks: MutableList<String>,
+        alreadyProcessedLinks: MutableList<String>,
+        runHistory: MutableList<String>,
+        runInProgress: Boolean,
+        currentRunStatus: String,
+        retryPromptedLinks: MutableList<String>,
+        observedLinks: MutableList<String>,
+    ): Int
+
+    @Query("""
+        UPDATE sources SET status='ACTIVE', configurationGeneration=configurationGeneration+1
+        WHERE id=:id AND configurationGeneration=:expectedGeneration
+          AND configurationGeneration < 9223372036854775807
+          AND observationPurpose='KEYWORD_DISCOVERY'
+    """)
+    suspend fun reactivateManagedSourceIfGeneration(id: Long, expectedGeneration: Long): Int
+
+    @Query("UPDATE sources SET downloadItemTemplate=:template WHERE id=:id")
+    suspend fun updateTemplateForRestore(id: Long, template: com.ireum.ytdl.database.models.DownloadItem): Int
+
+    @Query("""
+        SELECT EXISTS(
+            SELECT 1 FROM sources
+            WHERE id=:id AND status='ACTIVE' AND configurationGeneration=:expectedGeneration
+        )
+    """)
+    fun isActiveGeneration(id: Long, expectedGeneration: Long): Boolean
+
+    @Query("""
+        DELETE FROM sources
+        WHERE id=:id AND configurationGeneration=:expectedGeneration
+    """)
+    suspend fun deleteIfGeneration(id: Long, expectedGeneration: Long): Int
+
+    @Transaction
+    suspend fun stopAndCancelWaitingIfGeneration(
+        id: Long,
+        expectedGeneration: Long,
+    ): List<Long>? {
+        val waitingIds = getMembershipRetryDownloadIds(id)
+        if (revokeActiveGeneration(id, expectedGeneration) != 1) return null
+        convergeMembershipRevocation(waitingIds)
+        return waitingIds
+    }
+
+    @Transaction
+    suspend fun deleteAndCancelWaitingIfGeneration(
+        id: Long,
+        expectedGeneration: Long,
+    ): List<Long>? {
+        val waitingIds = getMembershipRetryDownloadIds(id)
+        if (deleteIfGeneration(id, expectedGeneration) != 1) return null
         convergeMembershipRevocation(waitingIds)
         return waitingIds
     }
@@ -467,6 +642,4 @@ interface ObserveSourcesDao {
             }
     }
 
-    @Update(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun update(item: ObserveSourcesItem)
 }

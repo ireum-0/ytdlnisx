@@ -1667,10 +1667,7 @@ class LowQualityRedownloadPersistenceTest {
             workManager = WorkManager.getInstance(context),
             sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context),
         )
-        val stoppedSource = database.observeSourcesDao
-            .getByID(sourceId)
-            .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
-        assertEquals(listOf(linkedId), sourceRepository.update(stoppedSource))
+        assertEquals(listOf(linkedId), sourceRepository.stop(database.observeSourcesDao.getByID(sourceId)))
 
         assertEquals(
             DownloadRepository.Status.Cancelled.name,
@@ -1742,11 +1739,7 @@ class LowQualityRedownloadPersistenceTest {
         assertNull(database.downloadDao.getNullableDownloadById(removalId))
         assertEquals(
             emptyList<Long>(),
-            sourceRepository.update(
-                database.observeSourcesDao
-                    .getByID(removalSourceId)
-                    .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
-            ),
+            sourceRepository.stop(database.observeSourcesDao.getByID(removalSourceId)),
         )
         assertNull(downloadRepository.restoreUndo(removalHandle.token))
         assertNull(database.downloadDao.getNullableDownloadById(removalId))
@@ -1792,10 +1785,7 @@ class LowQualityRedownloadPersistenceTest {
             workManager = WorkManager.getInstance(context),
             sharedPreferences = PreferenceManager.getDefaultSharedPreferences(context),
         )
-        val stoppedSource = database.observeSourcesDao
-            .getByID(sourceId)
-            .copy(status = ObserveSourcesRepository.SourceStatus.STOPPED)
-        assertEquals(listOf(linkedId), sourceRepository.update(stoppedSource))
+        assertEquals(listOf(linkedId), sourceRepository.stop(database.observeSourcesDao.getByID(sourceId)))
 
         assertEquals(
             DownloadRepository.Status.Cancelled.name,

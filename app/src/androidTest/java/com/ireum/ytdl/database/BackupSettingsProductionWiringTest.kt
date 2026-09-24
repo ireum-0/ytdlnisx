@@ -6,14 +6,24 @@ import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.KeywordGroup
 import com.ireum.ytdl.database.models.KeywordGroupMember
+import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.BackupSettingsUtil
 import com.google.gson.JsonParser
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -72,6 +82,43 @@ class BackupSettingsProductionWiringTest {
 
         assertTrue(result.isSuccess)
         publishedBackup = result.getOrNull()
+    }
+
+    @Test
+    fun observeSourceBackupOmitsDestinationGenerationAndLegacyPayloadGetsLocalGeneration() = runBlocking {
+        val source = observeSource().copy(configurationGeneration = 91L)
+        val sourceId = database.observeSourcesDao.insert(source)
+        try {
+            val repository = com.ireum.ytdl.database.repository.ObserveSourcesRepository(
+                database.observeSourcesDao,
+                WorkManager.getInstance(context),
+                PreferenceManager.getDefaultSharedPreferences(context),
+                context,
+            )
+            val backup = BackupSettingsUtil.backupObserveSources(repository).getOrThrow()
+            assertTrue(backup.size() > 0)
+            backup.forEach { assertFalse(it.asJsonObject.has("configurationGeneration")) }
+
+            val destinationSource = source.copy(id = sourceId)
+            val legacySourceJson = JsonParser.parseString(Gson().toJson(destinationSource)).asJsonObject
+            legacySourceJson.remove("configurationGeneration")
+            val sources = JsonArray().apply { add(legacySourceJson) }
+            val root = JsonObject().apply {
+                addProperty("app", BackupRestoreParser.CURRENT_APP_MARKER)
+                addProperty("backup_format_version", 4)
+                add("observe_sources", sources)
+            }
+            val parsed = BackupRestoreParser.parse(root)
+            assertEquals(1L, parsed.data.observeSources!!.single().configurationGeneration)
+
+            val forgedSource = destinationSource.copy(configurationGeneration = Long.MAX_VALUE - 4)
+            val typed = BackupRestoreParser.fromTyped(
+                com.ireum.ytdl.database.models.RestoreAppDataItem(observeSources = listOf(forgedSource)),
+            )
+            assertEquals(1L, typed.data.observeSources!!.single().configurationGeneration)
+        } finally {
+            if (sourceId > 0L) database.observeSourcesDao.deleteRecord(sourceId)
+        }
     }
 
     @Test
@@ -343,5 +390,51 @@ class BackupSettingsProductionWiringTest {
         format = Format(),
         downloadId = 0L,
         customThumb = customThumb,
+    )
+
+    private fun observeSource() = ObserveSourcesItem(
+        id = 0L,
+        name = "Backup source",
+        url = "https://example.com/backup-source",
+        downloadItemTemplate = DownloadItem(
+            id = 0L,
+            url = "https://example.com/backup-source",
+            title = "",
+            author = "",
+            thumb = "",
+            duration = "",
+            type = DownloadType.video,
+            format = Format(),
+            container = "",
+            downloadSections = "",
+            allFormats = mutableListOf(),
+            downloadPath = "",
+            website = "",
+            downloadSize = "",
+            playlistTitle = "",
+            audioPreferences = AudioPreferences(),
+            videoPreferences = VideoPreferences(),
+            extraCommands = "",
+            customFileNameTemplate = "",
+            SaveThumb = false,
+            status = "Queued",
+            downloadStartTime = 0L,
+            logID = null,
+        ),
+        everyNr = 1,
+        everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+        everyTime = System.currentTimeMillis(),
+        weeklyConfig = null,
+        monthlyConfig = null,
+        status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+        startsTime = System.currentTimeMillis(),
+        endsDate = 0L,
+        endsAfterCount = 0,
+        runCount = 3,
+        getOnlyNewUploads = false,
+        retryMissingDownloads = false,
+        ignoredLinks = mutableListOf(),
+        alreadyProcessedLinks = mutableListOf(),
+        syncWithSource = false,
     )
 }

@@ -154,9 +154,15 @@ class ObserveSourcePostInsertClaimProductionWiringTest {
     )
 
     private suspend fun runWorker(sourceId: Long): WorkInfo {
+        val generation = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId)).configurationGeneration
         val request = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
             .addTag("observe-post-insert-claim-test")
-            .setInputData(Data.Builder().putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId).build())
+            .setInputData(
+                Data.Builder()
+                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
+                    .putLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, generation)
+                    .build(),
+            )
             .build()
         workManager.enqueue(request)
         val info = withTimeout(30_000L) {

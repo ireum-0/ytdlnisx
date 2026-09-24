@@ -515,6 +515,20 @@ object Migrations {
                 "CREATE INDEX IF NOT EXISTS `index_download_primary_success_authorities_historyId` " +
                     "ON `download_primary_success_authorities` (`historyId`)"
             )
+        },
+        Migration(62, 63) { database ->
+            database.execSQL(
+                "ALTER TABLE sources ADD COLUMN configurationGeneration INTEGER NOT NULL DEFAULT 1"
+            )
+            database.execSQL(
+                "ALTER TABLE work_manager_handoff_carriers " +
+                    "ADD COLUMN sourceConfigurationGeneration INTEGER NOT NULL DEFAULT 0"
+            )
+            database.execSQL(
+                "UPDATE work_manager_handoff_carriers " +
+                    "SET sourceConfigurationGeneration=1 " +
+                    "WHERE kind='OBSERVE_RETRY_DOWNLOAD' AND sourceId IN (SELECT id FROM sources)"
+            )
         }
     )
 

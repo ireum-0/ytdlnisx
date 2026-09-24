@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -20,14 +21,19 @@ import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.ResultItem
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.LinkUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.SourceSnapshot
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -59,6 +65,7 @@ class ObserveSourceWorkerProductionWiringTest {
     private var previousSchedulerMode = false
     private var hadSchedulerMode = false
     private val queuedItems = mutableListOf<DownloadItem>()
+    private val cancelledMembershipNotifications = mutableListOf<Long>()
 
     @Before
     fun setUp() {
@@ -82,12 +89,19 @@ class ObserveSourceWorkerProductionWiringTest {
                 .commit()
 
             queuedItems.clear()
+            cancelledMembershipNotifications.clear()
             ObserveSourceWorkerEffectTestHooks.dbManagerForTesting = database
             ObserveSourceWorkerEffectTestHooks.startDownloadWorkerForTesting = { items, _ ->
                 queuedItems += items.map { it.copy() }
                 Result.success("captured")
             }
             ObserveSourceWorkerEffectTestHooks.retryConfirmationAvailableForTesting = false
+            ObserveSourceWorkerEffectTestHooks.membershipWaitingNotificationCancelledForTesting = {
+                cancelledMembershipNotifications += it
+            }
+            ObserveSourcesRepository.beforeFinalEffectForTesting = null
+            ObserveSourcesRepository.afterDurableStopBeforeCancellationForTesting = null
+            ObserveSourcesRepository.observeRequestCreatedForTesting = null
         }
     }
 
@@ -95,7 +109,10 @@ class ObserveSourceWorkerProductionWiringTest {
     fun tearDown() {
         runBlocking {
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
-            ObserveSourceWorkerEffectTestHooks.clearForTesting()
+        ObserveSourceWorkerEffectTestHooks.clearForTesting()
+        ObserveSourcesRepository.beforeFinalEffectForTesting = null
+        ObserveSourcesRepository.afterDurableStopBeforeCancellationForTesting = null
+        ObserveSourcesRepository.observeRequestCreatedForTesting = null
             if (::database.isInitialized) database.close()
             val editor = preferences.edit()
             if (hadDuplicateMode) editor.putString("prevent_duplicate_downloads", previousDuplicateMode)
@@ -154,6 +171,14 @@ class ObserveSourceWorkerProductionWiringTest {
             runCount = 0,
             endsAfterCount = 1,
         )
+        val waitingDownloadId = database.downloadDao.insertRaw(
+            downloadTemplate().copy(
+                status = DownloadRepository.Status.WaitingForMembership.name,
+                observeSourceId = sourceId,
+                lastIssueCode = "MEMBERSHIP_REQUIRED",
+                lastIssueStage = "DOWNLOAD",
+            ),
+        )
 
         runWorker(sourceId, SourceSnapshot.partial(listOf(result("https://youtu.be/threshold"))))
 
@@ -161,6 +186,54 @@ class ObserveSourceWorkerProductionWiringTest {
         assertEquals(1, persisted.runCount)
         assertEquals(ObserveSourcesRepository.SourceStatus.STOPPED, persisted.status)
         assertEquals(1, queuedItems.size)
+        assertEquals(listOf(waitingDownloadId), cancelledMembershipNotifications)
+    }
+
+    @Test
+    fun legacyUnversionedRequestOnlySchedulesCurrentDurableGeneration() = runBlocking {
+        val sourceId = insertSource()
+        val current = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val scheduledInput = CompletableDeferred<Data>()
+        ObserveSourcesRepository.observeRequestCreatedForTesting = { id, data ->
+            assertEquals(sourceId, id)
+            scheduledInput.complete(data)
+        }
+
+        val legacyRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
+            .setInputData(Data.Builder().putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId).build())
+            .build()
+        workManager.enqueueUniqueWork(
+            "OBSERVE$sourceId",
+            ExistingWorkPolicy.REPLACE,
+            legacyRequest,
+        ).result.get(10, TimeUnit.SECONDS)
+
+        val migratedInput = withTimeout(15_000L) { scheduledInput.await() }
+        assertEquals(
+            current.configurationGeneration,
+            migratedInput.getLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, -1L),
+        )
+        val currentWork = withTimeout(15_000L) {
+            while (true) {
+                val matching = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfosForUniqueWork("OBSERVE$sourceId")
+                        .get(5, TimeUnit.SECONDS)
+                        .firstOrNull { info ->
+                            !info.state.isFinished &&
+                                info.inputData.getLong(
+                                    ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+                                    -1L,
+                                ) == current.configurationGeneration
+                        }
+                }
+                if (matching != null) return@withTimeout matching
+                delay(25L)
+            }
+            error("unreachable")
+        }
+        assertEquals(WorkInfo.State.ENQUEUED, currentWork.state)
+        assertTrue(queuedItems.isEmpty())
+        assertEquals(current.runCount, database.observeSourcesDao.getByIDOrNull(sourceId)?.runCount)
     }
 
     @Test
@@ -207,6 +280,212 @@ class ObserveSourceWorkerProductionWiringTest {
 
         assertEquals(null, database.historyDao.getNullableItem(historyId))
         assertTrue(queuedItems.isEmpty())
+    }
+
+    @Test
+    fun staleGenerationHeldBeforeDownloadAdmissionCannotInsertAfterEditWins() = runBlocking {
+        val sourceId = insertSource()
+        val old = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val url = "https://youtu.be/stale-download-admission"
+        ObserveSourcesRepository.beforeFinalEffectForTesting = { effect, id, generation ->
+            if (effect == ObserveSourcesRepository.FinalEffect.DOWNLOAD_ADMISSION &&
+                id == sourceId && generation == old.configurationGeneration
+            ) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+        val execution = async(Dispatchers.IO) {
+            runWorker(
+                sourceId,
+                SourceSnapshot.partial(listOf(result(url)), "generation race"),
+                cancelObservationWork = false,
+            )
+        }
+        try {
+            withTimeout(30_000L) { entered.await() }
+            assertTrue(ObserveSourcesRepository(
+                database.observeSourcesDao,
+                workManager,
+                preferences,
+                context,
+            ).reconfigure(old.copy(name = "edit wins before admission"), resetProcessedLinks = false))
+        } finally {
+            release.complete(Unit)
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, execution.await().state)
+        assertTrue(database.downloadDao.getAllDownloadsList().none { it.url == url })
+        assertTrue(queuedItems.isEmpty())
+        assertEquals(2L, database.observeSourcesDao.getByIDOrNull(sourceId)?.configurationGeneration)
+    }
+
+    @Test
+    fun staleGenerationHeldBeforeDestructiveSyncCannotDeleteHistoryAfterStopWins() = runBlocking {
+        val oldUrl = "https://youtu.be/stale-destructive-sync"
+        val historyId = database.historyDao.insertAndGetIdRaw(history(oldUrl))
+        val sourceId = insertSource(syncWithSource = true, alreadyProcessedLinks = mutableListOf(oldUrl))
+        val old = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = { SourceSnapshot.authoritative(emptyList()) }
+        ObserveSourcesRepository.beforeFinalEffectForTesting = { effect, id, generation ->
+            if (effect == ObserveSourcesRepository.FinalEffect.DESTRUCTIVE_SYNC &&
+                id == sourceId && generation == old.configurationGeneration
+            ) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+
+        val execution = async(Dispatchers.IO) {
+            runWorker(sourceId, SourceSnapshot.authoritative(emptyList()), cancelObservationWork = false)
+        }
+        try {
+            withTimeout(30_000L) { entered.await() }
+            assertNotNull(ObserveSourcesRepository(
+                database.observeSourcesDao,
+                workManager,
+                preferences,
+                context,
+            ).stop(old))
+        } finally {
+            release.complete(Unit)
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, execution.await().state)
+        assertNotNull(database.historyDao.getNullableItem(historyId))
+        assertEquals(ObserveSourcesRepository.SourceStatus.STOPPED,
+            database.observeSourcesDao.getByIDOrNull(sourceId)?.status)
+    }
+
+    @Test
+    fun staleGenerationHeldBeforeSuccessorCannotPublishAfterEditWins() = runBlocking {
+        val sourceId = insertSource(runCount = 4)
+        val old = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var replacementInput: Data? = null
+        ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = { SourceSnapshot.partial(emptyList()) }
+        ObserveSourcesRepository.beforeFinalEffectForTesting = { effect, id, generation ->
+            if (effect == ObserveSourcesRepository.FinalEffect.SUCCESSOR_PUBLICATION &&
+                id == sourceId && generation == old.configurationGeneration
+            ) {
+                entered.complete(Unit)
+                release.await()
+            }
+        }
+        ObserveSourcesRepository.observeRequestCreatedForTesting = { id, data ->
+            if (id == sourceId) replacementInput = data
+        }
+
+        val execution = async(Dispatchers.IO) {
+            runWorker(sourceId, SourceSnapshot.partial(emptyList()), cancelObservationWork = false)
+        }
+        try {
+            withTimeout(30_000L) { entered.await() }
+            assertTrue(ObserveSourcesRepository(
+                database.observeSourcesDao,
+                workManager,
+                preferences,
+                context,
+            ).reconfigure(old.copy(name = "new generation owns recurrence"), resetProcessedLinks = false))
+        } finally {
+            release.complete(Unit)
+        }
+        assertEquals(WorkInfo.State.SUCCEEDED, execution.await().state)
+        val persisted = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        assertEquals(2L, persisted.configurationGeneration)
+        assertEquals(4, persisted.runCount)
+        val successor = workManager.getWorkInfosForUniqueWork("OBSERVE$sourceId")
+            .get(10, TimeUnit.SECONDS).single()
+        assertEquals(WorkInfo.State.ENQUEUED, successor.state)
+        assertEquals(
+            2L,
+            requireNotNull(replacementInput).getLong(
+                ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+                -1L,
+            ),
+        )
+    }
+
+    @Test
+    fun persistedOldRequestSelfRefusesAfterNewRepositoryObservesNewGeneration() = runBlocking {
+        val sourceId = insertSource(runCount = 6)
+        val old = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val reconstructedRepository = ObserveSourcesRepository(
+            database.observeSourcesDao,
+            workManager,
+            preferences,
+            context,
+        )
+        assertTrue(reconstructedRepository.reconfigure(old.copy(name = "after restart"), false))
+        var extractionCount = 0
+        ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = {
+            extractionCount++
+            SourceSnapshot.authoritative(emptyList())
+        }
+
+        val info = runWorker(
+            sourceId,
+            SourceSnapshot.authoritative(emptyList()),
+            expectedGeneration = old.configurationGeneration,
+            cancelObservationWork = false,
+            installSnapshotHook = false,
+        )
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(0, extractionCount)
+        val current = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        assertEquals(2L, current.configurationGeneration)
+        assertEquals(6, current.runCount)
+    }
+
+    @Test
+    fun confirmedRetryFingerprintStillRevokesChangedConfiguration() = runBlocking {
+        val sourceId = insertSource(retryMissingDownloads = true)
+        val source = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val confirmedUrl = "https://youtu.be/confirmed-retry-fingerprint"
+        val originalFingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(source)
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        try {
+            val handoffId = WorkManagerHandoffRecovery.prepareObserveRetryDownload(
+                context = context,
+                sourceId = sourceId,
+                sourceConfigurationGeneration = source.configurationGeneration,
+                confirmedUrl = confirmedUrl,
+                configFingerprint = originalFingerprint,
+            )
+            val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+
+            // Isolate the specialized fingerprint fence from the ordinary
+            // generation fence: this simulates a legacy/config payload change
+            // whose generation is unchanged, which must still refuse the retry.
+            database.openHelper.writableDatabase.execSQL(
+                "UPDATE sources SET name = ? WHERE id = ?",
+                arrayOf<Any>("changed without generation", sourceId),
+            )
+            assertEquals(
+                source.configurationGeneration,
+                database.observeSourcesDao.getByIDOrNull(sourceId)?.configurationGeneration,
+            )
+            ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = {
+                error("stale confirmed retry must be refused before source extraction")
+            }
+
+            val info = runWorker(
+                sourceId = sourceId,
+                snapshot = SourceSnapshot.failed(IllegalStateException("must not extract")),
+                expectedGeneration = source.configurationGeneration,
+                confirmedRetryCarrier = carrier,
+            )
+
+            assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+            assertTrue(queuedItems.isEmpty())
+            assertNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        } finally {
+            WorkManagerHandoffRecovery.databaseForTesting = null
+        }
     }
 
     @Test
@@ -305,11 +584,37 @@ class ObserveSourceWorkerProductionWiringTest {
         )
     }
 
-    private suspend fun runWorker(sourceId: Long, snapshot: SourceSnapshot): WorkInfo {
-        ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = { snapshot }
+    private suspend fun runWorker(
+        sourceId: Long,
+        snapshot: SourceSnapshot,
+        expectedGeneration: Long? = null,
+        cancelObservationWork: Boolean = true,
+        installSnapshotHook: Boolean = true,
+        confirmedRetryCarrier: WorkManagerHandoffCarrier? = null,
+    ): WorkInfo {
+        if (installSnapshotHook) ObserveSourceWorkerEffectTestHooks.sourceSnapshotForTesting = { snapshot }
+        val generation = expectedGeneration
+            ?: requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId)).configurationGeneration
         val request = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
             .addTag("observe-source-production-test")
-            .setInputData(Data.Builder().putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId).build())
+            .setInputData(
+                Data.Builder()
+                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
+                    .putLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, generation)
+                    .apply {
+                        confirmedRetryCarrier?.let { carrier ->
+                            putString(ObserveSourceWorker.INPUT_CONFIRMED_URL, carrier.confirmedUrl)
+                            putString(
+                                ObserveSourceWorker.INPUT_CONFIRMATION_DECISION,
+                                ObserveRetryDecisionReceiver.ACTION_DOWNLOAD,
+                            )
+                            putString(ObserveSourceWorker.INPUT_HANDOFF_ID, carrier.handoffId)
+                            putString(ObserveSourceWorker.INPUT_HANDOFF_REQUEST_ID, carrier.requestId)
+                            putString(ObserveSourceWorker.INPUT_CONFIG_FINGERPRINT, carrier.configFingerprint)
+                        }
+                    }
+                    .build(),
+            )
             .build()
         workManager.enqueue(request)
         val info: WorkInfo = withTimeout(30_000L) {
@@ -322,7 +627,9 @@ class ObserveSourceWorkerProductionWiringTest {
             }
             error("unreachable")
         }
-        workManager.cancelUniqueWork("OBSERVE$sourceId").result.get(10, TimeUnit.SECONDS)
+        if (cancelObservationWork) {
+            workManager.cancelUniqueWork("OBSERVE$sourceId").result.get(10, TimeUnit.SECONDS)
+        }
         return info
     }
 

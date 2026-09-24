@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.BackupRestoreParser
 import com.ireum.ytdl.database.Converters
@@ -15,7 +17,18 @@ import com.ireum.ytdl.database.models.RestorePlan
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.RestoreAppDataItem
+import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.database.models.Format
+import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
+import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
+import androidx.preference.PreferenceManager
+import androidx.work.Data
+import androidx.work.WorkInfo
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +38,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -81,12 +95,17 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
 
     @Test
     fun observeRetryOrdinaryCarrierMutationCompletesBeforeRestorePublication(): Unit = runBlocking {
+        insertObserveSource(701L)
+        val fingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(
+            requireNotNull(database.observeSourcesDao.getByIDOrNull(701L)),
+        )
         ordinaryWriterWins {
             WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                 context,
                 sourceId = 701L,
+                sourceConfigurationGeneration = 1L,
                 confirmedUrl = "https://example.com/f11-observe-retry",
-                configFingerprint = "f11-fingerprint",
+                configFingerprint = fingerprint,
             )
         }
     }
@@ -109,14 +128,104 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
 
     @Test
     fun observeRetryResetWinsBeforeOrdinaryCarrierMutation(): Unit = runBlocking {
+        insertObserveSource(702L)
+        val fingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(
+            requireNotNull(database.observeSourcesDao.getByIDOrNull(702L)),
+        )
         resetWins {
             WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                 context,
                 sourceId = 702L,
+                sourceConfigurationGeneration = 1L,
                 confirmedUrl = "https://example.com/f11-observe-retry-reset-wins",
-                configFingerprint = "f11-reset-fingerprint",
+                configFingerprint = fingerprint,
             )
         }
+    }
+
+    @Test
+    fun startupRecoveryRetiresStaleObserveRetryWithoutReplacingNewGenerationWork(): Unit = runBlocking {
+        val sourceId = 703L
+        insertObserveSource(
+            sourceId,
+            everyTime = System.currentTimeMillis() + TimeUnit.DAYS.toMillis(5),
+        )
+        val oldSource = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        val oldFingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(oldSource)
+        val handoffId = WorkManagerHandoffRecovery.prepareObserveRetryDownload(
+            context,
+            sourceId = sourceId,
+            sourceConfigurationGeneration = oldSource.configurationGeneration,
+            confirmedUrl = "https://example.com/f11-stale-observe-retry",
+            configFingerprint = oldFingerprint,
+        )
+        val staleCarrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val staleRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
+            .setId(java.util.UUID.fromString(staleCarrier.requestId))
+            .setInitialDelay(1, java.util.concurrent.TimeUnit.DAYS)
+            .setInputData(
+                Data.Builder()
+                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
+                    .putLong(
+                        ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+                        oldSource.configurationGeneration,
+                    )
+                    .build(),
+            )
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork("OBSERVE$sourceId", ExistingWorkPolicy.REPLACE, staleRequest)
+            .result.get(20, TimeUnit.SECONDS)
+
+        val repository = ObserveSourcesRepository(
+            database.observeSourcesDao,
+            WorkManager.getInstance(context),
+            PreferenceManager.getDefaultSharedPreferences(context),
+            context,
+        )
+        assertTrue(repository.reconfigure(oldSource.copy(name = "generation 2"), resetProcessedLinks = false))
+        val currentSource = requireNotNull(database.observeSourcesDao.getByIDOrNull(sourceId))
+        assertEquals(oldSource.configurationGeneration + 1L, currentSource.configurationGeneration)
+        val currentRequest = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
+            .setInitialDelay(1, java.util.concurrent.TimeUnit.DAYS)
+            .setInputData(
+                Data.Builder()
+                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
+                    .putLong(
+                        ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+                        currentSource.configurationGeneration,
+                    )
+                    .build(),
+            )
+            .build()
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork("OBSERVE$sourceId", ExistingWorkPolicy.REPLACE, currentRequest)
+            .result.get(20, TimeUnit.SECONDS)
+        val beforeRecovery = requireNotNull(
+            WorkManager.getInstance(context).getWorkInfoById(currentRequest.id).get(20, TimeUnit.SECONDS),
+        )
+        assertEquals(WorkInfo.State.ENQUEUED, beforeRecovery.state)
+        assertEquals(currentSource.configurationGeneration, beforeRecovery.inputData.getLong(
+            ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION,
+            0L,
+        ))
+
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        assertNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val afterRecovery = requireNotNull(
+            WorkManager.getInstance(context).getWorkInfoById(currentRequest.id).get(20, TimeUnit.SECONDS),
+        )
+        assertEquals(WorkInfo.State.ENQUEUED, afterRecovery.state)
+        assertEquals(beforeRecovery.id, afterRecovery.id)
+        assertEquals(
+            WorkInfo.State.CANCELLED,
+            requireNotNull(
+                WorkManager.getInstance(context)
+                    .getWorkInfoById(java.util.UUID.fromString(staleCarrier.requestId))
+                    .get(20, TimeUnit.SECONDS),
+            ).state,
+        )
     }
 
     private suspend fun ordinaryWriterWins(create: () -> String) {
@@ -201,6 +310,59 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
             ),
         ),
     )
+
+    private suspend fun insertObserveSource(
+        id: Long,
+        everyTime: Long = System.currentTimeMillis(),
+    ) {
+        database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = id,
+                name = "handoff source $id",
+                url = "https://example.com/handoff-source-$id",
+                downloadItemTemplate = DownloadItem(
+                    id = 0L,
+                    url = "https://example.com/handoff-source-$id",
+                    title = "",
+                    author = "",
+                    thumb = "",
+                    duration = "",
+                    type = DownloadType.video,
+                    format = Format(),
+                    container = "",
+                    downloadSections = "",
+                    allFormats = mutableListOf(),
+                    downloadPath = "",
+                    website = "",
+                    downloadSize = "",
+                    playlistTitle = "",
+                    audioPreferences = AudioPreferences(),
+                    videoPreferences = VideoPreferences(),
+                    extraCommands = "",
+                    customFileNameTemplate = "",
+                    SaveThumb = false,
+                    status = "Queued",
+                    downloadStartTime = 0L,
+                    logID = null,
+                ),
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+                everyTime = everyTime,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = System.currentTimeMillis(),
+                endsDate = 0L,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = true,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            ),
+        )
+    }
 
     private fun clearHooks() {
         RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = null

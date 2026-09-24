@@ -1016,6 +1016,7 @@ object RestoreTransactionCoordinator {
                     data.observeSources.forEach { source ->
                         val destination = source.copy(
                             id = 0L,
+                            configurationGeneration = 1L,
                             observationPurpose = ObservationPurposes.USER,
                             managedConditionKey = "",
                             downloadItemTemplate = source.downloadItemTemplate.copy(
@@ -1027,13 +1028,9 @@ object RestoreTransactionCoordinator {
                         val newId = db.observeSourcesDao.insert(destination)
                         check(newId > 0L) { "ObserveSource restore did not allocate an identity" }
                         sourceMap[source.id] = newId
-                        db.observeSourcesDao.update(
-                            destination.copy(
-                                id = newId,
-                                downloadItemTemplate = destination.downloadItemTemplate.copy(
-                                    observeSourceId = newId,
-                                ),
-                            ),
+                        db.observeSourcesDao.updateTemplateForRestore(
+                            newId,
+                            destination.downloadItemTemplate.copy(observeSourceId = newId),
                         )
                     }
                 }

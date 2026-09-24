@@ -896,6 +896,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         val oldSourceId = source.id
                         val restoredUserSource = source.copy(
                             id = 0L,
+                            configurationGeneration = 1L,
                             observationPurpose = ObservationPurposes.USER,
                             managedConditionKey = "",
                             // The embedded template can carry the source's
@@ -919,7 +920,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                                     observeSourceId = restoredId,
                                 ),
                             )
-                            observeSourcesRepository.update(restoredSource)
+                            observeSourcesRepository.updateRestoredTemplate(restoredSource)
                         }
                         if (oldSourceId > 0L && restoredId > 0L) {
                             restoredObserveSourceIdMap[oldSourceId] = restoredId
@@ -1435,4 +1436,3 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
     }
 
 }
-

@@ -994,6 +994,78 @@ class MigrationSmokeTest {
         }
     }
 
+    @Test
+    fun migrateFromVersion62To63PreservesObserveStateAndInitializesLocalGeneration() {
+        helper.createDatabase(TEST_DB, 62).apply {
+            execSQL(
+                """
+                INSERT INTO sources (
+                    id, name, url, downloadItemTemplate, everyNr, everyCategory, everyTime,
+                    status, startsTime, retryMissingDownloads, alreadyProcessedLinks,
+                    ignoredLinks, runCount, runHistory, runInProgress, currentRunStatus,
+                    retryPromptedLinks, observedLinks
+                ) VALUES (
+                    7, 'kept source', 'https://example.com/source', '{}', 2, 'DAY', 1000,
+                    'ACTIVE', 900, 1, '["processed"]', '["ignored"]', 9,
+                    '["history"]', 1, 'fetching', '["retry"]', '["observed"]'
+                )
+                """.trimIndent(),
+            )
+            execSQL(
+                """
+                INSERT INTO work_manager_handoff_carriers (
+                    handoffId, kind, generationId, requestId, uniqueWorkName, state,
+                    sourceId, confirmedUrl, decision, configFingerprint, boundary,
+                    notBeforeAt, attempt, createdAt, updatedAt
+                ) VALUES (
+                    'observe-retry', 'OBSERVE_RETRY_DOWNLOAD', 'g', 'r', 'OBSERVE7',
+                    'ACCEPTED', 7, 'https://example.com/video',
+                    'com.ireum.ytdl.action.OBSERVE_RETRY_DOWNLOAD', 'fingerprint', '',
+                    0, 0, 1, 1
+                )
+                """.trimIndent(),
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(
+            TEST_DB,
+            63,
+            true,
+            *Migrations.migrationList,
+        )
+        db.use {
+            it.query(
+                """
+                SELECT configurationGeneration, name, runCount, alreadyProcessedLinks,
+                       ignoredLinks, runHistory, runInProgress, currentRunStatus,
+                       retryPromptedLinks, observedLinks
+                FROM sources WHERE id=7
+                """.trimIndent(),
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(1L, cursor.getLong(0))
+                assertEquals("kept source", cursor.getString(1))
+                assertEquals(9, cursor.getInt(2))
+                assertEquals("[\"processed\"]", cursor.getString(3))
+                assertEquals("[\"ignored\"]", cursor.getString(4))
+                assertEquals("[\"history\"]", cursor.getString(5))
+                assertEquals(1, cursor.getInt(6))
+                assertEquals("fetching", cursor.getString(7))
+                assertEquals("[\"retry\"]", cursor.getString(8))
+                assertEquals("[\"observed\"]", cursor.getString(9))
+            }
+            it.query(
+                "SELECT sourceConfigurationGeneration FROM work_manager_handoff_carriers WHERE handoffId='observe-retry'",
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(1L, cursor.getLong(0))
+            }
+            assertEquals("1", tableColumnDefaults(it, "sources")["configurationGeneration"])
+            assertEquals("0", tableColumnDefaults(it, "work_manager_handoff_carriers")["sourceConfigurationGeneration"])
+        }
+    }
+
     private fun tableColumnDefaults(
         db: SupportSQLiteDatabase,
         tableName: String

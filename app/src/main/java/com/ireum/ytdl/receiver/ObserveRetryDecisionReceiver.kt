@@ -14,6 +14,7 @@ import androidx.work.Operation
 import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.ObserveSourceWorker
@@ -31,8 +32,9 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
         val decision = intent.action.orEmpty()
         val notificationId = intent.getIntExtra(EXTRA_NOTIFICATION_ID, 0)
         val notificationFingerprint = intent.getStringExtra(EXTRA_CONFIG_FINGERPRINT).orEmpty()
+        val notificationGeneration = intent.getLongExtra(EXTRA_CONFIGURATION_GENERATION, 0L)
 
-        if (sourceId <= 0L || url.isBlank() || decision !in VALID_ACTIONS) return
+        if (sourceId <= 0L || url.isBlank() || decision !in VALID_ACTIONS || notificationGeneration <= 0L) return
 
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
@@ -44,7 +46,8 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
 
                 if (
                     !source.retryMissingDownloads ||
-                    source.status == ObserveSourcesRepository.SourceStatus.STOPPED
+                    source.status != ObserveSourcesRepository.SourceStatus.ACTIVE ||
+                    source.configurationGeneration != notificationGeneration
                 ) {
                     return@launch
                 }
@@ -71,6 +74,7 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
                     val handoffId = WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                         context = appContext,
                         sourceId = sourceId,
+                        sourceConfigurationGeneration = notificationGeneration,
                         confirmedUrl = canonicalUrl,
                         configFingerprint = currentFingerprint,
                     )
@@ -86,61 +90,71 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
                     return@launch
                 }
 
-                if (notificationId != 0) {
-                    NotificationUtil(appContext).cancelDownloadNotification(notificationId)
-                }
-
-                // Ignore is final immediately. Download is recorded by the worker only
-                // after the target has actually been inserted into the download queue.
                 if (decision == ACTION_IGNORE) {
-                    check(!RestoreGate.isRestoreInProgress(appContext)) {
-                        "Restore transaction is active"
-                    }
-                    if (!source.retryPromptedLinks.contains(canonicalUrl)) {
-                        source.retryPromptedLinks.add(canonicalUrl)
-                    }
-                    if (!source.ignoredLinks.contains(canonicalUrl)) {
-                        source.ignoredLinks.add(canonicalUrl)
-                    }
-                    dbManager.observeSourcesDao.update(source)
-                }
-
-                if (RestoreGate.isRestoreInProgress(appContext)) return@launch
-
-                // The Ignore decision is already durable above; the existing
-                // observation enqueue remains independent of the Download
-                // command carrier.
-                val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
-                val networkType = if (preferences.getBoolean("metered_networks", true)) {
-                    NetworkType.CONNECTED
-                } else {
-                    NetworkType.UNMETERED
-                }
-                val request = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
-                    .addTag("observeSources")
-                    .addTag("observation_$sourceId")
-                    .addTag(sourceId.toString())
-                    .setConstraints(
-                        Constraints.Builder().setRequiredNetworkType(networkType).build()
-                    )
-                    .setInputData(
-                        Data.Builder()
-                            .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
-                            .putString(ObserveSourceWorker.INPUT_CONFIRMED_URL, canonicalUrl)
-                            .putString(ObserveSourceWorker.INPUT_CONFIRMATION_DECISION, decision)
+                    val failure = RestoreMutationAdmission.withOrdinaryMutation(appContext) {
+                        val current = dbManager.observeSourcesDao.getByIDOrNull(sourceId)
+                            ?.takeIf {
+                                it.status == ObserveSourcesRepository.SourceStatus.ACTIVE &&
+                                    it.configurationGeneration == notificationGeneration &&
+                                    it.retryMissingDownloads &&
+                                    WorkManagerHandoffRecovery.observeConfigFingerprint(it) == currentFingerprint
+                            } ?: return@withOrdinaryMutation null
+                        val canonicalProcessed = current.retryPromptedLinks.toMutableList()
+                        if (canonicalProcessed.none {
+                                com.ireum.ytdl.util.LinkUtil.canonicalYoutubeVideoUrlOrSelf(it) == canonicalUrl
+                            }
+                        ) canonicalProcessed.add(canonicalUrl)
+                        val ignored = current.ignoredLinks.toMutableList()
+                        if (ignored.none {
+                                com.ireum.ytdl.util.LinkUtil.canonicalYoutubeVideoUrlOrSelf(it) == canonicalUrl
+                            }
+                        ) ignored.add(canonicalUrl)
+                        current.retryPromptedLinks = canonicalProcessed
+                        current.ignoredLinks = ignored
+                        check(dbManager.observeSourcesDao.updateRuntimeIfGeneration(
+                            id = sourceId,
+                            expectedGeneration = notificationGeneration,
+                            runCount = current.runCount,
+                            ignoredLinks = current.ignoredLinks,
+                            alreadyProcessedLinks = current.alreadyProcessedLinks,
+                            runHistory = current.runHistory,
+                            runInProgress = current.runInProgress,
+                            currentRunStatus = current.currentRunStatus,
+                            retryPromptedLinks = current.retryPromptedLinks,
+                            observedLinks = current.observedLinks,
+                        ) == 1) { "Observe Retry Ignore lost source-generation authority" }
+                        if (notificationId != 0) {
+                            NotificationUtil(appContext).cancelDownloadNotification(notificationId)
+                        }
+                        val preferences = PreferenceManager.getDefaultSharedPreferences(appContext)
+                        val networkType = if (preferences.getBoolean("metered_networks", true)) {
+                            NetworkType.CONNECTED
+                        } else {
+                            NetworkType.UNMETERED
+                        }
+                        val request = OneTimeWorkRequestBuilder<ObserveSourceWorker>()
+                            .addTag("observeSources")
+                            .addTag("observation_$sourceId")
+                            .addTag(sourceId.toString())
+                            .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType).build())
+                            .setInputData(
+                                Data.Builder()
+                                    .putLong(ObserveSourceWorker.INPUT_SOURCE_ID, sourceId)
+                                    .putLong(ObserveSourceWorker.INPUT_CONFIGURATION_GENERATION, notificationGeneration)
+                                    .putString(ObserveSourceWorker.INPUT_CONFIRMED_URL, canonicalUrl)
+                                    .putString(ObserveSourceWorker.INPUT_CONFIRMATION_DECISION, decision)
+                                    .build(),
+                            )
                             .build()
-                    )
-                    .build()
-                val operation = WorkManager.getInstance(appContext).enqueueUniqueWork(
-                    "OBSERVE$sourceId",
-                    ExistingWorkPolicy.REPLACE,
-                    request,
-                )
-                awaitOperation(operation)?.let { failure ->
-                    // Ignore was already durably recorded.  Keep this receiver
-                    // alive through the exact scheduler handoff and report the
-                    // failure instead of silently discarding Operation.result.
-                    Log.w(TAG, "Observe Retry Ignore follow-up remains recoverable", failure)
+                        awaitOperation(
+                            WorkManager.getInstance(appContext).enqueueUniqueWork(
+                                "OBSERVE$sourceId",
+                                ExistingWorkPolicy.REPLACE,
+                                request,
+                            ),
+                        )
+                    }
+                    if (failure != null) Log.w(TAG, "Observe Retry Ignore follow-up remains recoverable", failure)
                 }
             } catch (error: Exception) {
                 Log.e("ObserveRetryDecision", "Failed to apply retry decision", error)
@@ -157,6 +171,7 @@ class ObserveRetryDecisionReceiver : BroadcastReceiver() {
         const val EXTRA_URL = "url"
         const val EXTRA_NOTIFICATION_ID = "notificationId"
         const val EXTRA_CONFIG_FINGERPRINT = "configFingerprint"
+        const val EXTRA_CONFIGURATION_GENERATION = "configurationGeneration"
 
         private const val TAG = "ObserveRetryDecision"
 

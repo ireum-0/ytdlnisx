@@ -322,6 +322,7 @@ internal object BackupRestoreParser {
                 // Retain the backup-local identity in the immutable plan;
                 // the Reset apply allocates and owns the destination id map.
                 id = source.id,
+                configurationGeneration = 1L,
                 observationPurpose = ObservationPurposes.USER,
                 managedConditionKey = "",
                 downloadItemTemplate = source.downloadItemTemplate.copy(
@@ -655,6 +656,7 @@ internal object BackupRestoreParser {
                 }
                 sourceJson.addProperty("observationPurpose", ObservationPurposes.USER)
                 sourceJson.addProperty("managedConditionKey", "")
+                sourceJson.addProperty("configurationGeneration", 1L)
                 try {
                     gson.fromJson(sourceJson, ObserveSourcesItem::class.java)
                 } catch (error: JsonParseException) {

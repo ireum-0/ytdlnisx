@@ -307,6 +307,7 @@ class NotificationUtil(var context: Context) {
         sourceName: String,
         videoTitle: String,
         canonicalUrl: String,
+        configurationGeneration: Long,
         configFingerprint: String = "",
     ): Boolean {
         if (!canShowObserveRetryConfirmation()) return false
@@ -320,10 +321,11 @@ class NotificationUtil(var context: Context) {
                 putExtra(ObserveRetryDecisionReceiver.EXTRA_URL, canonicalUrl)
                 putExtra(ObserveRetryDecisionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
                 putExtra(ObserveRetryDecisionReceiver.EXTRA_CONFIG_FINGERPRINT, configFingerprint)
+                putExtra(ObserveRetryDecisionReceiver.EXTRA_CONFIGURATION_GENERATION, configurationGeneration)
             }
             return PendingIntent.getBroadcast(
                 context,
-                ("$sourceId|$canonicalUrl|$action".hashCode() and 0x7fffffff),
+                ("$sourceId|$configurationGeneration|$canonicalUrl|$action".hashCode() and 0x7fffffff),
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
