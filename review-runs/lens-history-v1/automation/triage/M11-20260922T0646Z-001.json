@@ -1,0 +1,211 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M11-20260922T0646Z-001",
+  "stage": "MATERIALIZE_441_490",
+  "logical_rank_range": [
+    441,
+    490
+  ],
+  "data_head": "c9b19eb866281f8362c28dfcad9cd4f66818a858",
+  "complete_state_blob": "b4ea4fcd7c0a1b3c788828435b3dc2d3b7e17360",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "eb6702c44503ec88a34adff7b30b3720068fc1b0",
+    "22a0fbc27d9a89ec1e5c7d4ee77f9706e8e87cdc",
+    "fc1bbc08607dabb8fbe2f79487b187c7c3d39c89",
+    "b56a7ff13f02095727405d5b942b9182b9c1f47b",
+    "087391cf742d63986101610ebe2e59c2c3fcafdc",
+    "ac9455cb7e990a401872a62b7251ab3acf4a507a",
+    "de9d2860b5e7dbf623f9aee7ee9131d9a648d738",
+    "6f74a5e57064fd9a092144b565fe092856b60210",
+    "1bf1e9c525261391bdbccebfc770a9fa4e028ee8",
+    "a20abe5b5257de24bab034f5cce423d244a64a62"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [
+    {
+      "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema-remediation-001.json",
+      "blob_sha": "aa381d5ff692c50bb577bbcf336aaf68ecbec7b6",
+      "kind": "OFFICIAL_LEDGER_SCHEMA_PROJECTION",
+      "status": "PASS"
+    }
+  ],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M11-20260922T0646Z-001-materialization-441-490.json",
+    "blob_sha": "d199db887521bce79857366419388cc735587c64",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        441,
+        445
+      ],
+      "blob_sha": "39549cb8fdcbeee36328d1a9bd6933d20436e120"
+    },
+    {
+      "range": [
+        446,
+        450
+      ],
+      "blob_sha": "1001ea56295a735d461071a012fcbc05839b24c5"
+    },
+    {
+      "range": [
+        451,
+        455
+      ],
+      "blob_sha": "de3cae68472e3874c73287b2f943d728a2cc281a"
+    },
+    {
+      "range": [
+        456,
+        460
+      ],
+      "blob_sha": "d78984119d82cfcb7416ceae529c540ff5ea6a64"
+    },
+    {
+      "range": [
+        461,
+        465
+      ],
+      "blob_sha": "9b8a5869a4264566805e7f487f0814af8655d71b"
+    },
+    {
+      "range": [
+        466,
+        470
+      ],
+      "blob_sha": "f83b826e7b3a18c215b805f49f99bd6362f82eb6"
+    },
+    {
+      "range": [
+        471,
+        475
+      ],
+      "blob_sha": "246813646654597fdb0eca5ed3a79d7e629910d8"
+    },
+    {
+      "range": [
+        476,
+        480
+      ],
+      "blob_sha": "8fbdc3c9aeedef22c940532d2b4eb299ae0da6c9"
+    },
+    {
+      "range": [
+        481,
+        485
+      ],
+      "blob_sha": "850f33e29a23f578138953f5a66b0079ab04e5da"
+    },
+    {
+      "range": [
+        486,
+        490
+      ],
+      "blob_sha": "ac05170ea8a1e28012a8e3703721ff3657161aa0"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "33dea7ed7902633d0413741593b15d76544b6ff6",
+  "materializer_exception_rank_count": 50,
+  "independent_exception_ranks": [
+    441,
+    442,
+    443,
+    444,
+    445,
+    446,
+    447,
+    448,
+    449,
+    450,
+    451,
+    452,
+    453,
+    454,
+    455,
+    456,
+    457,
+    458,
+    459,
+    460,
+    461,
+    462,
+    463,
+    464,
+    465,
+    466,
+    467,
+    468,
+    469,
+    470,
+    471,
+    472,
+    473,
+    474,
+    475,
+    476,
+    477,
+    478,
+    479,
+    480,
+    481,
+    482,
+    483,
+    484,
+    485,
+    486,
+    487,
+    488,
+    489,
+    490
+  ],
+  "independent_exception_rank_count": 50,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "chronology_and_root_boundaries",
+      "rank_range": [
+        441,
+        490
+      ],
+      "requirement": "Preserve each receipt's exact historical status/count/root-boundary decision without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_and_execution_provenance",
+      "rank_range": [
+        441,
+        490
+      ],
+      "requirement": "Preserve NOT_VERIFIED structural/runtime states and keep source semantics, implementation-agent evidence, hosted status evidence, and independent execution distinct."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_441_490": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": true
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
