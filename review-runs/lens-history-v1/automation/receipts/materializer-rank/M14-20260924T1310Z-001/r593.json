@@ -1,0 +1,153 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "rank": 593,
+  "materializer_state_blob": "4c9bf9a7b6955e3a6455e980d25d545af5635b69",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r592.json",
+    "blob_sha": "7aaa4f96590c4a82f5bddc2bdcd210b8a9e4acc6"
+  },
+  "history": {
+    "commit_sha": "720adbce5cc806fd0a51ae49a038b4120b3a9d80",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=593"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T033600Z__09af51d9__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "8d9b7033cc2dcd7d536313e8f324fd7e5a2e1761",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "8d9b7033cc2dcd7d536313e8f324fd7e5a2e1761",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T033600Z__09af51d9__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "8d9b7033cc2dcd7d536313e8f324fd7e5a2e1761",
+    "frozen_blob_sha": "8d9b7033cc2dcd7d536313e8f324fd7e5a2e1761",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "09af51d92209d6735e283622fa7d3680414523bc",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Independent correctness review final checkpoint and body identifies it as the final pre-verdict checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "BUG-SCHEDULE-RECUR-01",
+          "disposition": "new current-SHA root / confirmed OPEN P2"
+        },
+        {
+          "finding_id": "BUG-OBSERVE-HANDOFF-01",
+          "disposition": "new current-SHA root / confirmed OPEN P2"
+        },
+        {
+          "finding_id": "BUG-KEYWORD-HANDOFF-01",
+          "disposition": "new current-SHA root / confirmed OPEN P2"
+        },
+        {
+          "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+          "disposition": "new current-SHA root / confirmed OPEN P2"
+        },
+        {
+          "finding_id": "BUG-HISTORY-DATE-02/F16",
+          "disposition": "NOT_VERIFIED and not counted"
+        }
+      ],
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "final severity inventory P0 2 / P1 3 / P2 20 confirmed OPEN minimum; F16 NOT_VERIFIED and excluded"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-SCHEDULE-RECUR-01",
+      "evidence": "source explicitly lists BUG-SCHEDULE-RECUR-01 among new current-SHA P2 roots"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-OBSERVE-HANDOFF-01",
+      "evidence": "source explicitly lists BUG-OBSERVE-HANDOFF-01 among new current-SHA P2 roots"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-KEYWORD-HANDOFF-01",
+      "evidence": "source explicitly lists BUG-KEYWORD-HANDOFF-01 among new current-SHA P2 roots"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-DOWNLOAD-DELETE-SNAPSHOT-01",
+      "evidence": "source explicitly lists BUG-DOWNLOAD-DELETE-SNAPSHOT-01 among new current-SHA P2 roots"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records final severity inventory P0 2 / P1 3 / P2 20 confirmed OPEN minimum"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "finding_id": "BUG-HISTORY-DATE-02/F16",
+      "evidence": "source explicitly keeps F16 NOT_VERIFIED and excludes it from the count"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
