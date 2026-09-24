@@ -1,17 +1,17 @@
 {
   "schema_version": "lens-history-v1-automation-state-v3",
-  "status": "COMPLETE",
-  "run_id": "M11-20260922T0646Z-001",
-  "started_at": "2026-09-22T06:46:00Z",
-  "stage": "MATERIALIZE_441_490",
+  "status": "ACTIVE",
+  "run_id": "M12-20260924T0353Z-001",
+  "started_at": "2026-09-24T03:53:00Z",
+  "stage": "MATERIALIZE_491_540",
   "logical_rank_range": [
-    441,
-    490
+    491,
+    540
   ],
   "target_batch_size": 50,
   "microsegment_size": 5,
-  "start_head": "0d4eb5008c9f10aba6aca63d5f047bca4fe479bc",
-  "start_progress_blob": "d29b4fe448f615552493452511ed709c159b80b7",
+  "start_head": "72e78eecf0c7b427f92277619216597486ee17bf",
+  "start_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
   "governing_pins": {
     "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
     "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
@@ -21,330 +21,38 @@
     "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
   },
   "previous_certification": {
-    "run_id": "M10-20260921T2258Z-001",
-    "role": "SUPERSEDING_REAUDIT",
-    "path": "review-runs/lens-history-v1/automation/audits/remediation/M10-20260921T2258Z-001-reaudit-001.json",
-    "blob_sha": "d814efc316b69a7ceb093df6df2bb861c8f3e938",
-    "commit_sha": "415aea44d8aa6118f8fadae20d095395770b26b7",
+    "run_id": "M11-20260922T0646Z-001",
+    "role": "AUTHORITATIVE_FINAL_AUDIT",
+    "path": "review-runs/lens-history-v1/automation/audits/M11-20260922T0646Z-001.json",
+    "blob_sha": "1f4b71dbcfa3ec911d4a4685f34e808bac789f6f",
+    "commit_sha": "72e78eecf0c7b427f92277619216597486ee17bf",
     "status": "PASS",
     "unlock_allowed": true
   },
-  "completed_microsegments": [
-    {
-      "range": [
-        441,
-        445
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r441-445.json",
-      "blob_sha": "eb6702c44503ec88a34adff7b30b3720068fc1b0",
-      "corrections": []
-    },
-    {
-      "range": [
-        446,
-        450
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r446-450.json",
-      "blob_sha": "22a0fbc27d9a89ec1e5c7d4ee77f9706e8e87cdc",
-      "corrections": []
-    },
-    {
-      "range": [
-        451,
-        455
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r451-455.json",
-      "blob_sha": "fc1bbc08607dabb8fbe2f79487b187c7c3d39c89",
-      "corrections": []
-    },
-    {
-      "range": [
-        456,
-        460
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r456-460.json",
-      "blob_sha": "b56a7ff13f02095727405d5b942b9182b9c1f47b",
-      "corrections": []
-    },
-    {
-      "range": [
-        461,
-        465
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r461-465.json",
-      "blob_sha": "087391cf742d63986101610ebe2e59c2c3fcafdc",
-      "corrections": []
-    },
-    {
-      "range": [
-        466,
-        470
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r466-470.json",
-      "blob_sha": "ac9455cb7e990a401872a62b7251ab3acf4a507a",
-      "corrections": []
-    },
-    {
-      "range": [
-        471,
-        475
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r471-475.json",
-      "blob_sha": "de9d2860b5e7dbf623f9aee7ee9131d9a648d738",
-      "corrections": []
-    },
-    {
-      "range": [
-        476,
-        480
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r476-480.json",
-      "blob_sha": "6f74a5e57064fd9a092144b565fe092856b60210",
-      "corrections": []
-    },
-    {
-      "range": [
-        481,
-        485
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r481-485.json",
-      "blob_sha": "1bf1e9c525261391bdbccebfc770a9fa4e028ee8",
-      "corrections": []
-    },
-    {
-      "range": [
-        486,
-        490
-      ],
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M11-20260922T0646Z-001/r486-490.json",
-      "blob_sha": "a20abe5b5257de24bab034f5cce423d244a64a62",
-      "corrections": []
-    }
-  ],
+  "completed_microsegments": [],
   "rank_evidence_provenance": {
-    "completed_rank_range": [
-      441,
-      490
-    ],
-    "receipt_count": 50,
-    "last_rank_receipt": {
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M11-20260922T0646Z-001/r490.json",
-      "blob_sha": "45c2ddcb3af294df999a13d9c94c22bdbc5ef599"
-    }
+    "completed_rank_range": null,
+    "receipt_count": 0,
+    "last_rank_receipt": null
   },
   "corrections": [],
-  "materializer_remediations": [
-    {
-      "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema-remediation-001.json",
-      "blob_sha": "aa381d5ff692c50bb577bbcf336aaf68ecbec7b6",
-      "kind": "OFFICIAL_LEDGER_SCHEMA_PROJECTION",
-      "status": "PASS"
-    }
-  ],
+  "materializer_remediations": [],
   "next_rank": 491,
-  "in_progress_exception_ranks": [
-    441,
-    442,
-    443,
-    444,
-    445,
-    446,
-    447,
-    448,
-    449,
-    450,
-    451,
-    452,
-    453,
-    454,
-    455,
-    456,
-    457,
-    458,
-    459,
-    460,
-    461,
-    462,
-    463,
-    464,
-    465,
-    466,
-    467,
-    468,
-    469,
-    470,
-    471,
-    472,
-    473,
-    474,
-    475,
-    476,
-    477,
-    478,
-    479,
-    480,
-    481,
-    482,
-    483,
-    484,
-    485,
-    486,
-    487,
-    488,
-    489,
-    490
-  ],
+  "in_progress_exception_ranks": [],
   "resume_safe": true,
   "materialization_outputs": {
-    "official_inventory_written": true,
-    "official_ledger_written": true,
-    "official_validation_written": true,
-    "progress_counter_changed": true,
-    "batches": [
-      {
-        "range": [
-          441,
-          450
-        ],
-        "inventory": {
-          "path": "review-runs/lens-history-v1/inventory-batches/0048-newest-441-450.jsonl",
-          "blob_sha": "0ce5714482262ac7424d68fac90f32167e5a38af"
-        },
-        "ledger": {
-          "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0048-replacement-001.jsonl",
-          "blob_sha": "9eea7b7c87ff2769b1f3f9663cbea8b5ba3d0de7",
-          "historical_candidate_path": "review-runs/lens-history-v1/ledger-batches/0048-newest-441-450.jsonl",
-          "historical_candidate_blob_sha": "0a9ce1cf4d94e7d57e6a24b8134619e4de81c521"
-        },
-        "validation": {
-          "path": "review-runs/lens-history-v1/validation/ledger-batch-0048.json",
-          "blob_sha": "878714ae7bf5df03d9f111f2072a03e986f6fbaf",
-          "status": "PASS"
-        }
-      },
-      {
-        "range": [
-          451,
-          460
-        ],
-        "inventory": {
-          "path": "review-runs/lens-history-v1/inventory-batches/0049-newest-451-460.jsonl",
-          "blob_sha": "fed94ea619c005e2db276cab0eea1b94f9039cdd"
-        },
-        "ledger": {
-          "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0049-replacement-001.jsonl",
-          "blob_sha": "a4bdd58f7ea1d95da55eddea2080560d93efaf8e",
-          "historical_candidate_path": "review-runs/lens-history-v1/ledger-batches/0049-newest-451-460.jsonl",
-          "historical_candidate_blob_sha": "000dbe884ad92a88f921dea6250570ca4f78d65f"
-        },
-        "validation": {
-          "path": "review-runs/lens-history-v1/validation/ledger-batch-0049.json",
-          "blob_sha": "6460d7ed28abcf7b6269557bd6a29a94ab675086",
-          "status": "PASS"
-        }
-      },
-      {
-        "range": [
-          461,
-          470
-        ],
-        "inventory": {
-          "path": "review-runs/lens-history-v1/inventory-batches/0050-newest-461-470.jsonl",
-          "blob_sha": "fd715b853a12ac6c542403c2b6b0ecba963f9541"
-        },
-        "ledger": {
-          "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0050-replacement-001.jsonl",
-          "blob_sha": "529769d0e725d88b685876ec19ad2708bb98e978",
-          "historical_candidate_path": "review-runs/lens-history-v1/ledger-batches/0050-newest-461-470.jsonl",
-          "historical_candidate_blob_sha": "8b2814bec0b68260de5bc4e18011c7c1f4be830d"
-        },
-        "validation": {
-          "path": "review-runs/lens-history-v1/validation/ledger-batch-0050.json",
-          "blob_sha": "d90ac478f30c52d27536debcce3c54fbb89120a0",
-          "status": "PASS"
-        }
-      },
-      {
-        "range": [
-          471,
-          480
-        ],
-        "inventory": {
-          "path": "review-runs/lens-history-v1/inventory-batches/0051-newest-471-480.jsonl",
-          "blob_sha": "64f3f6ea88a4d72e7546e8f1ecf46107d3c95389"
-        },
-        "ledger": {
-          "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0051-replacement-001.jsonl",
-          "blob_sha": "3a645732cdf8108c8fd941d97342ae244cbb2373",
-          "historical_candidate_path": "review-runs/lens-history-v1/ledger-batches/0051-newest-471-480.jsonl",
-          "historical_candidate_blob_sha": "1583cd18e829ab9c8c27d481e4faa60f5c2adf46"
-        },
-        "validation": {
-          "path": "review-runs/lens-history-v1/validation/ledger-batch-0051.json",
-          "blob_sha": "05b984b8e29e354122d9cfbfbfa537a711f8b577",
-          "status": "PASS"
-        }
-      },
-      {
-        "range": [
-          481,
-          490
-        ],
-        "inventory": {
-          "path": "review-runs/lens-history-v1/inventory-batches/0052-newest-481-490.jsonl",
-          "blob_sha": "1fc021a12cd34fb87fe48c897351042ba033d832"
-        },
-        "ledger": {
-          "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0052-replacement-001.jsonl",
-          "blob_sha": "f44ef439a730da6fbd087a64f90315e95225cd7d",
-          "historical_candidate_path": "review-runs/lens-history-v1/ledger-batches/0052-newest-481-490.jsonl",
-          "historical_candidate_blob_sha": "269142916bb98195aee5aee2b24ba0e3e180b2cb"
-        },
-        "validation": {
-          "path": "review-runs/lens-history-v1/validation/ledger-batch-0052.json",
-          "blob_sha": "6fa9a3ee78780714e13eedbdb21916ed24c4ff37",
-          "status": "PASS"
-        }
-      }
-    ],
-    "progress": {
-      "path": "review-runs/lens-history-v1/materialization-progress.json",
-      "start_blob_sha": "d29b4fe448f615552493452511ed709c159b80b7",
-      "completed_blob_sha": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
-      "history_entries_before": 440,
-      "history_entries_after": 490,
-      "records_before": 440,
-      "records_after": 490,
-      "newest_history_rank_materialized_through": 490
-    }
+    "official_inventory_written": false,
+    "official_ledger_written": false,
+    "official_validation_written": false,
+    "progress_counter_changed": false
   },
   "stability": {
     "consecutive_clean_30_materialization_batches": 0,
     "consecutive_clean_40_materialization_batches": 3,
     "retryable_pause_occurred": false,
-    "hold_or_anomaly_occurred": true,
-    "adaptive_size_streak_eligible": false
+    "hold_or_anomaly_occurred": false,
+    "adaptive_size_streak_eligible": true
   },
-  "requires_triage": true,
-  "requires_audit": true,
-  "completed_at": "2026-09-23T16:55:18Z",
-  "data_head": "c9b19eb866281f8362c28dfcad9cd4f66818a858",
-  "exception_queue": {
-    "path": "review-runs/lens-history-v1/automation/exceptions/M11-20260922T0646Z-001.jsonl",
-    "blob_sha": "33dea7ed7902633d0413741593b15d76544b6ff6",
-    "exception_rank_count": 50
-  },
-  "validation": {
-    "path": "review-runs/lens-history-v1/automation/validations/M11-20260922T0646Z-001-materialization-441-490.json",
-    "blob_sha": "d199db887521bce79857366419388cc735587c64",
-    "status": "PASS",
-    "history_order_mismatches": 0,
-    "file_enumeration_unclosed": 0,
-    "source_frozen_blob_mismatches": 0,
-    "schema_class_mismatches": 0,
-    "checkpoint_kind_mismatches": 0,
-    "effectiveness_eligibility_mismatches": 0,
-    "official_ledger_required_field_mismatches": 0,
-    "prohibited_inference_violations": 0
-  }
+  "requires_triage": false,
+  "requires_audit": false
 }
