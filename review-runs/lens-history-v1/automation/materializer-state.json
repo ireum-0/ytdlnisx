@@ -29,16 +29,38 @@
     "status": "PASS",
     "unlock_allowed": true
   },
-  "completed_microsegments": [],
+  "completed_microsegments": [
+    {
+      "range": [
+        591,
+        595
+      ],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r591-595.json",
+      "blob_sha": "3819b9d51c158ce0307eaaf0a5f54eaf4028749d",
+      "corrections": []
+    }
+  ],
   "rank_evidence_provenance": {
-    "completed_rank_range": null,
-    "receipt_count": 0,
-    "last_rank_receipt": null
+    "completed_rank_range": [
+      591,
+      595
+    ],
+    "receipt_count": 5,
+    "last_rank_receipt": {
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r595.json",
+      "blob_sha": "cd1b30d032c445470bac401671b80a49fcdfad28"
+    }
   },
   "corrections": [],
   "materializer_remediations": [],
-  "next_rank": 591,
-  "in_progress_exception_ranks": [],
+  "next_rank": 596,
+  "in_progress_exception_ranks": [
+    591,
+    592,
+    593,
+    594,
+    595
+  ],
   "resume_safe": true,
   "materialization_outputs": {
     "official_inventory_written": false,
