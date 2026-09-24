@@ -1,0 +1,190 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    491,
+    495
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": null,
+  "rank_receipts": [
+    {
+      "rank": 491,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r491.json",
+      "blob_sha": "372ce194c6b0df961b30baf468df9a7590067d7c"
+    },
+    {
+      "rank": 492,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r492.json",
+      "blob_sha": "d37bb3c55b5fc8f071b4de0839f643733d43d92a"
+    },
+    {
+      "rank": 493,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r493.json",
+      "blob_sha": "11ea91384104bf396bc0079bd7cef7acc5e1d552"
+    },
+    {
+      "rank": 494,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r494.json",
+      "blob_sha": "f8ec33ce942ce3e35d107151346e91515d559927"
+    },
+    {
+      "rank": 495,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r495.json",
+      "blob_sha": "4aa227d53da981c39bada41f69c26872d18f5fe1"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      491,
+      492,
+      493,
+      494,
+      495
+    ],
+    "triggers": [
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source reconfirms both Download.observeSourceId same-number destination fallback and LEGACY_OBSERVE_SOURCE assignment numeric fallback as consumers of the same F6 portability root",
+        "rank": 491,
+        "source_blob_sha": "a9f816e1f20537a637f09785b20d519ae3537fa3"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly contains Prior-root reconciliation and states the consumers are the same F6 root rather than new blocker roots",
+        "rank": 491,
+        "source_blob_sha": "a9f816e1f20537a637f09785b20d519ae3537fa3"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-06",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 25",
+        "rank": 491,
+        "source_blob_sha": "a9f816e1f20537a637f09785b20d519ae3537fa3"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level revalidation records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 491,
+        "source_blob_sha": "a9f816e1f20537a637f09785b20d519ae3537fa3"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly records OPEN P2 -> FIXED/CLOSED at aa1616a2c7710b878c44949a5f74ad02c6706d8d",
+        "rank": 492,
+        "source_blob_sha": "ce97f0dce3ccf4248fb0db430d8d45c2a7e463df"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly identifies canonical closure reconciliation and reconciles the earlier closure with current protocol/handoff",
+        "rank": 492,
+        "source_blob_sha": "ce97f0dce3ccf4248fb0db430d8d45c2a7e463df"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-HISTORY-DUPLICATE-IDENTITY-01",
+        "evidence": "source explicitly records P2 -1 from P0 3 / P1 3 / P2 26 to P0 3 / P1 3 / P2 25",
+        "rank": 492,
+        "source_blob_sha": "ce97f0dce3ccf4248fb0db430d8d45c2a7e463df"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states implementation-agent reports are not independent execution and records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 492,
+        "source_blob_sha": "ce97f0dce3ccf4248fb0db430d8d45c2a7e463df"
+      },
+      {
+        "type": "SUBSTANTIVE_RESIDUAL_OR_SUBCASES",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source reconfirms repeated-Merge overwrite, later restore failure after thumbnail write, and Reset pre-commit mutation as concrete consumers/subcases while keeping restore-wide atomicity under separate BUG-BACKUP-03",
+        "rank": 493,
+        "source_blob_sha": "bdb6ac91a0f8c2a61cb13b7840671a9eb3bd00ae"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly contains Prior-root reconciliation and preserves BUG-BACKUP-02 as the same F5 root at the current fixed basis",
+        "rank": 493,
+        "source_blob_sha": "bdb6ac91a0f8c2a61cb13b7840671a9eb3bd00ae"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-BACKUP-02",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 26",
+        "rank": 493,
+        "source_blob_sha": "bdb6ac91a0f8c2a61cb13b7840671a9eb3bd00ae"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level revalidation records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 493,
+        "source_blob_sha": "bdb6ac91a0f8c2a61cb13b7840671a9eb3bd00ae"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source explicitly contains Prior-root reconciliation and reconfirms the same F13 source-identity root at the fixed CLEAN basis",
+        "rank": 494,
+        "source_blob_sha": "258d935e482e38a08998d0aeb7b0d3e578a59ca6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-METADATA-02",
+        "evidence": "source explicitly records Count delta 0 and canonical P0 3 / P1 3 / P2 26",
+        "rank": 494,
+        "source_blob_sha": "258d935e482e38a08998d0aeb7b0d3e578a59ca6"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source-level revalidation records INDEPENDENT EXECUTION: NOT EXECUTED and does not convert implementation-agent reports into independent execution",
+        "rank": 494,
+        "source_blob_sha": "258d935e482e38a08998d0aeb7b0d3e578a59ca6"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final blocker state P0 3 / P1 3 / P2 25 and no new P0/P1/P2 canonical finding or status transition",
+        "rank": 495,
+        "source_blob_sha": "0e72a22af82ec595752131ca2cc088d425ca10d4"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly states independent JVM/instrumentation/emulator/device execution was not performed in this round",
+        "rank": 495,
+        "source_blob_sha": "0e72a22af82ec595752131ca2cc088d425ca10d4"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves independent execution and any yt-dlp-specific extension NOT_VERIFIED",
+        "rank": 495,
+        "source_blob_sha": "0e72a22af82ec595752131ca2cc088d425ca10d4"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
