@@ -1,0 +1,152 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M12-20260924T0353Z-001",
+  "stage": "MATERIALIZE_491_540",
+  "logical_rank_range": [
+    491,
+    540
+  ],
+  "segment_range": [
+    526,
+    530
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "23d5b3c5727bcadac747bd35abb86e2013d6720c",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M12-20260924T0353Z-001/r521-525.json",
+    "blob_sha": "c0d46c00d1017461baad9cbe614c2c5ca5cf5ab4"
+  },
+  "rank_receipts": [
+    {
+      "rank": 526,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r526.json",
+      "blob_sha": "9cd5b0f037a5d00965131bd73e808cadd5e576b6"
+    },
+    {
+      "rank": 527,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r527.json",
+      "blob_sha": "7727caab74b2a8a22f6340a8f04af30790c52e28"
+    },
+    {
+      "rank": 528,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r528.json",
+      "blob_sha": "f7fbfcd2c1ce4f328954854ce54686d3ad87ce38"
+    },
+    {
+      "rank": 529,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r529.json",
+      "blob_sha": "2242a19ab9df0e1530dc95337cf3ca45680f2e7a"
+    },
+    {
+      "rank": 530,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M12-20260924T0353Z-001/r530.json",
+      "blob_sha": "1cb1839f01772fdc119761e007b9adc7a7b81552"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      526,
+      527,
+      528,
+      529,
+      530
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining final recount/verdict work without an explicit structural kind",
+        "rank": 526,
+        "source_blob_sha": "7409667c485e915f48a72b8a0adb1d384cf52025"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source records P0 3 / P1 3 / P2 26 as current provisional counts",
+        "rank": 526,
+        "source_blob_sha": "7409667c485e915f48a72b8a0adb1d384cf52025"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source preserves history_visible_child_youtuber_groups remap candidate as NOT_VERIFIED because no production reload path into the runtime filter is established",
+        "rank": 526,
+        "source_blob_sha": "7409667c485e915f48a72b8a0adb1d384cf52025"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining full-path audit and final recount scope without an explicit structural kind",
+        "rank": 527,
+        "source_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source records P0 3 / P1 3 / P2 26 as current provisional counts",
+        "rank": 527,
+        "source_blob_sha": "ba2602ad05b77df5a929a008e7afe50dac1c735c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source records final provisional P0 3 / P1 3 / P2 26 counts",
+        "rank": 528,
+        "source_blob_sha": "f65c2549483d8e0dcc625f5230ef89652c9590a2"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source preserves Share global-result-table deletion/session-isolation candidate as NOT_VERIFIED because the required product/correctness invariant was not established",
+        "rank": 528,
+        "source_blob_sha": "f65c2549483d8e0dcc625f5230ef89652c9590a2"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint has remaining recount/final-verdict scope without an explicit structural kind",
+        "rank": 529,
+        "source_blob_sha": "891e906bd49ae7e420643807595389dab8c05ec4"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 26 as provisional counts",
+        "rank": 529,
+        "source_blob_sha": "891e906bd49ae7e420643807595389dab8c05ec4"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source preserves Share global results deletion/session-isolation candidate as NOT_VERIFIED",
+        "rank": 529,
+        "source_blob_sha": "891e906bd49ae7e420643807595389dab8c05ec4"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint describes initial review setup and remaining matrix execution without an explicit structural kind",
+        "rank": 530,
+        "source_blob_sha": "64933435fed8151f03230a60e959f56a57f2fc7c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source carries P0 3 / P1 3 / P2 26 as provisional blocker baseline pending current-source revalidation",
+        "rank": 530,
+        "source_blob_sha": "64933435fed8151f03230a60e959f56a57f2fc7c"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves multiple production authority boundaries open for independent current-source revalidation",
+        "rank": 530,
+        "source_blob_sha": "64933435fed8151f03230a60e959f56a57f2fc7c"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 491-540 is receipted"
+  }
+}
