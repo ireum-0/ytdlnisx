@@ -1,0 +1,150 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "rank": 604,
+  "materializer_state_blob": "abd5e9ce85f81a34ea24c0203c19f9464b6fc62c",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r603.json",
+    "blob_sha": "613c522ded6b934ee24448e429c0832b2afbbb2e"
+  },
+  "history": {
+    "commit_sha": "81cedf89134cb903994bf5d13ab1238ac43d9331",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=604"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-10T022900Z__09af51d9__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-10T022900Z__09af51d9__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5",
+    "frozen_blob_sha": "a8b79aae088389bc71fed88009311e3336062bc5",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "09af51d92209d6735e283622fa7d3680414523bc",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint carries provisional findings and explicitly leaves final severity/gate recount and final checkpoint work outstanding, without a positive supported whole-document structural kind"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "findings": [
+        {
+          "finding_id": "BUG-OBSERVE-01/F3",
+          "disposition": "OPEN restored/current-source confirmed"
+        },
+        {
+          "finding_id": "BUG-KEYWORD-01/F12",
+          "disposition": "OPEN restored/current-source confirmed"
+        },
+        {
+          "finding_id": "BUG-METADATA-02/F13",
+          "disposition": "OPEN restored/current-source confirmed"
+        },
+        {
+          "finding_id": "BUG-METADATA-01/F14",
+          "disposition": "OPEN restored/current-source confirmed"
+        }
+      ]
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint retains final recount/final-checkpoint work and lacks an explicit supported structural kind"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly labels the current P0/P1/P2 section provisional and says prior six P2 findings remain queued for current-run recount"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OBSERVE-01/F3",
+      "evidence": "source records F3 / BUG-OBSERVE-01 OPEN among the restored findings after independent current-source revalidation"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-KEYWORD-01/F12",
+      "evidence": "source records F12 / BUG-KEYWORD-01 OPEN among the restored findings after independent current-source revalidation"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-METADATA-02/F13",
+      "evidence": "source records F13 / BUG-METADATA-02 OPEN among the restored findings after independent current-source revalidation"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-METADATA-01/F14",
+      "evidence": "source records F14 / BUG-METADATA-01 OPEN among the restored findings after independent current-source revalidation"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source explicitly leaves F4, F11, F17, F18 and the prior P2 B/C/J/K/L/M recount pending current-source adjudication"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source explicitly says review-branch candidate checkpoints were not adopted as evidence and claims were revalidated against production SHA"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
