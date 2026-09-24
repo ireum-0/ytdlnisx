@@ -1,0 +1,333 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    611,
+    615
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r606-610.json",
+    "blob_sha": "cb7659ba5dc04fcc38d64205e5a175c92bf9ae55"
+  },
+  "rank_receipts": [
+    {
+      "rank": 611,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r611.json",
+      "blob_sha": "dd97a6cd9e07b16725574dd2b08ff354c3ee2aca"
+    },
+    {
+      "rank": 612,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r612.json",
+      "blob_sha": "7780f2f376403f21a7dec7bb50a33244c7e9a21d"
+    },
+    {
+      "rank": 613,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r613.json",
+      "blob_sha": "e79cd94b339b69ee5160cf706ddb522794bddccb"
+    },
+    {
+      "rank": 614,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r614.json",
+      "blob_sha": "a2feb74106395522c56fb9ccc6ee63be17cbd273"
+    },
+    {
+      "rank": 615,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r615.json",
+      "blob_sha": "b94ee28b3d0942b1f2d488e799a0172f034d1081"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      611,
+      612,
+      613,
+      614,
+      615
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint lacks an allowed positive whole-document structural-kind marker",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-N/F17/BUG-HISTORY-01",
+        "evidence": "source explicitly records P2-N / F17 — CONFIRMED",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-O/F18/BUG-KEYWORD-02",
+        "evidence": "source explicitly records P2-O / F18 — CONFIRMED",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly starts from canonical open P2 B/C/J/K/L/M = 6 and adds P2-N/F17 and P2-O/F18 to canonical working P2 8",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source expands the canonical open inventory with F17 History delete/Undo and F18 RULE-derived Undo semantics",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records no independent tests/device/emulator execution and INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 611,
+        "source_blob_sha": "ca9ef8225369b77919e9fede31436aaf4460a1ed"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint is provisional and lacks an explicit supported structural kind",
+        "rank": 612,
+        "source_blob_sha": "518a3b536ef794029e28d1ae71329e1292305b6b"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records Provisional severity recount P0 0 / P1 0 / P2 2",
+        "rank": 612,
+        "source_blob_sha": "518a3b536ef794029e28d1ae71329e1292305b6b"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly identifies F20 BUG-LOCALADD-01 and F21 BUG-PLAYER-01 as the two current open P2 findings in the provisional recount",
+        "rank": 612,
+        "source_blob_sha": "518a3b536ef794029e28d1ae71329e1292305b6b"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly leaves the full F21 durable-write/reconstruction path, prior fixed-finding regression recount, historical/current review evidence, and final status/workflow evidence for later review",
+        "rank": 612,
+        "source_blob_sha": "518a3b536ef794029e28d1ae71329e1292305b6b"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source says confirmed fixed invariants are only carried forward for explicit recheck and current status/workflow evidence remains outstanding",
+        "rank": 612,
+        "source_blob_sha": "518a3b536ef794029e28d1ae71329e1292305b6b"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "independent full-wave review is not an allowed positive structural identity and does not claim run-final checkpoint identity",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-D",
+        "evidence": "source explicitly records P2-D CLOSED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-E",
+        "evidence": "source explicitly records P2-E CLOSED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-F",
+        "evidence": "source explicitly records P2-F CLOSED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-G",
+        "evidence": "source explicitly records P2-G CLOSED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-H",
+        "evidence": "source explicitly records P2-H CLOSED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-B",
+        "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-B OPEN / NOT_CLEAN",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-C",
+        "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-C OPEN / NOT_CLEAN",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-J",
+        "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-J OPEN / NOT_CLEAN",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "P2-K",
+        "evidence": "source explicitly rejects the conflicting scheduled checkpoint's fixed treatment and preserves P2-K OPEN / NOT_CLEAN",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records pre-wave P0 0 / P1 0 / P2 11, closes D/E/F/G/H, and updates canonical count to P0 0 / P1 0 / P2 6",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "RECONCILIATION_ADDENDUM_OR_SCOPE_EXPANSION",
+        "evidence": "source explicitly identifies a conflicting scheduled checkpoint that counted only two P2s and treated B/C/J/K as fixed, and records the independent semantic decision not to adopt that recount",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 613,
+        "source_blob_sha": "2ef09a30f9de00bc4f5fb141a1520461cac08e7f"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the final severity recount provisional and records P0 0 / P1 0 / P2 2",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "Terminal tokenless NATIVE_STARTED",
+        "evidence": "source explicitly records Terminal tokenless NATIVE_STARTED P2 FIXED at source level",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "F19 config duplicate canonical-media identity",
+        "evidence": "source explicitly records F19 config duplicate canonical-media identity P2 FIXED at source level",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "provider committed-destination same-source creation replay",
+        "evidence": "source explicitly records provider committed-destination same-source creation replay P2 FIXED at source level",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "ordinary History/post-publication fresh-producer replay",
+        "evidence": "source explicitly records ordinary History/post-publication fresh-producer replay P2 FIXED at source level as a replay defect",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional P0 0 / P1 0 / P2 2 with F20 and F21 as the two surviving OPEN P2 blockers",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records zero GitHub status contexts, zero Actions runs, and independent JVM/instrumentation/emulator/device execution NOT_VERIFIED",
+        "rank": 614,
+        "source_blob_sha": "ead6cf4c5f5b3e1a6a0cec5fe909646063d7e43b"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic checkpoint is provisional and lacks an explicit supported structural kind",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional findings P0 0 / P1 0 / P2 2",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "Terminal tokenless NATIVE_STARTED",
+        "evidence": "source explicitly records Terminal tokenless NATIVE_STARTED production gap source-level FIXED",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "F19 config duplicate canonical media identity",
+        "evidence": "source explicitly records F19 config duplicate canonical media identity source-level FIXED",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "provider exact-destination same-source create replay",
+        "evidence": "source explicitly records provider exact-destination same-source create replay source-level FIXED",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "MATERIAL_STATUS_TRANSITION",
+        "finding_id": "ordinary History/post-publication producer replay",
+        "evidence": "source explicitly records ordinary History/post-publication producer replay source-level FIXED as a replay defect",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 2 with F20 and F21 as the two open P2 findings",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source keeps residual prior-publication semantic finalization and opaque provider publication as open questions/hardening debt unless a concrete Master Plan P0/P1/P2 violation is established",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source leaves GitHub status/workflow evidence and final branch-head recount for the remaining review scope",
+        "rank": 615,
+        "source_blob_sha": "ee4ef7ed67fa2c61b3c375d86d77f5706aabf480"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
