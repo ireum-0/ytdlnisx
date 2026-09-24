@@ -1,0 +1,188 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M14-20260924T1310Z-001",
+  "stage": "MATERIALIZE_591_640",
+  "logical_rank_range": [
+    591,
+    640
+  ],
+  "segment_range": [
+    626,
+    630
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "285ff2b528958fef0bb74fc2f411dca47eb64da0",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M14-20260924T1310Z-001/r621-625.json",
+    "blob_sha": "84f8b5c655a0f089e7ded4e0215fb7bdbdd0a7dc"
+  },
+  "rank_receipts": [
+    {
+      "rank": 626,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r626.json",
+      "blob_sha": "6f10d83d99adb4dd676f5c1dbb4f0862fa573c94"
+    },
+    {
+      "rank": 627,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r627.json",
+      "blob_sha": "a9c4ba0a767bcfb0cb4567b4a68cad8c311c0787"
+    },
+    {
+      "rank": 628,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r628.json",
+      "blob_sha": "0336e8e142d79cf713aceb6992ccf3a9147011ca"
+    },
+    {
+      "rank": 629,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r629.json",
+      "blob_sha": "f4683ed05e1527f202d6fbe870b39c1a298d263a"
+    },
+    {
+      "rank": 630,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M14-20260924T1310Z-001/r630.json",
+      "blob_sha": "5af870aa610c0a74cd370d44fd82a0a8443f0f51"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      626,
+      627,
+      628,
+      629,
+      630
+    ],
+    "triggers": [
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional P0 0 / P1 0 / P2 4, all existing and OPEN, with new findings none and status/severity/disposition changes none",
+        "rank": 626,
+        "source_blob_sha": "257a789146bdf114d354a83c4771837f494a8bff"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the final P0/P1/P2 section provisional",
+        "rank": 626,
+        "source_blob_sha": "257a789146bdf114d354a83c4771837f494a8bff"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records independent JVM/emulator/device execution at the exact SHA as NOT_VERIFIED and uses source-semantic review as verdict basis",
+        "rank": 626,
+        "source_blob_sha": "257a789146bdf114d354a83c4771837f494a8bff"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 627,
+        "source_blob_sha": "036e301f79c1807ef00f423431e00850ee1dfbcf"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 existing OPEN findings",
+        "rank": 627,
+        "source_blob_sha": "036e301f79c1807ef00f423431e00850ee1dfbcf"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly states all four existing P2 findings were independently revalidated, with new P0/P1/P2 none and existing status/severity changes none",
+        "rank": 627,
+        "source_blob_sha": "036e301f79c1807ef00f423431e00850ee1dfbcf"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records runtime/device behavior without exact-SHA workflow or independent execution as NOT_VERIFIED",
+        "rank": 627,
+        "source_blob_sha": "036e301f79c1807ef00f423431e00850ee1dfbcf"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 628,
+        "source_blob_sha": "17ad212aaca43603607735452603ee6f2d4c88d0"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 0 / P1 0 / P2 4 existing candidates carried only as provisional until revalidated on the pinned SHA",
+        "rank": 628,
+        "source_blob_sha": "17ad212aaca43603607735452603ee6f2d4c88d0"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly requires revalidation of all four prior P2 shapes against full current production consumers and a fresh adjacent identity/durable-write sweep",
+        "rank": 628,
+        "source_blob_sha": "17ad212aaca43603607735452603ee6f2d4c88d0"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly refuses prior notes as verdict authority and requires current-production revalidation; unverified behavior remains NOT_VERIFIED",
+        "rank": 628,
+        "source_blob_sha": "17ad212aaca43603607735452603ee6f2d4c88d0"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "periodic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 629,
+        "source_blob_sha": "3698589e789a4c5bbe2eff0b9bc39ab92f60339c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P0 0 / P1 0 / P2 4 existing candidates carried only as hypotheses pending current-source re-proof",
+        "rank": 629,
+        "source_blob_sha": "3698589e789a4c5bbe2eff0b9bc39ab92f60339c"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source requires re-proof or rejection of each prior P2 and adjacent recovery/duplicate consumer review before final judgment",
+        "rank": 629,
+        "source_blob_sha": "3698589e789a4c5bbe2eff0b9bc39ab92f60339c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly says the implementation SHA is unchanged but the run must retrace production paths rather than rely on a diff-only or prior-review basis",
+        "rank": 629,
+        "source_blob_sha": "3698589e789a4c5bbe2eff0b9bc39ab92f60339c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional P0 0 / P1 0 / P2 4, no new P0/P1/P2 finding, and no existing-finding status change relative to the immediately prior independent review",
+        "rank": 630,
+        "source_blob_sha": "d5268570bd696164760738bac42e5e17263a9c85"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the final/expected verdict provisional",
+        "rank": 630,
+        "source_blob_sha": "d5268570bd696164760738bac42e5e17263a9c85"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source keeps lower-confidence adjacent issues NOT_VERIFIED rather than promoting them",
+        "rank": 630,
+        "source_blob_sha": "d5268570bd696164760738bac42e5e17263a9c85"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records zero combined-status contexts and independent JVM/emulator/device execution NOT_VERIFIED; source-semantic review remains the verdict basis",
+        "rank": 630,
+        "source_blob_sha": "d5268570bd696164760738bac42e5e17263a9c85"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 591-640 is receipted"
+  }
+}
