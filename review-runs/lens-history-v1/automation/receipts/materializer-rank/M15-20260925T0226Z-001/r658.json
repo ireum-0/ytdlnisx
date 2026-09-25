@@ -1,0 +1,147 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 658,
+  "materializer_state_blob": "cf1388fa3824351cbea7f0a9d9b7b7def50ff59b",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r657.json",
+    "blob_sha": "dd6debf253b7ee8c70d6925c4b236531dc421479"
+  },
+  "history": {
+    "commit_sha": "f54810f720f14ceb03049093552ad981843f9ec7",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=658"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T113634Z__67c7a58a__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T113634Z__67c7a58a__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89",
+    "frozen_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "67c7a58aea22cd9e040daaeeaef2ae873e6b59c8",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Independent correctness review — final checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": [
+          "P2-B",
+          "P2-C"
+        ]
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "P2-B NEW; P2-C NEW; P2-A EXISTING",
+        "evidence": "source final provisional severity count explicitly labels P2-A EXISTING and P2-B/P2-C NEW"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Final provisional severity count P0 0 / P1 0 / P2 3 OPEN; P2-A existing, P2-B new, P2-C new"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source establishes two findings as NEW within this run but does not explicitly provide the immediately preceding canonical numeric P2 count in this checkpoint"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "P2-B",
+      "evidence": "source explicitly labels ordinary History commit followed by producer replay after process death as P2-B — NEW"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "P2-C",
+      "evidence": "source explicitly labels committed provider destination recreated after source-retirement failure as P2-C — NEW"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records final provisional P0 0 / P1 0 / P2 3 OPEN with P2-A existing and P2-B/P2-C new"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly labels the severity count Final provisional severity count"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source leaves malformed publication journal replay/destructive consequence NOT_VERIFIED and not counted as a finding"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source reports no combined-status contexts and no Actions workflow runs for the exact implementation SHA; independent JVM/emulator/device execution remains NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
