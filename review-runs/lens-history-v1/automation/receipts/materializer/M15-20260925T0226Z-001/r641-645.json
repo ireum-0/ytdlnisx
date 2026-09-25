@@ -1,0 +1,199 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "segment_range": [
+    641,
+    645
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "previous_aggregate_receipt": null,
+  "rank_receipts": [
+    {
+      "rank": 641,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r641.json",
+      "blob_sha": "feb93ae1df1b9fe617d8e7e8c01819f76d8d5cc9"
+    },
+    {
+      "rank": 642,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r642.json",
+      "blob_sha": "acecfcf3019c624db4e23f27ff4299126e6ab60e"
+    },
+    {
+      "rank": 643,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r643.json",
+      "blob_sha": "e145200c978b181b6070b995542cae3ec64e2447"
+    },
+    {
+      "rank": 644,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r644.json",
+      "blob_sha": "e21bc799852ad03a641b5622dd080a3bc242ac8c"
+    },
+    {
+      "rank": 645,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r645.json",
+      "blob_sha": "0c8a325d04486b5f97bd14e1d1edfbc589f13499"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      641,
+      642,
+      643,
+      644,
+      645
+    ],
+    "triggers": [
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind and still has remaining review scope",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "BUG-DUPLICATE-01 / F19",
+        "evidence": "source explicitly labels BUG-DUPLICATE-01 / F19 as a NEW candidate now source-confirmed",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "finding_id": "BUG-DUPLICATE-01 / F19",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 and enumerates three existing P2 shapes plus one NEW candidate",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source labels the P2 count as 4 provisional rather than a final gate",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source retains open candidates/questions and requires revalidation of existing P2 paths plus final gate/execution evidence",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source leaves final gate and execution evidence to remaining review scope, so final exact status/workflow execution basis is not established in this checkpoint",
+        "rank": 641,
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 642,
+        "source_blob_sha": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P2 3 previously source-confirmed shapes pending full revalidation on the pinned SHA",
+        "rank": 642,
+        "source_blob_sha": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source explicitly says the config duplicate-identity candidate is not yet accepted for this run and must be independently traced, while three prior P2 shapes also remain pending revalidation",
+        "rank": 642,
+        "source_blob_sha": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source says previously established states are subject to revalidation and leaves final gate, execution evidence, and exact upstream semantics to remaining review",
+        "rank": 642,
+        "source_blob_sha": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "Track A checkpoint contains a confirmed P2 finding but lacks an allowed positive whole-document structural-kind marker",
+        "rank": 643,
+        "source_blob_sha": "e62c6e34dcd563275daae17d57df24541fa64638"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records Canonical working count after this checkpoint: P0 0 / P1 0 / P2 9",
+        "rank": 643,
+        "source_blob_sha": "e62c6e34dcd563275daae17d57df24541fa64638"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 643,
+        "source_blob_sha": "e62c6e34dcd563275daae17d57df24541fa64638"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source explicitly records INDEPENDENT EXECUTION: NOT EXECUTED and binds the finding to the fixed Review Basis",
+        "rank": 643,
+        "source_blob_sha": "e62c6e34dcd563275daae17d57df24541fa64638"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records Final provisional count P0 0 / P1 0 / P2 3 existing",
+        "rank": 644,
+        "source_blob_sha": "fde6d1e4d61309b10545683423085c448678b8f3"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the blocker count as Final provisional count, so it must not enter cumulative effectiveness metrics",
+        "rank": 644,
+        "source_blob_sha": "fde6d1e4d61309b10545683423085c448678b8f3"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source reports zero exact-SHA combined-status contexts and zero workflow runs; JVM/emulator/device execution evidence is NOT_VERIFIED",
+        "rank": 644,
+        "source_blob_sha": "fde6d1e4d61309b10545683423085c448678b8f3"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind",
+        "rank": 645,
+        "source_blob_sha": "e117c4dc386552505d66867ea1dda481a6561fa6"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P2 3 existing candidates retained pending full-path recount",
+        "rank": 645,
+        "source_blob_sha": "e117c4dc386552505d66867ea1dda481a6561fa6"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source retains Terminal, ordinary History, provider source-retirement, and UNKNOWN-consumer questions for full production-path re-proof",
+        "rank": 645,
+        "source_blob_sha": "e117c4dc386552505d66867ea1dda481a6561fa6"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source leaves provider upstream semantics, final v6 consumer closure, and CLEAN-gate recount to later verification and states no unverified upstream assumption is used as closure evidence",
+        "rank": 645,
+        "source_blob_sha": "e117c4dc386552505d66867ea1dda481a6561fa6"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 641-690 is receipted"
+  }
+}
