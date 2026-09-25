@@ -1,0 +1,133 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 675,
+  "materializer_state_blob": "2752057bc064f54484465064378d7d95eb8c1430",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r674.json",
+    "blob_sha": "ca5f02a2c426e369c3b43d4d29b7b477ff21eb90"
+  },
+  "history": {
+    "commit_sha": "ebab5e6131727355d6e6c61080f7e31e32c1b8d6",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=675"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T052806Z__2e12975a__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "f1ba98cc233a916a12fdba9a55f97fc96ae246f4",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "f1ba98cc233a916a12fdba9a55f97fc96ae246f4",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T052806Z__2e12975a__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "f1ba98cc233a916a12fdba9a55f97fc96ae246f4",
+    "frozen_blob_sha": "f1ba98cc233a916a12fdba9a55f97fc96ae246f4",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "2e12975a4b044d52986ec9ac0f3204f6e6bdc326",
+      "evidence": "source explicitly records Implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint has no explicit checkpoint type/kind and retains retry/reconfigure consumer closure, Terminal UNKNOWN, outer-result/recovery, CI/status, and final HEAD review scope"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 remains under re-proof; RECONFIGURE retains the same nonblank operationId and re-enters the old UNKNOWN fence instead of revoking/transferring or resolving authority",
+        "evidence": "source Open candidates/questions explicitly describes this existing P2 consumer-closure path"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional P0 0 / P1 0 / P2 1 existing"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "intermediate checkpoint does not state a final numeric count or status delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint lacks an explicit kind and retains substantial remaining review scope"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 1 existing BUG-OUTPUT-01"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-OUTPUT-01",
+      "evidence": "source gives the concrete retry/reconfigure consumer path where the same operationId preserves old UNKNOWN authority and deterministically re-enters the durable fence"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source rechecks AOSP provider null/exception ambiguity while current CI/status evidence remains in remaining review scope"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
