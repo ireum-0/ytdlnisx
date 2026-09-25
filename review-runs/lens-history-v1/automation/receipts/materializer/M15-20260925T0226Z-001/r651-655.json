@@ -1,0 +1,229 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "segment_range": [
+    651,
+    655
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M15-20260925T0226Z-001/r646-650.json",
+    "blob_sha": "ae2cd5e15a89e010d6d01185e26e3271e0a65e3c"
+  },
+  "rank_receipts": [
+    {
+      "rank": 651,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r651.json",
+      "blob_sha": "478ebe2b893a110b8fae26a0b41fcfe719021457"
+    },
+    {
+      "rank": 652,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r652.json",
+      "blob_sha": "38991b6e35e3bbde59bbd09fcbdf58511b15adf5"
+    },
+    {
+      "rank": 653,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r653.json",
+      "blob_sha": "ec638e01b1be2a92acc0a7d720b3b1b2d1030745"
+    },
+    {
+      "rank": 654,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r654.json",
+      "blob_sha": "297ddb41f5818a4258979064eec5a7fcf556272f"
+    },
+    {
+      "rank": 655,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r655.json",
+      "blob_sha": "0a299a1363c17e1b402959ee3d9658b8119024f1"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      651,
+      652,
+      653,
+      654,
+      655
+    ],
+    "triggers": [
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "P2-4",
+        "evidence": "source explicitly labels P2-4 NEW — Terminal pre-generation NATIVE_STARTED can become permanent recovery debt",
+        "rank": 651,
+        "source_blob_sha": "8abaa39e16b4e79ecc247de9182ea3571a664e0c"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records Final provisional severity recount P0 0 / P1 0 / P2 4 with three EXISTING findings and one NEW finding",
+        "rank": 651,
+        "source_blob_sha": "8abaa39e16b4e79ecc247de9182ea3571a664e0c"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the severity recount as Final provisional severity recount",
+        "rank": 651,
+        "source_blob_sha": "8abaa39e16b4e79ecc247de9182ea3571a664e0c"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source states device/emulator/JVM execution is NOT_VERIFIED because GitHub has zero status contexts and zero workflow runs for the exact SHA",
+        "rank": 651,
+        "source_blob_sha": "8abaa39e16b4e79ecc247de9182ea3571a664e0c"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "evidence": "source explicitly labels the Terminal pre-generation NATIVE_STARTED recovery debt as NEW P2",
+        "rank": 652,
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source section is Provisional findings and records P0 0 / P1 0 / P2 4",
+        "rank": 652,
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source enumerates three EXISTING P2 items plus one NEW P2 under the provisional P2=4 recount",
+        "rank": 652,
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves provider UNKNOWN upstream semantic refresh and final status/workflow evidence for later verification",
+        "rank": 652,
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source says exact-SHA GitHub status/workflow evidence still remains and prior-run upstream provider evidence is not reused",
+        "rank": 652,
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355"
+      },
+      {
+        "type": "AMBIGUOUS_KIND",
+        "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind and retains substantial remaining review scope",
+        "rank": 653,
+        "source_blob_sha": "1759f5aa0a7da7ba71ac271801482ea1fc3089cc"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly records P2 3 carried from the immediately prior review pending fresh closure re-check",
+        "rank": 653,
+        "source_blob_sha": "1759f5aa0a7da7ba71ac271801482ea1fc3089cc"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source says the new Terminal remediation has no new severity assigned yet and retains exact-generation, cancellation/ownership, witness-retirement/publication, and prior-P2 re-check questions",
+        "rank": 653,
+        "source_blob_sha": "1759f5aa0a7da7ba71ac271801482ea1fc3089cc"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source labels the three P2 items as carried from the immediately prior review pending fresh closure re-check and states no external upstream contract has yet been relied on",
+        "rank": 653,
+        "source_blob_sha": "1759f5aa0a7da7ba71ac271801482ea1fc3089cc"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-J/J3",
+        "evidence": "source explicitly confirms the ordinary committed-History late Pause/Cancel and Resume-to-E2 path as an existing P2-J subcase",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B5",
+        "evidence": "source explicitly confirms generation-ordering behavior at the publication-journal inventory boundary and retains it under P2-B/B5",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly retains P2-C, declines additional P2 promotions from P2-H DownloadExecutionRecovery, archive-hit replay, and F2 mtime/directory search, and states working count remains P0 0 / P1 0 / P2 8",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source retains the duplicate-choice ancillary handoff as an unclassified/P3 candidate because a production consumer has not yet been established",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 654,
+        "source_blob_sha": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B7",
+        "evidence": "source explicitly confirms the pre-publication producer recovery fixed point as a new subcase of existing P2-B",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B5+B6",
+        "evidence": "source confirms mixed-generation finalPaths/History production impact and strengthens deterministic supersession requirements under existing P2-B",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly says B7 does not increment the canonical P2 count, P2-H scope expansion remains one P2-H, and working count remains P0 0 / P1 0 / P2 8",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source preserves hard-sub/derived output as the same B7 root and does not promote it to a separate P2",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 655,
+        "source_blob_sha": "544ce8299eeb86b5f4ce50988351226433ec85fc"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 641-690 is receipted"
+  }
+}
