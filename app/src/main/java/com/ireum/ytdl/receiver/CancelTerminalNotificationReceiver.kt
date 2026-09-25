@@ -5,8 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.work.TerminalExecutionRegistry
-import com.ireum.ytdl.work.WorkManagerHandoffRecovery
+import com.ireum.ytdl.work.TerminalCancellationCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -20,18 +19,15 @@ class CancelTerminalNotificationReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val cancellationRequested = WorkManagerHandoffRecovery.cancelTerminalDispatch(
-                    context,
-                    terminalId,
-                )
-                if (!cancellationRequested || !TerminalExecutionRegistry.cancel(context, terminalId)) {
-                    // Native quiescence or cancellation is unresolved. Keep
-                    // the exact row/witness; startup recovery owns the next
-                    // attempt and no new native work can be admitted.
-                    NotificationUtil(context).cancelTerminalDownloadNotification(terminalId.toInt())
+                val result = TerminalCancellationCoordinator.cancel(context, terminalId)
+                NotificationUtil(context).cancelTerminalDownloadNotification(terminalId.toInt())
+                if (!result.rowDeletionAuthorized) {
+                    // Native quiescence or durable dispatch supersession is
+                    // unresolved. Keep the exact row/witness; startup recovery
+                    // owns the next attempt and no new native work can be
+                    // admitted.
                     return@launch
                 }
-                NotificationUtil(context).cancelTerminalDownloadNotification(terminalId.toInt())
                 val dao = DBManager.getInstance(context).terminalDao
                 dao.delete(terminalId)
             } finally {

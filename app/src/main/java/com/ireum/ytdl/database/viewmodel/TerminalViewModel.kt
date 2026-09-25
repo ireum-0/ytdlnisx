@@ -9,7 +9,7 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.dao.TerminalDao
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.util.NotificationUtil
-import com.ireum.ytdl.work.TerminalExecutionRegistry
+import com.ireum.ytdl.work.TerminalCancellationCoordinator
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -61,8 +61,8 @@ class TerminalViewModel private constructor(
     }
 
     suspend fun delete(id: Long) {
-        if (!WorkManagerHandoffRecovery.cancelTerminalDispatch(application, id)) return
-        if (!TerminalExecutionRegistry.cancel(application, id)) return
+        val result = TerminalCancellationCoordinator.cancel(application, id)
+        if (!result.rowDeletionAuthorized) return
         deleteRow(id)
     }
 
@@ -80,16 +80,9 @@ class TerminalViewModel private constructor(
     }
 
     fun cancelTerminalDownload(id: Long) = viewModelScope.launch(Dispatchers.IO) {
-        // Supersession is durable before WorkManager cancellation is awaited.
-        val cancellationRequested = WorkManagerHandoffRecovery.cancelTerminalDispatch(
-            application,
-            id,
-        )
-        if (!cancellationRequested || !TerminalExecutionRegistry.cancel(application, id)) {
-            notificationUtil.cancelTerminalDownloadNotification(id.toInt())
-            return@launch
-        }
+        val result = TerminalCancellationCoordinator.cancel(application, id)
         notificationUtil.cancelTerminalDownloadNotification(id.toInt())
+        if (!result.rowDeletionAuthorized) return@launch
         deleteRow(id)
     }
 

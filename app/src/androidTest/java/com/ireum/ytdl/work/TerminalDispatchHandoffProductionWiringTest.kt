@@ -257,6 +257,101 @@ class TerminalDispatchHandoffProductionWiringTest {
     }
 
     @Test
+    fun workManagerCancelFailureStillConvergesAdmittedTerminalExecution(): Unit = runBlocking {
+        val viewModel = viewModel()
+        val command = "--simulate https://example.com/terminal-cancel-failure"
+        val terminalId = viewModel.insert(TerminalItem(command = command))
+        recoveryIds += terminalId
+        val carrier = carrier(terminalId)
+
+        viewModel.startTerminalDownloadWorker(TerminalItem(terminalId, command))
+        val operation = awaitOperation()
+        val admissions = AtomicInteger(0)
+        TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = { id, _ ->
+            if (id == terminalId.toInt()) admissions.incrementAndGet()
+        }
+
+        // A worker for this exact carrier has already crossed durable
+        // admission. The witness is only valid under the canonical Terminal
+        // process identity, so cancellation exercises the real exact-execution
+        // protocol rather than a fabricated identity. It is established after
+        // publication because production intentionally refuses to publish a
+        // second Terminal request once a durable witness exists.
+        val executionToken = "$terminalId-execution-token"
+        TerminalExecutionRecovery.clearForTesting(
+            File(context.filesDir, "terminal-execution-recovery"),
+            terminalId,
+        )
+        assertTrue(
+            TerminalExecutionRecovery.begin(
+                context = context,
+                subjectId = terminalId,
+                executionToken = executionToken,
+                processId = YtdlpProcessIdentity.terminal(terminalId),
+            ),
+        )
+        assertEquals(
+            TerminalExecutionRecovery.Phase.ADMITTED,
+            TerminalExecutionRecovery.read(context, terminalId)?.phase,
+        )
+
+        WorkManagerHandoffRecovery.cancelWorkByIdOperationOverrideForTesting = { requestId ->
+            cancelledRequestIds += requestId
+            ControlledOperation().also {
+                it.fail(IllegalStateException("injected WorkManager cancel failure"))
+            }
+        }
+
+        viewModel.cancelTerminalDownload(terminalId)
+
+        // Durable dispatch supersession must not wait on either downstream
+        // responsibility.
+        awaitCondition(30_000L) {
+            database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state ==
+                WorkManagerHandoffCarrier.SUPERSEDED
+        }
+        // The exact admitted execution must converge through the real
+        // registry/recovery protocol even though the exact WorkManager cancel
+        // Operation failed. The registry mutex is process global and shared
+        // with real WorkManager workers, so this wait is bounded generously
+        // rather than assumed instantaneous.
+        awaitCondition(30_000L) {
+            TerminalExecutionRecovery.read(context, terminalId)?.phase ==
+                TerminalExecutionRecovery.Phase.TERMINAL_STOPPED
+        }
+        // The row is only released after that convergence.
+        awaitCondition(30_000L) { database.terminalDao.getTerminalById(terminalId) == null }
+        assertEquals(
+            WorkManagerHandoffCarrier.SUPERSEDED,
+            database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state,
+        )
+        assertTrue(cancelledRequestIds.contains(carrier.requestId))
+
+        // A late success for the old enqueue must not revive the superseded
+        // dispatch, recreate the row, or execute the command. The superseded
+        // publication may legally retire or resolve its tombstone, so this
+        // asserts the invariant that matters - it never becomes an
+        // authoritative owner again - instead of racing a fixed end state.
+        operation.succeed()
+        withTimeout(30_000L) {
+            repeat(400) {
+                val observed =
+                    database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state
+                assertTrue(
+                    "superseded dispatch became authoritative again: $observed",
+                    observed == null || observed !in setOf(
+                        WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+                        WorkManagerHandoffCarrier.ACCEPTED,
+                    ),
+                )
+                assertNull(database.terminalDao.getTerminalById(terminalId))
+                delay(5L)
+            }
+        }
+        assertEquals(0, admissions.get())
+    }
+
+    @Test
     fun staleUnboundAndWrongIdentityRequestsCannotEnterTerminalAdmission(): Unit = runBlocking {
         val viewModel = viewModel()
         val terminalId = viewModel.insert(TerminalItem(command = "--simulate https://example.com/terminal-stale"))
@@ -436,7 +531,10 @@ class TerminalDispatchHandoffProductionWiringTest {
         checkNotNull(result)
     }
 
-    private suspend fun awaitCondition(condition: suspend () -> Boolean) = withTimeout(5_000L) {
+    private suspend fun awaitCondition(
+        timeoutMs: Long = 5_000L,
+        condition: suspend () -> Boolean,
+    ) = withTimeout(timeoutMs) {
         while (!condition()) delay(5L)
     }
 

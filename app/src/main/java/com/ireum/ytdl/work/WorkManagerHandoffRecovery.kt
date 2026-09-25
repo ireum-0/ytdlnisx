@@ -277,32 +277,67 @@ internal object WorkManagerHandoffRecovery {
         }
     }
 
+    internal data class TerminalDispatchCancellationResult(
+        val dispatchSuperseded: Boolean,
+        val workManagerCancellationAcknowledged: Boolean,
+    )
+
+    private data class TerminalDispatchSupersession(
+        val established: Boolean,
+        val requestId: String?,
+    )
+
     /** Supersedes first, then cancels only the exact old request identity. */
-    internal suspend fun cancelTerminalDispatch(context: Context, terminalId: Long): Boolean {
-        val requestId = RestoreMutationAdmission.withOrdinaryMutation(context) {
-            database(context).withTransaction {
-                val carrier = database(context).workManagerHandoffCarrierDao
-                    .getOutstandingForBoundary(
+    internal suspend fun cancelTerminalDispatch(
+        context: Context,
+        terminalId: Long,
+    ): TerminalDispatchCancellationResult {
+        val supersession = runCatching {
+            RestoreMutationAdmission.withOrdinaryMutation(context) {
+                database(context).withTransaction {
+                    val dao = database(context).workManagerHandoffCarrierDao
+                    val carrier = dao.getOutstandingForBoundary(
                         WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
                         terminalId.toString(),
                     )
-                carrier?.let {
-                    database(context).workManagerHandoffCarrierDao.markSuperseded(
-                        it.handoffId,
-                        it.requestId,
-                        System.currentTimeMillis(),
-                    )
-                    it.requestId
+                    if (carrier == null) {
+                        TerminalDispatchSupersession(established = true, requestId = null)
+                    } else {
+                        val changed = dao.markSuperseded(
+                            carrier.handoffId,
+                            carrier.requestId,
+                            System.currentTimeMillis(),
+                        )
+                        TerminalDispatchSupersession(
+                            established = changed == 1,
+                            requestId = carrier.requestId.takeIf { changed == 1 },
+                        )
+                    }
                 }
             }
+        }.getOrNull() ?: return TerminalDispatchCancellationResult(
+            dispatchSuperseded = false,
+            workManagerCancellationAcknowledged = false,
+        )
+
+        if (!supersession.established) {
+            return TerminalDispatchCancellationResult(
+                dispatchSuperseded = false,
+                workManagerCancellationAcknowledged = false,
+            )
         }
-        return runCatching {
-            if (requestId != null) {
-                cancelWorkByIdAndAwait(context, requestId)
+
+        val workManagerCancellationAcknowledged = runCatching {
+            if (supersession.requestId != null) {
+                cancelWorkByIdAndAwait(context, supersession.requestId)
             } else {
                 cancelUniqueWorkAndAwait(context, terminalWorkName(terminalId))
             }
         }.isSuccess
+        return TerminalDispatchCancellationResult(
+            dispatchSuperseded = true,
+            workManagerCancellationAcknowledged = workManagerCancellationAcknowledged,
+        )
     }
 
     /** Resolves only the exact worker that also converged the Terminal row. */
