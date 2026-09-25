@@ -1,0 +1,116 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "microsegment_rank_range": [
+    731,
+    735
+  ],
+  "data_head": "17ddbb48d7aeb93a88fb24bf3f74bdd9614d556d",
+  "complete_state_blob": "f28878046c36cee91f8e5680766944d7c087322d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M16-20260925T1415Z-001/r731-735.json",
+    "blob_sha": "dc9fa3760fa39d67b0f1563e2c7fda8d167993d6"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "03d82ce2239578db41c17ba0ac556441fb37a887",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M16-20260925T1415Z-001/r726-730.json",
+    "blob_sha": "faabc53b43e275554d1d9e6f54a94b1d1008f884"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 731,
+      "path": "review-runs/checkpoints/2026-09-08T013108Z__2207a870__checkpoint.md",
+      "source_blob": "f1b2c5a8ee9f7f38cb13ce0ab5a00811d9c2dc79",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional existing recovery-discovery P2 recount and historical-only execution/status basis without deriving a new semantic event from unchanged-source evidence."
+    },
+    {
+      "rank": 732,
+      "path": "review-runs/checkpoints/2026-09-07T232700Z__2207a870__checkpoint-final.md",
+      "source_blob": "d164c8c4823b83d0c10a428173bfb4b4fd838698",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the final P0/P1/P2 and no-new-finding/no-status-change chronology. The source's BUG-TERMINAL-04 / BUG-OUTPUT naming must be preserved as historical text rather than normalized into a modern canonical identity."
+    },
+    {
+      "rank": 733,
+      "path": "review-runs/checkpoints/2026-09-07T232249Z__2207a870__checkpoint-intermediate.md",
+      "source_blob": "d5480938d5001475af165e2a3449da0c065d748b",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve structural-kind ambiguity, provisional counts, and historical-only execution evidence; do not infer canonical kind from the filename or reinterpret the repeated existing recovery obligation as new."
+    },
+    {
+      "rank": 734,
+      "path": "review-runs/checkpoints/2026-09-07T223600Z__2207a870__d91b__final-checkpoint.md",
+      "source_blob": "e7b4047f76d4a13ea1707b491704c293d6be7543",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the explicit final recount and historical-only evidence basis; no distinct new exception is supported beyond the unchanged existing P2."
+    },
+    {
+      "rank": 735,
+      "path": "review-runs/checkpoints/2026-09-07T223100Z__2207a870__a6c4__checkpoint.md",
+      "source_blob": "c69cc4576a41428e8e47eac502cf10bbe27bdf33",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional existing-P2 recount and runtime/status uncertainty without inferring structural kind or a new canonical finding ID."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      731,
+      732,
+      733,
+      734,
+      735
+    ],
+    "materializer_flagged_exception_ranks": [
+      731,
+      732,
+      733,
+      734,
+      735
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
