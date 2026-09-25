@@ -1,0 +1,120 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0069-newest-651-660.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0069-newest-651-660.jsonl",
+    "history_rank_from_newest": {
+      "first": 651,
+      "last": 660
+    },
+    "records": 10,
+    "internal_partitions": [
+      {
+        "first": 651,
+        "last": 655,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "5/5 MATCH"
+      },
+      {
+        "first": 656,
+        "last": 660,
+        "records": 5,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "4/5 MATCH; rank 660 MISMATCH PRESERVED"
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "e5ad90c05157b0847c42bef251f5821d2c287441",
+      "stored": "e5ad90c05157b0847c42bef251f5821d2c287441",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "4ebc46cd58eb635bc0727bd3333a480d79d4814a",
+      "stored": "4ebc46cd58eb635bc0727bd3333a480d79d4814a",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "10/10 COMPLETE",
+    "frozen_tree_presence": "10/10 COMPLETE",
+    "source_to_frozen_blob_identity": "9/10 MATCH; rank 660 MISMATCH PRESERVED",
+    "source_frozen_mismatch_ranks": [
+      660
+    ]
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 10,
+    "valid_records": 10,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 10,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 2,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 0,
+    "substantive_non_final_records": 0,
+    "kind_not_verified_records": 8
+  },
+  "implementation_sha_summary": {
+    "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa": 3,
+    "67c7a58aea22cd9e040daaeeaef2ae873e6b59c8": 2
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [
+      652,
+      653,
+      654,
+      655,
+      656,
+      657,
+      659,
+      660
+    ],
+    "source_frozen_mismatch_ranks": [
+      660
+    ],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "reason": "exact M15 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence; rank 660 source/frozen blob mismatch is retained explicitly without backward normalization or modern-lens inference"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
