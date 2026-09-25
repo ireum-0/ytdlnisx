@@ -74,6 +74,8 @@ Review/evidence establishes semantic decisions. A scheduled review must not perf
 Each new logical review run must create a unique `logical_run_id` and freeze:
 
 - `policy_version = hourly-correctness-review-v2`;
+- exact `protocol_path = HOURLY_CORRECTNESS_REVIEW_V2.md`;
+- exact `protocol_blob_sha` and the `plan/remediation` commit that supplied it;
 - exact `implementation_sha`;
 - exact starting `review_history_basis_sha`;
 - exact `plan_sha`;
@@ -82,7 +84,7 @@ Each new logical review run must create a unique `logical_run_id` and freeze:
 - governing checklist path/blob/hash or adoption identity;
 - canonical registry/status blobs actually consulted.
 
-These semantic pins remain fixed for the logical run.
+These semantic pins, including the protocol blob itself, remain fixed for the logical run. If a newer protocol revision appears while a run is incomplete, finish/resume that run under its frozen protocol blob; apply the newer protocol only to a new logical run.
 
 If `checkpoint/pre-baseline-review` advances while a logical run is in progress:
 - finish or checkpoint the current run against its frozen implementation SHA;
@@ -293,6 +295,7 @@ If interrupted before any material state has been established, it is acceptable 
 Every v2 checkpoint must include, as applicable:
 
 - `policy_version`;
+- `protocol_path` and exact `protocol_blob_sha`;
 - `logical_run_id`;
 - `checkpoint_kind: INTERMEDIATE | FINAL | BLOCKED`;
 - exact frozen `implementation_sha`;
