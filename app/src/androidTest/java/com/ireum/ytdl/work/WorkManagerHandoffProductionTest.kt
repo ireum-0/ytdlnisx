@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.preference.PreferenceManager
@@ -17,12 +18,15 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.AutomaticKeywordRule
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -461,6 +465,270 @@ class WorkManagerHandoffProductionTest {
         assertEquals(enqueueCountBeforeRecovery, requests.size)
     }
 
+    @Test
+    fun automaticKeywordSyncStagesExactRevisionAndRequestBeforeAcceptance() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 4L)
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                4L,
+                "BASELINE_ONLY",
+            )
+        }
+        val handoffId = requireNotNull(change.handoffId)
+        val staged = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC, staged.kind)
+        assertEquals(ruleId, staged.sourceId)
+        assertEquals(4L, staged.sourceConfigurationGeneration)
+        assertEquals("BASELINE_ONLY", staged.decision)
+
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, handoffId)
+        val operation = awaitOperation()
+        val request = requests.single()
+        assertEquals(staged.requestId, request.id.toString())
+        assertEquals("AUTOMATIC_KEYWORD_RULE_SYNC_$ruleId", workNames.single())
+        assertEquals(ExistingWorkPolicy.REPLACE, policies.single())
+        assertEquals(4L, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_REVISION, -1L))
+        assertEquals(ruleId, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, 0L))
+        assertEquals("BASELINE_ONLY", request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_MODE))
+        assertEquals(handoffId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_HANDOFF_ID))
+        assertEquals(staged.generationId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_GENERATION_ID))
+        assertEquals(staged.requestId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_REQUEST_ID))
+        assertFalse(attempt.isCompleted)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+            database.workManagerHandoffCarrierDao.get(handoffId)?.state)
+
+        operation.succeed()
+        assertTrue(withTimeout(2_000L) { attempt.await() }.accepted)
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED,
+            database.workManagerHandoffCarrierDao.get(handoffId)?.state)
+    }
+
+    @Test
+    fun automaticKeywordSyncNowCommitsRevisionAndCarrierAsOneOwner() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(
+            revision = 9L,
+            baselineComplete = true,
+            status = AutomaticKeywordSyncStatus.SUCCESS,
+        )
+        val repository = AutomaticKeywordRuleRepository(context, database)
+
+        assertTrue(repository.syncNow(ruleId))
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        assertEquals(10L, rule.revision)
+        assertEquals(AutomaticKeywordSyncStatus.QUEUED, rule.manualSyncStatus)
+        assertTrue(rule.pendingApplyToExisting)
+        assertEquals(rule.revision, carrier.sourceConfigurationGeneration)
+        assertEquals("APPLY_EXISTING", carrier.decision)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, carrier.state)
+        awaitOperation()
+        Unit
+    }
+
+    @Test
+    fun automaticKeywordAcceptedOwnerWithMissingWorkInfoIsNotDuplicatedAfterRestart() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 3L)
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                3L,
+                "BASELINE_ONLY",
+            )
+        }
+        val handoffId = requireNotNull(change.handoffId)
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, handoffId)
+        awaitOperation().succeed()
+        assertTrue(withTimeout(2_000L) { attempt.await() }.accepted)
+        val accepted = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val enqueueCountBeforeRestart = requests.size
+
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
+            workNames += name
+            policies += policy
+            requests += request
+            ControlledOperation().also { operations += it }
+        }
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val afterRestart = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, afterRestart.state)
+        assertEquals(accepted.requestId, afterRestart.requestId)
+        assertEquals(accepted.generationId, afterRestart.generationId)
+        assertEquals(enqueueCountBeforeRestart, requests.size)
+    }
+
+    @Test
+    fun automaticKeywordEnqueueFailureAdvancesOnlyRequestAttemptAndRecoversAfterRestart() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 6L)
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                6L,
+                "BASELINE_ONLY",
+            )
+        }
+        val handoffId = requireNotNull(change.handoffId)
+        val initial = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, handoffId)
+        awaitOperation().fail(IllegalStateException("operation did not accept"))
+        assertEquals(WorkManagerHandoffRecovery.OutcomeKind.RETRYING, attempt.await().kind)
+
+        val retryable = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, retryable.state)
+        assertEquals(initial.generationId, retryable.generationId)
+        assertEquals(1, retryable.attempt)
+        assertNotNull(retryable.requestId)
+        assertTrue(initial.requestId != retryable.requestId)
+        assertEquals(6L, retryable.sourceConfigurationGeneration)
+
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
+            workNames += name
+            policies += policy
+            requests += request
+            ControlledOperation().also { operations += it }
+        }
+        WorkManagerHandoffRecovery.reconcile(context)
+        val recoveredOperation = awaitOperation()
+        val recoveredRequest = requests.last()
+        assertEquals(retryable.requestId, recoveredRequest.id.toString())
+        recoveredOperation.succeed()
+        withTimeout(5_000L) {
+            while (database.workManagerHandoffCarrierDao.get(handoffId)?.state !=
+                WorkManagerHandoffCarrier.ACCEPTED
+            ) delay(5L)
+        }
+        val recovered = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertEquals(retryable.generationId, recovered.generationId)
+        assertEquals(retryable.requestId, recovered.requestId)
+    }
+
+    @Test
+    fun disablingAutomaticKeywordRuleSupersedesItsCurrentOwner() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 1L)
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                1L,
+                "BASELINE_ONLY",
+            )
+        }
+        val oldId = requireNotNull(change.handoffId)
+
+        AutomaticKeywordRuleRepository(context, database).setEnabled(ruleId, false)
+
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertFalse(rule.enabled)
+        assertEquals(2L, rule.revision)
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        assertTrue(
+            database.workManagerHandoffCarrierDao.get(oldId)?.state in
+                setOf(null, WorkManagerHandoffCarrier.SUPERSEDED),
+        )
+    }
+
+    @Test
+    fun deletingAutomaticKeywordRuleInvalidatesItsOldCarrier() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 7L)
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                7L,
+                "BASELINE_ONLY",
+            )
+        }
+        val oldId = requireNotNull(change.handoffId)
+
+        AutomaticKeywordRuleRepository(context, database).delete(ruleId)
+
+        assertNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        assertTrue(
+            database.workManagerHandoffCarrierDao.get(oldId)?.state in
+                setOf(null, WorkManagerHandoffCarrier.SUPERSEDED),
+        )
+    }
+
+    @Test
+    fun lateAutomaticKeywordAcceptanceCannotReviveSupersededRevision() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(revision = 1L)
+        val firstChange = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                1L,
+                "BASELINE_ONLY",
+            )
+        }
+        val firstId = requireNotNull(firstChange.handoffId)
+        val firstAttempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, firstId)
+        val firstOperation = awaitOperation()
+        val firstCarrier = requireNotNull(database.workManagerHandoffCarrierDao.get(firstId))
+
+        database.withTransaction {
+            val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+            database.automaticKeywordRuleDao.updateRule(
+                rule.copy(revision = 2L, manualSyncStatus = AutomaticKeywordSyncStatus.QUEUED),
+            )
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                2L,
+                "BASELINE_ONLY",
+            )
+        }
+        val current = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        assertEquals(2L, current.sourceConfigurationGeneration)
+        WorkManagerHandoffRecovery.cancelWorkByIdOperationOverrideForTesting = { requestId ->
+            cancelledRequestIds += requestId
+            ControlledOperation().also { it.succeed() }
+        }
+
+        firstOperation.succeed()
+        val oldOutcome = withTimeout(2_000L) { firstAttempt.await() }
+
+        assertTrue(oldOutcome.superseded)
+        assertEquals(listOf(firstCarrier.requestId), cancelledRequestIds)
+        assertEquals(current.handoffId,
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            )?.handoffId)
+        assertEquals(WorkManagerHandoffCarrier.SUPERSEDED,
+            database.workManagerHandoffCarrierDao.get(firstId)?.state)
+    }
+
     private suspend fun lateAcceptedSchedulerRequestIsRevoked(boundary: String) {
         val handoffId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
             context,
@@ -506,6 +774,23 @@ class WorkManagerHandoffProductionTest {
         }
         return requireNotNull(operation)
     }
+
+    private suspend fun insertAutomaticKeywordRule(
+        revision: Long,
+        baselineComplete: Boolean = false,
+        status: String = AutomaticKeywordSyncStatus.QUEUED,
+        enabled: Boolean = true,
+    ): Long = database.automaticKeywordRuleDao.insertRule(
+        AutomaticKeywordRule(
+            conditionValue = "https://www.youtube.com/playlist?list=keyword-$revision",
+            conditionKey = "youtube:playlist:keyword-$revision",
+            playlistName = "Keyword $revision",
+            enabled = enabled,
+            revision = revision,
+            baselineComplete = baselineComplete,
+            manualSyncStatus = status,
+        ),
+    )
 
     private suspend fun stageObserveRecurrence(sourceId: Long): WorkManagerHandoffCarrier {
         val now = System.currentTimeMillis()

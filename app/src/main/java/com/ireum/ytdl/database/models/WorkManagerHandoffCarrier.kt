@@ -46,6 +46,7 @@ data class WorkManagerHandoffCarrier(
         const val SCHEDULE_END = "SCHEDULE_END"
         const val OBSERVE_RETRY_DOWNLOAD = "OBSERVE_RETRY_DOWNLOAD"
         const val OBSERVE_RECURRENCE = "OBSERVE_RECURRENCE"
+        const val AUTOMATIC_KEYWORD_SYNC = "AUTOMATIC_KEYWORD_SYNC"
 
         const val START_BOUNDARY = "START"
         const val END_BOUNDARY = "END"

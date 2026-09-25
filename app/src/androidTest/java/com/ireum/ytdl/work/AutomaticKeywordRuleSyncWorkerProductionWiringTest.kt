@@ -2,6 +2,7 @@ package com.ireum.ytdl.work
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.BackoffPolicy
@@ -23,6 +24,7 @@ import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.SourceSnapshot
@@ -58,11 +60,13 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         context = ApplicationProvider.getApplicationContext()
         workManager = WorkManager.getInstance(context)
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        WorkManagerHandoffRecovery.clearForTesting()
         database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
             .addTypeConverter(Converters())
             .allowMainThreadQueries()
             .build()
         AutomaticKeywordRuleSyncWorkerTestHooks.dbManagerForTesting = database
+        WorkManagerHandoffRecovery.databaseForTesting = database
         AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = null
         AutomaticKeywordRuleSyncWorkerTestHooks.afterFetchForTesting = null
     }
@@ -70,6 +74,7 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
     @After
     fun tearDown() {
         workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
+        WorkManagerHandoffRecovery.clearForTesting()
         AutomaticKeywordRuleSyncWorkerTestHooks.clearForTesting()
         database.close()
     }
@@ -265,6 +270,126 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
     }
 
     @Test
+    fun staleRevisionIsRejectedBeforeExtractionThroughProductionWorker() = runBlocking {
+        val ruleId = insertRule(baselineComplete = false)
+        val original = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                original.revision,
+                "BASELINE_ONLY",
+            )
+        }
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.get(requireNotNull(change.handoffId)),
+        )
+        database.automaticKeywordRuleDao.updateRule(
+            original.copy(
+                revision = original.revision + 1,
+                manualSyncStatus = AutomaticKeywordSyncStatus.NEVER,
+            ),
+        )
+        val extractionCount = AtomicInteger(0)
+        AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = {
+            extractionCount.incrementAndGet()
+            SourceSnapshot.authoritative(emptyList())
+        }
+        val request = workerRequest(carrier)
+        workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        val info = withTimeout(10_000L) {
+            while (true) {
+                val current = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                }
+                if (current?.state?.isFinished == true) return@withTimeout requireNotNull(current)
+                delay(25L)
+            }
+            error("unreachable")
+        }
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(0, extractionCount.get())
+        assertEquals(AutomaticKeywordSyncStatus.NEVER,
+            database.automaticKeywordRuleDao.getRule(ruleId)?.manualSyncStatus)
+    }
+
+    @Test
+    fun wrongModeCarrierIsRejectedBeforeExtractionThroughProductionWorker() = runBlocking {
+        val ruleId = insertRule(baselineComplete = false)
+        val original = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                original.revision,
+                "APPLY_EXISTING",
+            )
+        }
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.get(requireNotNull(change.handoffId)),
+        )
+        val extractionCount = AtomicInteger(0)
+        AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = {
+            extractionCount.incrementAndGet()
+            SourceSnapshot.authoritative(emptyList())
+        }
+        val request = workerRequest(carrier)
+        workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        val info = withTimeout(10_000L) {
+            while (true) {
+                val current = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                }
+                if (current?.state?.isFinished == true) return@withTimeout requireNotNull(current)
+                delay(25L)
+            }
+            error("unreachable")
+        }
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(0, extractionCount.get())
+        assertEquals(
+            AutomaticKeywordSyncStatus.NEVER,
+            database.automaticKeywordRuleDao.getRule(ruleId)?.manualSyncStatus,
+        )
+    }
+
+    @Test
+    fun unboundLegacyWorkRequestCannotBorrowCurrentRuleAuthority() = runBlocking {
+        val ruleId = insertRule(baselineComplete = false)
+        val extractionCount = AtomicInteger(0)
+        AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = {
+            extractionCount.incrementAndGet()
+            SourceSnapshot.authoritative(emptyList())
+        }
+        val request = OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
+            .setInputData(
+                Data.Builder()
+                    .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, ruleId)
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_MODE, "BASELINE_ONLY")
+                    .build(),
+            )
+            .build()
+        workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+        val info = withTimeout(10_000L) {
+            while (true) {
+                val current = withContext(Dispatchers.IO) {
+                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                }
+                if (current?.state?.isFinished == true) return@withTimeout requireNotNull(current)
+                delay(25L)
+            }
+            error("unreachable")
+        }
+
+        assertEquals(WorkInfo.State.SUCCEEDED, info.state)
+        assertEquals(0, extractionCount.get())
+        assertEquals(AutomaticKeywordSyncStatus.NEVER,
+            database.automaticKeywordRuleDao.getRule(ruleId)?.manualSyncStatus)
+    }
+
+    @Test
     fun partialRetriesReachExhaustionWithoutGrantingBaselineOrApplyExistingAuthority() = runBlocking {
         val existingHistoryId = insertHistory("https://youtu.be/existing")
         val ruleId = insertRule(
@@ -359,23 +484,28 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
             )
         )
         AutomaticKeywordRuleSyncWorkerTestHooks.sourceSnapshotForTesting = { snapshot }
-        val request = OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
-            .addTag("automatic-keyword-production-test")
-            .setInputData(
-                Data.Builder()
-                    .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, ruleId)
-                    .putString(
-                        AutomaticKeywordRuleSyncWorker.INPUT_MODE,
-                        "BASELINE_ONLY",
-                    )
-                    .build()
+        val mode = if (currentRule.pendingApplyToExisting) {
+            "APPLY_EXISTING"
+        } else {
+            "BASELINE_ONLY"
+        }
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                currentRule.revision,
+                mode,
             )
-            .build()
-        workManager.enqueue(request)
+        }
+        val handoffId = requireNotNull(change.handoffId)
+        val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val requestId = java.util.UUID.fromString(carrier.requestId)
+        val request = workerRequest(carrier)
+        workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
         val observed = withTimeout(30_000L) {
             while (true) {
                 val info = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                    workManager.getWorkInfoById(requestId).get(5, TimeUnit.SECONDS)
                 }
                 val current = database.automaticKeywordRuleDao.getRule(ruleId)
                 if (
@@ -393,7 +523,7 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
             }
             error("unreachable")
         }
-        workManager.cancelWorkById(request.id).result.get(10, TimeUnit.SECONDS)
+        workManager.cancelWorkById(requestId).result.get(10, TimeUnit.SECONDS)
         return observed
     }
 
@@ -414,28 +544,28 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
             attempts.incrementAndGet()
             snapshot
         }
-        val request = OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
-            .addTag("automatic-keyword-production-exhaustion-test")
-            .setInputData(
-                Data.Builder()
-                    .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, ruleId)
-                    .putString(
-                        AutomaticKeywordRuleSyncWorker.INPUT_MODE,
-                        "BASELINE_ONLY",
-                    )
-                    .build()
+        val mode = if (currentRule.pendingApplyToExisting) {
+            "APPLY_EXISTING"
+        } else {
+            "BASELINE_ONLY"
+        }
+        val change = database.withTransaction {
+            WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                database,
+                ruleId,
+                currentRule.revision,
+                mode,
             )
-            .setBackoffCriteria(
-                BackoffPolicy.LINEAR,
-                10L,
-                TimeUnit.SECONDS,
-            )
-            .build()
+        }
+        val handoffId = requireNotNull(change.handoffId)
+        val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val requestId = java.util.UUID.fromString(carrier.requestId)
+        val request = workerRequest(carrier, BackoffPolicy.LINEAR, 10L)
         workManager.enqueue(request).result.get(10, TimeUnit.SECONDS)
         return withTimeout(90_000L) {
             while (true) {
                 val info = withContext(Dispatchers.IO) {
-                    workManager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                    workManager.getWorkInfoById(requestId).get(5, TimeUnit.SECONDS)
                 }
                 if (info?.state?.isFinished == true) {
                     return@withTimeout requireNotNull(info)
@@ -464,6 +594,29 @@ class AutomaticKeywordRuleSyncWorkerProductionWiringTest {
         )
         return id
     }
+
+    private fun workerRequest(
+        carrier: WorkManagerHandoffCarrier,
+        policy: BackoffPolicy = BackoffPolicy.EXPONENTIAL,
+        backoffSeconds: Long = 30L,
+    ) = OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
+        .setId(java.util.UUID.fromString(carrier.requestId))
+        .setInputData(
+            Data.Builder()
+                .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, carrier.sourceId)
+                .putLong(
+                    AutomaticKeywordRuleSyncWorker.INPUT_REVISION,
+                    carrier.sourceConfigurationGeneration,
+                )
+                .putString(AutomaticKeywordRuleSyncWorker.INPUT_MODE, carrier.decision)
+                .putString(AutomaticKeywordRuleSyncWorker.INPUT_HANDOFF_ID, carrier.handoffId)
+                .putString(AutomaticKeywordRuleSyncWorker.INPUT_REQUEST_ID, carrier.requestId)
+                .putString(AutomaticKeywordRuleSyncWorker.INPUT_GENERATION_ID, carrier.generationId)
+                .putString(AutomaticKeywordRuleSyncWorker.INPUT_BOUNDARY, carrier.boundary)
+                .build(),
+        )
+        .setBackoffCriteria(policy, backoffSeconds, TimeUnit.SECONDS)
+        .build()
 
     private suspend fun insertHistory(url: String): Long =
         HistoryKeywordAssignmentRepository(database).insertHistory(history(url))

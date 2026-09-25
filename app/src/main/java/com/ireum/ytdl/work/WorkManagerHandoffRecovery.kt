@@ -6,6 +6,7 @@ import androidx.preference.PreferenceManager
 import androidx.room.withTransaction
 import androidx.work.Constraints
 import androidx.work.Data
+import androidx.work.BackoffPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequest
@@ -19,6 +20,8 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.RestoreTransactionCoordinator.RestoreReconciliationAuthority
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
+import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
@@ -82,6 +85,11 @@ internal object WorkManagerHandoffRecovery {
         val supersededHandoffId: String? = null,
     )
 
+    internal data class AutomaticKeywordOwnerChange(
+        val handoffId: String? = null,
+        val supersededHandoffIds: List<String> = emptyList(),
+    )
+
     private const val TAG = "WorkManagerHandoffRecovery"
     private const val START_WORK_NAME = "scheduled_download_start"
     private const val END_WORK_NAME = "scheduled_download_end"
@@ -120,6 +128,134 @@ internal object WorkManagerHandoffRecovery {
 
     @Volatile
     internal var cancelWorkByIdOperationOverrideForTesting: ((String) -> Operation)? = null
+
+    /**
+     * Stages a revision-bound automatic-keyword owner inside the caller's
+     * Room transaction. Rule publication and enqueue debt therefore share a
+     * durable commit boundary.
+     */
+    internal suspend fun stageAutomaticKeywordSyncWithinTransaction(
+        db: DBManager,
+        ruleId: Long,
+        revision: Long,
+        mode: String,
+    ): AutomaticKeywordOwnerChange {
+        require(ruleId > 0L && revision > 0L)
+        require(mode == "APPLY_EXISTING" || mode == "BASELINE_ONLY")
+        val boundary = ruleId.toString()
+        val dao = db.workManagerHandoffCarrierDao
+        val previous = dao.getOutstandingForBoundary(
+            WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+            boundary,
+        )
+        val now = System.currentTimeMillis()
+        previous?.let {
+            dao.markSuperseded(it.handoffId, it.requestId, now)
+        }
+        val handoffId = UUID.randomUUID().toString()
+        val carrier = WorkManagerHandoffCarrier(
+            handoffId = handoffId,
+            kind = WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+            generationId = UUID.randomUUID().toString(),
+            requestId = UUID.randomUUID().toString(),
+            uniqueWorkName = "AUTOMATIC_KEYWORD_RULE_SYNC_$ruleId",
+            sourceId = ruleId,
+            decision = mode,
+            sourceConfigurationGeneration = revision,
+            boundary = boundary,
+            createdAt = now,
+            updatedAt = now,
+        )
+        check(dao.insert(carrier) != -1L) {
+            "Automatic keyword handoff already exists: $handoffId"
+        }
+        return AutomaticKeywordOwnerChange(
+            handoffId = handoffId,
+            supersededHandoffIds = listOfNotNull(previous?.handoffId),
+        )
+    }
+
+    /** Marks the current per-rule request stale in the caller's Room transaction. */
+    internal suspend fun supersedeAutomaticKeywordSyncWithinTransaction(
+        db: DBManager,
+        ruleId: Long,
+    ): AutomaticKeywordOwnerChange {
+        val boundary = ruleId.toString()
+        val previous = db.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+            WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+            boundary,
+        ) ?: return AutomaticKeywordOwnerChange()
+        db.workManagerHandoffCarrierDao.markSuperseded(
+            previous.handoffId,
+            previous.requestId,
+            System.currentTimeMillis(),
+        )
+        return AutomaticKeywordOwnerChange(
+            supersededHandoffIds = listOf(previous.handoffId),
+        )
+    }
+
+    /** Starts asynchronous publication only after the owner transaction commits. */
+    internal fun dispatchAutomaticKeywordOwnerChange(
+        context: Context,
+        change: AutomaticKeywordOwnerChange,
+    ) {
+        change.supersededHandoffIds.forEach { handoffId ->
+            retryJobs.remove(handoffId)?.cancel()
+            attemptJobs.remove(handoffId)?.cancel()
+            convergenceScope.launch(Dispatchers.IO) {
+                val carrier = database(context).workManagerHandoffCarrierDao.get(handoffId)
+                if (carrier?.state == WorkManagerHandoffCarrier.SUPERSEDED) {
+                    reconcileSuperseded(context.applicationContext, carrier)
+                }
+            }
+        }
+        change.handoffId?.let { handoffId ->
+            convergenceScope.launch {
+                enqueueAndAwaitInternal(context.applicationContext, handoffId, null).await()
+            }
+        }
+    }
+
+    /**
+     * Worker-boundary validation for the exact rule revision, semantic mode,
+     * carrier generation, WorkRequest UUID, and current durable owner.
+     */
+    internal suspend fun isCurrentAutomaticKeywordSyncRequest(
+        context: Context,
+        ruleId: Long,
+        revision: Long,
+        mode: String,
+        handoffId: String,
+        requestId: String,
+        generationId: String,
+        boundary: String,
+        workRequestId: String,
+    ): Boolean {
+        if (RestoreGate.isRestoreInProgress(context) ||
+            requestId.isBlank() || generationId.isBlank() || handoffId.isBlank() ||
+            requestId != workRequestId || boundary != ruleId.toString() ||
+            mode !in setOf("APPLY_EXISTING", "BASELINE_ONLY")
+        ) return false
+        val dao = database(context).workManagerHandoffCarrierDao
+        val carrier = dao.get(handoffId) ?: return false
+        if (carrier.kind != WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            carrier.sourceId != ruleId || carrier.sourceConfigurationGeneration != revision ||
+            carrier.decision != mode || carrier.requestId != requestId ||
+            carrier.generationId != generationId || carrier.boundary != boundary ||
+            carrier.uniqueWorkName != "AUTOMATIC_KEYWORD_RULE_SYNC_$ruleId" ||
+            carrier.state !in setOf(
+                WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+                WorkManagerHandoffCarrier.ACCEPTED,
+            )
+        ) return false
+        val current = dao.getOutstandingForBoundary(carrier.kind, boundary)
+        if (current?.handoffId != handoffId || current.requestId != requestId) return false
+        val rule = database(context).automaticKeywordRuleDao.getRule(ruleId) ?: return false
+        return rule.enabled &&
+            rule.revision == revision &&
+            mode == expectedAutomaticKeywordMode(rule.pendingApplyToExisting)
+    }
 
     /**
      * Commits worker-owned runtime state and its ordinary recurring successor
@@ -706,12 +842,87 @@ internal object WorkManagerHandoffRecovery {
         RestoreMutationAdmission.withOrdinaryMutation(appContext) {
             dao.deleteResolved()
         }
+        reconcileAutomaticKeywordRules(appContext)
         dao.getSuperseded().forEach { carrier ->
             reconcileSuperseded(appContext, carrier)
         }
         dao.getOutstanding().forEach { carrier ->
             reconcileCarrier(appContext, carrier)
         }
+    }
+
+    /** Reconstructs the durable owner for legacy or interrupted queued syncs. */
+    private suspend fun reconcileAutomaticKeywordRules(context: Context) {
+        val db = database(context)
+        val changes = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            db.withTransaction {
+                buildList {
+                    db.automaticKeywordRuleDao.getAllRules().forEach { rule ->
+                        val currentOwner = db.workManagerHandoffCarrierDao
+                            .getOutstandingForBoundary(
+                                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                                rule.id.toString(),
+                            )
+                        if (!rule.enabled) {
+                            val superseded = supersedeAutomaticKeywordSyncWithinTransaction(db, rule.id)
+                            if (rule.manualSyncStatus in setOf(
+                                    AutomaticKeywordSyncStatus.QUEUED,
+                                    AutomaticKeywordSyncStatus.RUNNING,
+                                )
+                            ) {
+                                db.automaticKeywordRuleDao.updateManualSyncStatusIfRevision(
+                                    rule.id,
+                                    rule.revision,
+                                    AutomaticKeywordSyncStatus.NEVER,
+                                    System.currentTimeMillis(),
+                                    AutomaticKeywordSyncError.NONE,
+                                )
+                            }
+                            if (superseded.supersededHandoffIds.isNotEmpty()) add(superseded)
+                            return@forEach
+                        }
+                        if (rule.manualSyncStatus !in setOf(
+                                AutomaticKeywordSyncStatus.QUEUED,
+                                AutomaticKeywordSyncStatus.RUNNING,
+                            )
+                        ) return@forEach
+
+                        val expectedMode = expectedAutomaticKeywordMode(rule.pendingApplyToExisting)
+                        val ownerMatches = currentOwner?.let {
+                            it.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC &&
+                                it.sourceId == rule.id &&
+                                it.sourceConfigurationGeneration == rule.revision &&
+                                it.boundary == rule.id.toString() &&
+                                it.uniqueWorkName == "AUTOMATIC_KEYWORD_RULE_SYNC_${rule.id}" &&
+                                it.decision == expectedMode
+                        } == true
+                        if (ownerMatches) return@forEach
+
+                        if (rule.manualSyncStatus != AutomaticKeywordSyncStatus.QUEUED) {
+                            check(
+                                db.automaticKeywordRuleDao.updateManualSyncStatusIfRevision(
+                                    rule.id,
+                                    rule.revision,
+                                    AutomaticKeywordSyncStatus.QUEUED,
+                                    System.currentTimeMillis(),
+                                    AutomaticKeywordSyncError.NONE,
+                                ) == 1
+                            ) { "Automatic keyword sync status changed during startup recovery" }
+                        }
+                        val mode = expectedMode
+                        add(
+                            stageAutomaticKeywordSyncWithinTransaction(
+                                db,
+                                rule.id,
+                                rule.revision,
+                                mode,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        changes.forEach { dispatchAutomaticKeywordOwnerChange(context, it) }
     }
     suspend fun markObserveRetryResolved(
         context: Context,
@@ -765,18 +976,26 @@ internal object WorkManagerHandoffRecovery {
     private fun retainsCarrierUntilWorkerTerminal(kind: String): Boolean =
         kind == WorkManagerHandoffCarrier.SCHEDULE_START ||
             kind == WorkManagerHandoffCarrier.SCHEDULE_END ||
-            kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE
+            kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ||
+            kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
     private suspend fun reconcileSuperseded(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
     ) {
-        RestoreMutationAdmission.withOrdinaryMutation(context) {
-            val existing = workInfo(context, carrier.requestId)
-            if (existing != null && !existing.state.isFinished) {
-                runCatching { cancelWorkByIdAndAwait(context, carrier.requestId) }
-            }
-            val afterCancellation = workInfo(context, carrier.requestId)
-            if (afterCancellation == null || afterCancellation.state.isFinished) {
+        if (RestoreGate.isRestoreInProgress(context)) return
+        val existing = workInfo(context, carrier.requestId)
+        if (existing != null && !existing.state.isFinished) {
+            runCatching { cancelWorkByIdAndAwait(context, carrier.requestId) }
+        }
+        val afterCancellation = workInfo(context, carrier.requestId)
+        if (afterCancellation == null && retainsSupersededTombstone(carrier.kind)) {
+            // Keep the exact request tombstone until WorkManager proves that
+            // the request reached a terminal state.  A null WorkInfo is not
+            // proof that an in-flight enqueue cannot accept late.
+            return
+        }
+        if (afterCancellation == null || afterCancellation.state.isFinished) {
+            RestoreMutationAdmission.withOrdinaryMutation(context) {
                 database(context).workManagerHandoffCarrierDao.deleteExact(
                     carrier.handoffId,
                     carrier.requestId,
@@ -784,6 +1003,9 @@ internal object WorkManagerHandoffRecovery {
             }
         }
     }
+
+    private fun retainsSupersededTombstone(kind: String): Boolean =
+        kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
     private suspend fun reconcileCarrier(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -811,6 +1033,19 @@ internal object WorkManagerHandoffRecovery {
                 }
                 carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
                     workInfo?.state?.isFinished == true -> {
+                    retryAfterFailure(context, carrier, null)
+                }
+                carrier.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC &&
+                    workInfo?.state == WorkInfo.State.SUCCEEDED -> {
+                    withCarrierMutation(context, null) {
+                        database(context).workManagerHandoffCarrierDao.deleteExact(
+                            carrier.handoffId,
+                            carrier.requestId,
+                        )
+                    }
+                }
+                carrier.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC &&
+                    workInfo?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) -> {
                     retryAfterFailure(context, carrier, null)
                 }
                 retainsCarrierUntilWorkerTerminal(carrier.kind) && workInfo == null -> {
@@ -860,10 +1095,19 @@ internal object WorkManagerHandoffRecovery {
                 }
                 if (
                     accepted > 0 &&
-                    carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD &&
                     workInfo.state == WorkInfo.State.SUCCEEDED
                 ) {
-                    markObserveRetryResolved(context, carrier.handoffId, carrier.requestId)
+                    when (carrier.kind) {
+                        WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD ->
+                            markObserveRetryResolved(context, carrier.handoffId, carrier.requestId)
+                        WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ->
+                            withCarrierMutation(context, null) {
+                                database(context).workManagerHandoffCarrierDao.deleteExact(
+                                    carrier.handoffId,
+                                    carrier.requestId,
+                                )
+                            }
+                    }
                 }
             }
             WorkInfo.State.FAILED,
@@ -934,6 +1178,23 @@ internal object WorkManagerHandoffRecovery {
             source.configurationGeneration == carrier.sourceConfigurationGeneration
     }
 
+    private suspend fun isCurrentAutomaticKeywordAuthority(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC) return true
+        val rule = database(context).automaticKeywordRuleDao.getRule(carrier.sourceId) ?: return false
+        val expectedMode = expectedAutomaticKeywordMode(rule.pendingApplyToExisting)
+        return carrier.boundary == carrier.sourceId.toString() &&
+            carrier.uniqueWorkName == "AUTOMATIC_KEYWORD_RULE_SYNC_${carrier.sourceId}" &&
+            carrier.generationId.isNotBlank() &&
+            carrier.decision == expectedMode &&
+            rule.enabled && rule.revision == carrier.sourceConfigurationGeneration
+    }
+
+    private fun expectedAutomaticKeywordMode(pendingApplyToExisting: Boolean): String =
+        if (pendingApplyToExisting) "APPLY_EXISTING" else "BASELINE_ONLY"
+
     private suspend fun isCurrentObserveExecutionAuthority(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -942,6 +1203,8 @@ internal object WorkManagerHandoffRecovery {
             isCurrentObserveRetryAuthority(context, carrier)
         WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ->
             isCurrentObserveRecurrenceAuthority(context, carrier)
+        WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ->
+            isCurrentAutomaticKeywordAuthority(context, carrier)
         else -> true
     }
 
@@ -994,8 +1257,33 @@ internal object WorkManagerHandoffRecovery {
         context: Context,
         carrier: WorkManagerHandoffCarrier,
         authority: RestoreReconciliationAuthority? = null,
-    ): Boolean = retireStaleObserveRetryCarrier(context, carrier, authority) ||
+    ): Boolean = retireStaleAutomaticKeywordCarrier(context, carrier, authority) ||
+        retireStaleObserveRetryCarrier(context, carrier, authority) ||
         retireStaleObserveRecurrenceCarrier(context, carrier)
+
+    private suspend fun retireStaleAutomaticKeywordCarrier(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+        authority: RestoreReconciliationAuthority? = null,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC) return false
+        val stale = withCarrierMutation(context, authority) {
+            if (isCurrentAutomaticKeywordAuthority(context, carrier) &&
+                isDurablyCurrentRetainedCarrier(context, carrier)
+            ) {
+                false
+            } else {
+                database(context).workManagerHandoffCarrierDao.markSuperseded(
+                    carrier.handoffId,
+                    carrier.requestId,
+                    System.currentTimeMillis(),
+                )
+                true
+            }
+        }
+        if (stale) reconcileSuperseded(context, carrier)
+        return stale
+    }
 
     private suspend fun performAttempt(
         context: Context,
@@ -1042,11 +1330,11 @@ internal object WorkManagerHandoffRecovery {
         }
 
         return try {
-            val result = if (authority == null) {
+            val operation = if (authority == null) {
                 // Enter admission only for the enqueue publication call. Awaiting
                 // Operation.result while holding the process-global mutex would
                 // block a newer REPLACE generation from superseding this attempt.
-                val operation = RestoreMutationAdmission.withOrdinaryMutation(context) {
+                RestoreMutationAdmission.withOrdinaryMutation(context) {
                     if (!schedulerAuthorityAvailable(context, null) ||
                         !isCurrentGeneration(carrier) ||
                         !isCurrentObserveExecutionAuthority(context, carrier) ||
@@ -1061,16 +1349,6 @@ internal object WorkManagerHandoffRecovery {
                         )
                     }
                 }
-                if (operation == null) {
-                    null
-                } else {
-                    val failure = awaitOperation(operation)
-                    if (failure != null) {
-                        retryAfterFailure(context, carrier, failure, null)
-                    } else {
-                        finalizeAccepted(context, carrier, null)
-                    }
-                }
             } else {
                 RestoreMutationAdmission.withRestoreMutation {
                     RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
@@ -1082,18 +1360,22 @@ internal object WorkManagerHandoffRecovery {
                     ) {
                         null
                     } else {
-                        val operation = enqueueUniqueWork(
+                        enqueueUniqueWork(
                             context = context,
                             uniqueWorkName = carrier.uniqueWorkName,
                             request = request,
                         )
-                        val failure = awaitOperation(operation)
-                        if (failure != null) {
-                            retryAfterFailure(context, carrier, failure, authority)
-                        } else {
-                            finalizeAccepted(context, carrier, authority)
-                        }
                     }
+                }
+            }
+            val result = if (operation == null) {
+                null
+            } else {
+                val failure = awaitOperation(operation)
+                if (failure != null) {
+                    retryAfterFailure(context, carrier, failure, authority)
+                } else {
+                    finalizeAccepted(context, carrier, authority)
                 }
             }
             if (result == null && schedulerAuthorityAvailable(context, authority) &&
@@ -1690,6 +1972,36 @@ internal object WorkManagerHandoffRecovery {
                     .build()
             }
 
+            WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC -> {
+                val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+                val networkType = if (preferences.getBoolean("metered_networks", true)) {
+                    NetworkType.CONNECTED
+                } else {
+                    NetworkType.UNMETERED
+                }
+                val keywordInput = Data.Builder()
+                    .putLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, carrier.sourceId)
+                    .putLong(
+                        AutomaticKeywordRuleSyncWorker.INPUT_REVISION,
+                        carrier.sourceConfigurationGeneration,
+                    )
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_MODE, carrier.decision)
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_HANDOFF_ID, carrier.handoffId)
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_REQUEST_ID, carrier.requestId)
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_GENERATION_ID, carrier.generationId)
+                    .putString(AutomaticKeywordRuleSyncWorker.INPUT_BOUNDARY, carrier.boundary)
+                    .build()
+                OneTimeWorkRequestBuilder<AutomaticKeywordRuleSyncWorker>()
+                    .setId(requestId)
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(networkType).build())
+                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                    .addTag("automaticKeywordRules")
+                    .addTag("automaticKeywordRule_${carrier.sourceId}")
+                    .setInputData(keywordInput)
+                    .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
+                    .build()
+            }
+
             else -> error("Unknown WorkManager handoff kind ${carrier.kind}")
         }
     }
@@ -1754,7 +2066,9 @@ internal object WorkManagerHandoffRecovery {
         // Recurrence authority is the exact durable owner plus source
         // generation. A process-local map can lag a committed transaction if
         // its worker is cancelled before this process refreshes the map.
-        if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE) return true
+        if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ||
+            carrier.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
+        ) return true
         return latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)]
             ?.let { it == carrier.handoffId }
             ?: true

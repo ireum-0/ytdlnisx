@@ -675,6 +675,17 @@ object RestoreTransactionCoordinator {
             add(CleanupScheduleCoordinator.TAG)
             if (hasDownloadReset) add("low_quality_redownload")
         }
+        if (hasKeywordReset) {
+            val db = DBManager.getInstance(context)
+            RestoreMutationAdmission.withRestoreMutation {
+                db.withTransaction {
+                    db.workManagerHandoffCarrierDao.markSupersededForKinds(
+                        listOf(WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC),
+                        System.currentTimeMillis(),
+                    )
+                }
+            }
+        }
         // Capture explicit owner markers plus only provably-live legacy
         // sessions before cancellation.  The capture runs after the durable
         // Restore owner is published, so a producer cannot appear between the
@@ -1529,18 +1540,26 @@ object RestoreTransactionCoordinator {
             automaticKeywordReconciliationFailureForTesting?.invoke()
             AutomaticKeywordObservationCoverage(context, db).reconcileForRestore(authority)
             db.automaticKeywordRuleDao.getAllEnabledRules()
-                .filter { it.pendingApplyToExisting }
+                .filter {
+                    !it.baselineComplete ||
+                        it.pendingApplyToExisting ||
+                        it.manualSyncStatus in setOf(
+                            AutomaticKeywordSyncStatus.QUEUED,
+                            AutomaticKeywordSyncStatus.RUNNING,
+                        )
+                }
                 .forEach { rule ->
-                    val operation = AutomaticKeywordRuleScheduler.enqueueForRestore(
+                    val mode = if (rule.pendingApplyToExisting) {
+                        AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
+                    } else {
+                        AutomaticKeywordRuleScheduler.Mode.BASELINE_ONLY
+                    }
+                    check(AutomaticKeywordRuleScheduler.enqueueForRestore(
                         context,
                         rule.id,
-                        AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING,
+                        mode,
                         authority,
-                    ) ?: error("Automatic keyword scheduling was not admitted")
-                    operation.result.get(
-                        QUIESCENCE_QUERY_TIMEOUT_MS,
-                        TimeUnit.MILLISECONDS,
-                    )
+                    )) { "Automatic keyword scheduling was not admitted" }
                 }
         }
 

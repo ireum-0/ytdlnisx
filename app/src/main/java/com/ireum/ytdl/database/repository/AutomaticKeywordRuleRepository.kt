@@ -11,6 +11,7 @@ import com.ireum.ytdl.database.models.AutomaticKeywordSyncError
 import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.HistoryKeywordAssignmentSources
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.flow.Flow
 
 data class AutomaticKeywordRuleInput(
@@ -35,165 +36,185 @@ class AutomaticKeywordRuleRepository(
         dao.getRuleKeywords(ruleId).map { it.keyword }
 
     suspend fun save(input: AutomaticKeywordRuleInput): Long {
-        return RestoreMutationAdmission.withOrdinaryMutation(context) {
-        val conditionValue = requireNotNull(
-            AutomaticKeywordNormalizer.canonicalPlaylistUrl(input.playlistUrl)
-        ) { "Invalid playlist URL" }
-        val conditionKey = requireNotNull(
-            AutomaticKeywordNormalizer.playlistConditionKey(conditionValue)
-        ) { "Invalid playlist URL" }
-        val parsedKeywords = input.keywords
-            .flatMap(AutomaticKeywordNormalizer::parseKeywords)
-            .distinctBy(AutomaticKeywordNormalizer::normalizeKeyword)
-        require(parsedKeywords.isNotEmpty()) { "At least one keyword is required" }
+        val (ruleId, ownerChange) = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            val conditionValue = requireNotNull(
+                AutomaticKeywordNormalizer.canonicalPlaylistUrl(input.playlistUrl)
+            ) { "Invalid playlist URL" }
+            val conditionKey = requireNotNull(
+                AutomaticKeywordNormalizer.playlistConditionKey(conditionValue)
+            ) { "Invalid playlist URL" }
+            val parsedKeywords = input.keywords
+                .flatMap(AutomaticKeywordNormalizer::parseKeywords)
+                .distinctBy(AutomaticKeywordNormalizer::normalizeKeyword)
+            require(parsedKeywords.isNotEmpty()) { "At least one keyword is required" }
 
-        val oldRule = input.id.takeIf { it > 0 }?.let { dao.getRule(it) }
-        val conditionChanged = oldRule != null && oldRule.conditionKey != conditionKey
-        val syncWasActive = oldRule?.manualSyncStatus in setOf(
-            AutomaticKeywordSyncStatus.QUEUED,
-            AutomaticKeywordSyncStatus.RUNNING
-        )
-        val nextBaselineComplete =
-            if (conditionChanged) false else oldRule?.baselineComplete ?: false
-        val needsInitialSync = oldRule == null || conditionChanged || !nextBaselineComplete
-        val pendingApplyToExisting = input.applyToExistingVideos ||
-            (syncWasActive && oldRule?.pendingApplyToExisting == true)
-        val (ruleId, ruleRevision) = db.withTransaction {
-            if (conditionChanged) {
-                assignments.removeSourceAssignments(
-                    HistoryKeywordAssignmentSources.RULE,
-                    requireNotNull(oldRule).id
-                )
-            }
-            val next = AutomaticKeywordRule(
-                id = oldRule?.id ?: 0,
-                conditionValue = conditionValue,
-                conditionKey = conditionKey,
-                playlistName = input.playlistName.trim().ifBlank { conditionValue },
-                enabled = input.enabled,
-                revision = (oldRule?.revision ?: 0) + 1,
-                baselineComplete = nextBaselineComplete,
-                pendingApplyToExisting = pendingApplyToExisting,
-                manualSyncStatus = if (syncWasActive) {
-                    AutomaticKeywordSyncStatus.NEVER
-                } else {
-                    oldRule?.manualSyncStatus ?: AutomaticKeywordSyncStatus.NEVER
-                },
-                manualSyncAt = oldRule?.manualSyncAt ?: 0,
-                manualSyncError = oldRule?.manualSyncError ?: AutomaticKeywordSyncError.NONE,
-                discoveryStatus = oldRule?.discoveryStatus ?: AutomaticKeywordSyncStatus.NEVER,
-                discoveryAt = oldRule?.discoveryAt ?: 0,
-                discoveryError = oldRule?.discoveryError ?: AutomaticKeywordSyncError.NONE
-            )
-            val id = if (oldRule == null) dao.insertRule(next) else {
-                dao.updateRule(next)
-                next.id
-            }
-            if (conditionChanged) dao.deleteVideoMatches(id)
-            dao.deleteRuleKeywords(id)
-            dao.insertRuleKeywords(parsedKeywords.mapIndexed { position, keyword ->
-                AutomaticKeywordRuleKeyword(
-                    ruleId = id,
-                    normalizedKeyword = AutomaticKeywordNormalizer.normalizeKeyword(keyword),
-                    keyword = keyword,
-                    position = position
-                )
-            })
-            assignments.replaceRuleAssignmentsForExistingHistories(id, parsedKeywords)
-            id to next.revision
-        }
-
-        val shouldScheduleInitialSync =
-            needsInitialSync || pendingApplyToExisting || syncWasActive
-        if (input.enabled && shouldScheduleInitialSync) {
-            dao.updateManualSyncStatusIfRevision(
-                ruleId,
-                ruleRevision,
+            val oldRule = input.id.takeIf { it > 0 }?.let { dao.getRule(it) }
+            val conditionChanged = oldRule != null && oldRule.conditionKey != conditionKey
+            val syncWasActive = oldRule?.manualSyncStatus in setOf(
                 AutomaticKeywordSyncStatus.QUEUED,
-                System.currentTimeMillis(),
-                AutomaticKeywordSyncError.NONE
+                AutomaticKeywordSyncStatus.RUNNING,
             )
-            AutomaticKeywordRuleScheduler.enqueue(
-                context,
-                ruleId,
-                if (pendingApplyToExisting) {
-                    AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
-                } else {
-                    AutomaticKeywordRuleScheduler.Mode.BASELINE_ONLY
+            val nextBaselineComplete =
+                if (conditionChanged) false else oldRule?.baselineComplete ?: false
+            val needsInitialSync = oldRule == null || conditionChanged || !nextBaselineComplete
+            val pendingApplyToExisting = input.applyToExistingVideos ||
+                (syncWasActive && oldRule?.pendingApplyToExisting == true)
+            val shouldSchedule = input.enabled &&
+                (needsInitialSync || pendingApplyToExisting || syncWasActive)
+
+            val transactionResult = db.withTransaction {
+                if (conditionChanged) {
+                    assignments.removeSourceAssignments(
+                        HistoryKeywordAssignmentSources.RULE,
+                        requireNotNull(oldRule).id,
+                    )
                 }
-            )
-        } else if (!input.enabled && oldRule?.enabled == true) {
-            AutomaticKeywordRuleScheduler.cancel(context, ruleId)
+                val scheduledAt = System.currentTimeMillis()
+                val next = AutomaticKeywordRule(
+                    id = oldRule?.id ?: 0,
+                    conditionValue = conditionValue,
+                    conditionKey = conditionKey,
+                    playlistName = input.playlistName.trim().ifBlank { conditionValue },
+                    enabled = input.enabled,
+                    revision = (oldRule?.revision ?: 0) + 1,
+                    baselineComplete = nextBaselineComplete,
+                    pendingApplyToExisting = pendingApplyToExisting,
+                    manualSyncStatus = when {
+                        shouldSchedule -> AutomaticKeywordSyncStatus.QUEUED
+                        syncWasActive -> AutomaticKeywordSyncStatus.NEVER
+                        else -> oldRule?.manualSyncStatus ?: AutomaticKeywordSyncStatus.NEVER
+                    },
+                    manualSyncAt = if (shouldSchedule) scheduledAt else oldRule?.manualSyncAt ?: 0,
+                    manualSyncError = if (shouldSchedule) {
+                        AutomaticKeywordSyncError.NONE
+                    } else {
+                        oldRule?.manualSyncError ?: AutomaticKeywordSyncError.NONE
+                    },
+                    discoveryStatus = oldRule?.discoveryStatus ?: AutomaticKeywordSyncStatus.NEVER,
+                    discoveryAt = oldRule?.discoveryAt ?: 0,
+                    discoveryError = oldRule?.discoveryError ?: AutomaticKeywordSyncError.NONE,
+                )
+                val id = if (oldRule == null) dao.insertRule(next) else {
+                    dao.updateRule(next)
+                    next.id
+                }
+                if (conditionChanged) dao.deleteVideoMatches(id)
+                dao.deleteRuleKeywords(id)
+                dao.insertRuleKeywords(parsedKeywords.mapIndexed { position, keyword ->
+                    AutomaticKeywordRuleKeyword(
+                        ruleId = id,
+                        normalizedKeyword = AutomaticKeywordNormalizer.normalizeKeyword(keyword),
+                        keyword = keyword,
+                        position = position,
+                    )
+                })
+                assignments.replaceRuleAssignmentsForExistingHistories(id, parsedKeywords)
+
+                val ownerChange = if (shouldSchedule) {
+                    WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                        db,
+                        id,
+                        next.revision,
+                        if (pendingApplyToExisting) "APPLY_EXISTING" else "BASELINE_ONLY",
+                    )
+                } else {
+                    WorkManagerHandoffRecovery.supersedeAutomaticKeywordSyncWithinTransaction(db, id)
+                }
+                id to ownerChange
+            }
+            AutomaticKeywordObservationCoverage(context, db).reconcile()
+            transactionResult
         }
-        AutomaticKeywordObservationCoverage(context, db).reconcile()
-            ruleId
-        }
+        WorkManagerHandoffRecovery.dispatchAutomaticKeywordOwnerChange(context, ownerChange)
+        return ruleId
     }
 
     suspend fun setEnabled(ruleId: Long, enabled: Boolean) {
-        RestoreMutationAdmission.withOrdinaryMutation(context) {
-        val rule = dao.getRule(ruleId) ?: return@withOrdinaryMutation
-        val needsSync = enabled && (!rule.baselineComplete || rule.pendingApplyToExisting)
-        dao.updateRule(
-            rule.copy(
-                enabled = enabled,
-                revision = rule.revision + 1,
-                manualSyncStatus = when {
-                    needsSync -> AutomaticKeywordSyncStatus.QUEUED
-                    !enabled && rule.manualSyncStatus in setOf(
-                        AutomaticKeywordSyncStatus.QUEUED,
-                        AutomaticKeywordSyncStatus.RUNNING
-                    ) -> AutomaticKeywordSyncStatus.NEVER
-                    else -> rule.manualSyncStatus
-                },
-                manualSyncAt = if (needsSync) System.currentTimeMillis() else rule.manualSyncAt,
-                manualSyncError = if (needsSync) {
-                    AutomaticKeywordSyncError.NONE
+        val ownerChange = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            val change = db.withTransaction {
+                val rule = dao.getRule(ruleId) ?: return@withTransaction null
+                val syncWasActive = rule.manualSyncStatus in setOf(
+                    AutomaticKeywordSyncStatus.QUEUED,
+                    AutomaticKeywordSyncStatus.RUNNING,
+                )
+                val needsSync = enabled && (
+                    syncWasActive || !rule.baselineComplete || rule.pendingApplyToExisting
+                )
+                val next = rule.copy(
+                    enabled = enabled,
+                    revision = rule.revision + 1,
+                    manualSyncStatus = when {
+                        needsSync -> AutomaticKeywordSyncStatus.QUEUED
+                        !enabled && rule.manualSyncStatus in setOf(
+                            AutomaticKeywordSyncStatus.QUEUED,
+                            AutomaticKeywordSyncStatus.RUNNING,
+                        ) -> AutomaticKeywordSyncStatus.NEVER
+                        else -> rule.manualSyncStatus
+                    },
+                    manualSyncAt = if (needsSync) System.currentTimeMillis() else rule.manualSyncAt,
+                    manualSyncError = if (needsSync) {
+                        AutomaticKeywordSyncError.NONE
+                    } else {
+                        rule.manualSyncError
+                    },
+                )
+                dao.updateRule(next)
+                if (needsSync) {
+                    WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                        db,
+                        ruleId,
+                        next.revision,
+                        if (rule.pendingApplyToExisting) "APPLY_EXISTING" else "BASELINE_ONLY",
+                    )
                 } else {
-                    rule.manualSyncError
+                    WorkManagerHandoffRecovery.supersedeAutomaticKeywordSyncWithinTransaction(
+                        db,
+                        ruleId,
+                    )
                 }
-            )
-        )
-        if (!enabled) {
-            AutomaticKeywordRuleScheduler.cancel(context, ruleId)
-        } else if (needsSync) {
-            AutomaticKeywordRuleScheduler.enqueue(
-                context,
-                ruleId,
-                if (rule.pendingApplyToExisting) {
-                    AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
-                } else {
-                    AutomaticKeywordRuleScheduler.Mode.BASELINE_ONLY
-                }
-            )
-        }
+            }
             AutomaticKeywordObservationCoverage(context, db).reconcile()
+            change
+        }
+        ownerChange?.let {
+            WorkManagerHandoffRecovery.dispatchAutomaticKeywordOwnerChange(context, it)
         }
     }
 
     suspend fun delete(ruleId: Long) {
-        RestoreMutationAdmission.withOrdinaryMutation(context) {
-        assignments.deleteRuleAndAssignments(ruleId)
-        AutomaticKeywordRuleScheduler.cancel(context, ruleId)
-            AutomaticKeywordObservationCoverage(context, db).reconcile()
+        val ownerChange = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            // The durable row absence immediately invalidates a worker even if
+            // the following carrier tombstone must be recovered after a crash.
+            assignments.deleteRuleAndAssignments(ruleId)
+            db.withTransaction {
+                WorkManagerHandoffRecovery.supersedeAutomaticKeywordSyncWithinTransaction(
+                    db,
+                    ruleId,
+                )
+            }
         }
+        WorkManagerHandoffRecovery.dispatchAutomaticKeywordOwnerChange(context, ownerChange)
+        AutomaticKeywordObservationCoverage(context, db).reconcile()
     }
 
     suspend fun syncNow(ruleId: Long): Boolean {
-        return RestoreMutationAdmission.withOrdinaryMutation(context) {
-        if (dao.requestApplyExistingSync(ruleId, System.currentTimeMillis()) == 0) return@withOrdinaryMutation false
-        if (
-            AutomaticKeywordRuleScheduler.enqueue(
-                context,
-                ruleId,
-                AutomaticKeywordRuleScheduler.Mode.APPLY_EXISTING
-            ) == null
-        ) {
-            return@withOrdinaryMutation false
-        }
-            true
-        }
+        val result = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            db.withTransaction {
+                if (dao.requestApplyExistingSync(ruleId, System.currentTimeMillis()) == 0) {
+                    return@withTransaction null
+                }
+                val rule = checkNotNull(dao.getRule(ruleId)) {
+                    "Automatic keyword rule disappeared while staging sync"
+                }
+                WorkManagerHandoffRecovery.stageAutomaticKeywordSyncWithinTransaction(
+                    db,
+                    ruleId,
+                    rule.revision,
+                    "APPLY_EXISTING",
+                )
+            }
+        } ?: return false
+        WorkManagerHandoffRecovery.dispatchAutomaticKeywordOwnerChange(context, result)
+        return true
     }
-
-
 }
