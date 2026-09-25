@@ -1,0 +1,490 @@
+{
+  "schema_version": "lens-history-v1-auditor-receipt-v2",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "microsegment_rank_range": [
+    641,
+    645
+  ],
+  "status": "PASS",
+  "authoritative_state": {
+    "path": "review-runs/lens-history-v1/automation/materializer-state.json",
+    "blob_sha": "be0425f97590d249e1e1b9e522f676bf1737d3c6",
+    "data_head": "b6b1fb5d96919fbcde3a2d43c7a0b8e6dc22cab6",
+    "start_progress_blob_sha": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b"
+  },
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "previous_certification": {
+    "run_id": "M14-20260924T1310Z-001",
+    "role": "AUTHORITATIVE_FINAL_AUDIT",
+    "path": "review-runs/lens-history-v1/automation/audits/M14-20260924T1310Z-001.json",
+    "blob_sha": "653e6523eaef620d68f897539421b9560e3fb4b4",
+    "commit_sha": "b7ff23b84308211a2dd1362c8003efa1614e7183",
+    "status": "PASS",
+    "unlock_allowed": true
+  },
+  "previous_auditor_receipt": null,
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M15-20260925T0226Z-001/r641-645.json",
+    "blob_sha": "b78291a38a0780aeacba2b07b6047d3d1e9d69ae"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M15-20260925T0226Z-001/r641-645.json",
+    "blob_sha": "469d783281d29a4dbf39259099f9c417b30ef826"
+  },
+  "triage_corrections": [],
+  "triage_final": {
+    "path": "review-runs/lens-history-v1/automation/triage/M15-20260925T0226Z-001.json",
+    "blob_sha": "36662fcd00421b8f733dd93405b231c944db6a08",
+    "status": "HUMAN_REVIEW_REQUIRED"
+  },
+  "independent_records": [
+    {
+      "rank": 641,
+      "history_commit": "78ba5e94e903d142a6cb8eea52e944b0d4541511",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_path": "review-runs/checkpoints/2026-09-09T153900Z__8de0e0f8__checkpoint.md",
+      "status": "added",
+      "source_blob": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+      "frozen_blob": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+      "source_frozen_match": true,
+      "materializer_rank_receipt": {
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r641.json",
+        "blob_sha": "feb93ae1df1b9fe617d8e7e8c01819f76d8d5cc9"
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic Independent correctness review checkpoint records provisional P2 state, open candidates/questions, and remaining review/final-gate/execution-evidence work without an explicit or rule-allowed positive structural kind"
+      },
+      "checkpoint_kind_source_basis": "Exact source is an intermediate Independent correctness review checkpoint with provisional counts, open questions, and remaining review scope; it has no explicit kind field or positive document identity allowed by document-identity-v1.",
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "BUG-DUPLICATE-01 / F19"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "NEW candidate now source-confirmed",
+          "evidence": "source provisional P2 list explicitly labels BUG-DUPLICATE-01 / F19 as NEW candidate now source-confirmed"
+        },
+        "count_reconciliation": {
+          "state": "DIRECT",
+          "value": "P0 0 / P1 0 / P2 4 provisional"
+        },
+        "count_delta": {
+          "state": "DIRECT",
+          "value": 1,
+          "evidence": "source explicitly enumerates three existing P2 shapes plus one NEW BUG-DUPLICATE-01 / F19 candidate in the provisional P2=4 list"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0068-newest-641-650.jsonl",
+        "blob_sha": "352b67bc1e70d8a083d90e6185b186d874f3c1f5",
+        "record_position": 1
+      },
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "replacement_ledger_schema_validation": "PASS",
+      "independent_history_file_source_frozen_ledger_preflight": "PASS",
+      "independently_observed_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "exception_completeness": "PASS"
+    },
+    {
+      "rank": 642,
+      "history_commit": "937a3d8e3bf5431ef1ff6c0b76fc3c5ab682dc76",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_path": "review-runs/checkpoints/2026-09-09T152500Z__8de0e0f8__checkpoint.md",
+      "status": "added",
+      "source_blob": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1",
+      "frozen_blob": "83cde1cbf0a4e2f625e0bf35822efb0374bb19a1",
+      "source_frozen_match": true,
+      "materializer_rank_receipt": {
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r642.json",
+        "blob_sha": "acecfcf3019c624db4e23f27ff4299126e6ab60e"
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic Independent correctness review checkpoint records bootstrap/provisional state and leaves full current-source revalidation, severity recount, duplicate-identity tracing, upstream checks, and final gate work outstanding without an explicit or rule-allowed positive structural kind"
+      },
+      "checkpoint_kind_source_basis": "Exact source records bootstrap/provisional state and substantial remaining review scope; no explicit kind field or rule-allowed positive document identity exists.",
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "effectiveness": {},
+      "finding_attribution": {},
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0068-newest-641-650.jsonl",
+        "blob_sha": "352b67bc1e70d8a083d90e6185b186d874f3c1f5",
+        "record_position": 2
+      },
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "replacement_ledger_schema_validation": "PASS",
+      "independent_history_file_source_frozen_ledger_preflight": "PASS",
+      "independently_observed_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "exception_completeness": "PASS"
+    },
+    {
+      "rank": 643,
+      "history_commit": "51e87e0ee1db619189627d299fa182ec59ba95ce",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_path": "review-runs/checkpoints/2026-09-09T234700Z__67c7a58a__duplicate-config-identity.md",
+      "status": "added",
+      "source_blob": "e62c6e34dcd563275daae17d57df24541fa64638",
+      "frozen_blob": "e62c6e34dcd563275daae17d57df24541fa64638",
+      "source_frozen_match": true,
+      "materializer_rank_receipt": {
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r643.json",
+        "blob_sha": "e145200c978b181b6070b995542cae3ec64e2447"
+      },
+      "implementation_sha": {
+        "state": "NOT_VERIFIED",
+        "reason": "source records Review Basis 67c7a58aea22cd9e040daaeeaef2ae873e6b59c8 but does not label it as implementation SHA/frozen implementation SHA"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "document is titled Track A checkpoint and contains a confirmed P2 finding, but document-identity-v1 does not derive whole-document kind from body finding content without a positive allowed document identity"
+      },
+      "checkpoint_kind_source_basis": "Exact source says Track A checkpoint and contains a confirmed P2, but it does not positively identify itself as a finding/addendum/reconciliation/scope-expansion record or final run checkpoint under document-identity-v1.",
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "effectiveness": {},
+      "finding_attribution": {
+        "finding_id": {
+          "state": "DIRECT",
+          "value": "P2-K / BUG-DUPLICATE-01"
+        },
+        "finding_disposition": {
+          "state": "DIRECT",
+          "value": "Confirmed P2-K; P2, HIGH; current incomplete-remediation finding under F19",
+          "evidence": "source heading says Confirmed P2-K and Classification states P2, HIGH and current incomplete-remediation finding under F19"
+        },
+        "count_reconciliation": {
+          "state": "DIRECT",
+          "value": "P0 0 / P1 0 / P2 9"
+        },
+        "count_delta": {
+          "state": "NOT_VERIFIED",
+          "reason": "source states the resulting canonical working count but does not state the immediately preceding canonical count in this document"
+        },
+        "modern_primary_detecting_lens": {
+          "state": "NOT_VERIFIED"
+        }
+      },
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0068-newest-641-650.jsonl",
+        "blob_sha": "352b67bc1e70d8a083d90e6185b186d874f3c1f5",
+        "record_position": 3
+      },
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "replacement_ledger_schema_validation": "PASS",
+      "independent_history_file_source_frozen_ledger_preflight": "PASS",
+      "independently_observed_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "COUNT_RECONCILIATION",
+        "PROVENANCE_AMBIGUITY",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "exception_completeness": "PASS"
+    },
+    {
+      "rank": 644,
+      "history_commit": "74a0f05a87d75ffaa4fafd3575e191c2889c260a",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_path": "review-runs/checkpoints/2026-09-09T143100Z__8de0e0f8__checkpoint.md",
+      "status": "added",
+      "source_blob": "fde6d1e4d61309b10545683423085c448678b8f3",
+      "frozen_blob": "fde6d1e4d61309b10545683423085c448678b8f3",
+      "source_frozen_match": true,
+      "materializer_rank_receipt": {
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r644.json",
+        "blob_sha": "e21bc799852ad03a641b5622dd080a3bc242ac8c"
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "DIRECT",
+        "value": "FINAL"
+      },
+      "checkpoint_kind_source_basis": "Exact source title explicitly states Independent correctness review final checkpoint; FINAL is supported by the source text itself, not filename or chronology.",
+      "effectiveness_eligibility": {
+        "state": "DERIVABLE",
+        "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+        "rule": "lens-history-v1/final-only-explicit"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "effectiveness": {},
+      "finding_attribution": {},
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0068-newest-641-650.jsonl",
+        "blob_sha": "352b67bc1e70d8a083d90e6185b186d874f3c1f5",
+        "record_position": 4
+      },
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "replacement_ledger_schema_validation": "PASS",
+      "independent_history_file_source_frozen_ledger_preflight": "PASS",
+      "independently_observed_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "exception_completeness": "PASS"
+    },
+    {
+      "rank": 645,
+      "history_commit": "39e73b5aaba0ee36fbacdf0f3a463ee83e9a50b8",
+      "file_pages_checked": [
+        1,
+        2
+      ],
+      "terminated_by_explicit_empty_files_page": true,
+      "checkpoint_path": "review-runs/checkpoints/2026-09-09T142500Z__8de0e0f8__checkpoint.md",
+      "status": "added",
+      "source_blob": "e117c4dc386552505d66867ea1dda481a6561fa6",
+      "frozen_blob": "e117c4dc386552505d66867ea1dda481a6561fa6",
+      "source_frozen_match": true,
+      "materializer_rank_receipt": {
+        "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r645.json",
+        "blob_sha": "0c8a325d04486b5f97bd14e1d1edfbc589f13499"
+      },
+      "implementation_sha": {
+        "state": "DIRECT",
+        "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa"
+      },
+      "schema_class": "UNINSTRUMENTED",
+      "checkpoint_kind": {
+        "state": "NOT_VERIFIED",
+        "reason": "generic Independent correctness review checkpoint records provisional existing candidates and leaves full-path recount, upstream semantic recheck, consumer closure, and final CLEAN-gate work outstanding without an explicit or rule-allowed positive structural kind"
+      },
+      "checkpoint_kind_source_basis": "Exact source is an intermediate checkpoint with provisional existing candidates and explicit remaining full-path/CLEAN-gate work; no explicit kind field or positive document identity allowed by document-identity-v1 exists.",
+      "effectiveness_eligibility": {
+        "state": "NOT_VERIFIED",
+        "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+      },
+      "raw_audit_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "primary_deep_lens": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_selection_reason": {
+        "state": "NOT_VERIFIED"
+      },
+      "lens_coverage_current_sha": {
+        "state": "NOT_VERIFIED"
+      },
+      "effectiveness": {},
+      "finding_attribution": {},
+      "replacement_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0068-newest-641-650.jsonl",
+        "blob_sha": "352b67bc1e70d8a083d90e6185b186d874f3c1f5",
+        "record_position": 5
+      },
+      "replay_required_fields": {
+        "history_commit": true,
+        "checkpoint_path": true,
+        "checkpoint_kind": true,
+        "implementation_sha": true,
+        "schema_class": true,
+        "raw_audit_lens": true,
+        "primary_deep_lens": true,
+        "lens_selection_reason": true,
+        "lens_coverage_current_sha": true,
+        "effectiveness_eligibility": true,
+        "effectiveness": true,
+        "finding_attribution": true
+      },
+      "replacement_ledger_schema_validation": "PASS",
+      "independent_history_file_source_frozen_ledger_preflight": "PASS",
+      "independently_observed_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "exception_completeness": "PASS"
+    }
+  ],
+  "summary": {
+    "ranks_audited": 5,
+    "history_order_mismatches": 0,
+    "file_enumeration_mismatches": 0,
+    "source_frozen_blob_mismatches": 0,
+    "materializer_ledger_required_field_mismatches": 0,
+    "classification_mismatches": 0,
+    "prohibited_inference_violations": 0,
+    "triage_discovered_missed_exception_ranks": [],
+    "auditor_only_missed_exception_ranks": [],
+    "semantic_exception_ranks": [
+      641,
+      642,
+      643,
+      644,
+      645
+    ],
+    "status": "PASS"
+  }
+}
