@@ -1,0 +1,136 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 652,
+  "materializer_state_blob": "890daff21e8fee239cfeb9f9a9759c2c116317de",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r651.json",
+    "blob_sha": "478ebe2b893a110b8fae26a0b41fcfe719021457"
+  },
+  "history": {
+    "commit_sha": "bd2a0180c0f3a49a826213ff9cf578b14815d5f2",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=652"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T123800Z__8de0e0f8__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T123800Z__8de0e0f8__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355",
+    "frozen_blob_sha": "fd5de887b456f996c2b797d3de7b8fa379055355",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint is explicitly intermediate: fresh upstream provider semantics, exact-SHA status/workflow evidence, final fault-matrix recount, and final checkpoint remain outstanding"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "NEW P2 — Terminal pre-generation NATIVE_STARTED recovery debt"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "NEW P2 provisional finding retained pending final recount",
+        "evidence": "source explicitly lists item 4 as NEW P2 and keeps the review in provisional findings state"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional findings P0 0 / P1 0 / P2 4"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source does not explicitly state the immediately preceding canonical numeric count or delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "evidence": "source explicitly labels the Terminal pre-generation NATIVE_STARTED recovery debt as NEW P2"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source section is Provisional findings and records P0 0 / P1 0 / P2 4"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source enumerates three EXISTING P2 items plus one NEW P2 under the provisional P2=4 recount"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source leaves provider UNKNOWN upstream semantic refresh and final status/workflow evidence for later verification"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source says exact-SHA GitHub status/workflow evidence still remains and prior-run upstream provider evidence is not reused"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
