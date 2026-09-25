@@ -10,6 +10,9 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveProvider
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveUnavailableException
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.enums.DownloadType
@@ -62,6 +65,8 @@ class ObserveSourceWorkerProductionWiringTest {
     private lateinit var preferences: android.content.SharedPreferences
     private var previousDuplicateMode: String? = null
     private var hadDuplicateMode = false
+    private var previousArchivePath: String? = null
+    private var hadArchivePath = false
     private var previousSchedulerMode = false
     private var hadSchedulerMode = false
     private val queuedItems = mutableListOf<DownloadItem>()
@@ -82,6 +87,9 @@ class ObserveSourceWorkerProductionWiringTest {
             preferences = PreferenceManager.getDefaultSharedPreferences(context)
             hadDuplicateMode = preferences.contains("prevent_duplicate_downloads")
             previousDuplicateMode = preferences.getString("prevent_duplicate_downloads", null)
+            hadArchivePath = preferences.contains(ConfiguredDownloadArchiveStore.PREFERENCE_KEY)
+            previousArchivePath =
+                preferences.getString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, null)
             hadSchedulerMode = preferences.contains("use_scheduler")
             previousSchedulerMode = preferences.getBoolean("use_scheduler", false)
             preferences.edit()
@@ -120,6 +128,11 @@ class ObserveSourceWorkerProductionWiringTest {
             val editor = preferences.edit()
             if (hadDuplicateMode) editor.putString("prevent_duplicate_downloads", previousDuplicateMode)
             else editor.remove("prevent_duplicate_downloads")
+            if (hadArchivePath) {
+                editor.putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, previousArchivePath)
+            } else {
+                editor.remove(ConfiguredDownloadArchiveStore.PREFERENCE_KEY)
+            }
             if (hadSchedulerMode) editor.putBoolean("use_scheduler", previousSchedulerMode)
             else editor.remove("use_scheduler")
             editor.commit()
@@ -570,6 +583,104 @@ class ObserveSourceWorkerProductionWiringTest {
             ).eligibleForAssignment
         )
         assertEquals("Live", database.historyDao.getItem(historyId).keywords)
+    }
+
+    @Test
+    fun providerBackedArchiveMembershipIsVisibleToQueueDuplicatePreflight() = runBlocking {
+        useSafArchive(ArchiveProviderFake("youtube ${ArchiveProviderFake.MEMBER_ID}\n"))
+        try {
+            val sourceId = insertSource(
+                getOnlyNewUploads = true,
+                runCount = 0,
+                syncWithSource = true,
+                alreadyProcessedLinks = mutableListOf("https://youtu.be/old"),
+            )
+            val memberUrl = "https://youtu.be/${ArchiveProviderFake.MEMBER_ID}"
+            val newUrl = "https://youtu.be/${ArchiveProviderFake.NON_MEMBER_ID}"
+
+            runWorker(
+                sourceId,
+                SourceSnapshot.partial(listOf(result(memberUrl), result(newUrl)), "archive"),
+            )
+
+            // The provider-backed membership suppressed exactly the archived
+            // item; the unknown item still reached the queue.
+            assertEquals(1, queuedItems.size)
+            assertEquals(newUrl, queuedItems.single().url)
+            // The skipped item was never inserted as a runnable row.
+            assertTrue(
+                database.downloadDao.getAllDownloadsList().none { it.url == memberUrl },
+            )
+        } finally {
+            ConfiguredDownloadArchiveStore.providerForTesting = null
+        }
+    }
+
+    @Test
+    fun unavailableProviderArchiveWithholdsQueueAdmissionInsteadOfTreatingItAsEmpty() =
+        runBlocking {
+            useSafArchive(
+                ArchiveProviderFake(null).apply {
+                    readFailure = DownloadArchiveUnavailableException("permission revoked")
+                },
+            )
+            try {
+                val sourceId = insertSource(
+                    getOnlyNewUploads = true,
+                    runCount = 0,
+                    syncWithSource = true,
+                    alreadyProcessedLinks = mutableListOf("https://youtu.be/old"),
+                )
+                val candidateUrl = "https://youtu.be/${ArchiveProviderFake.NON_MEMBER_ID}"
+
+                runWorker(
+                    sourceId,
+                    SourceSnapshot.partial(listOf(result(candidateUrl)), "archive"),
+                )
+
+                // An unreadable archive is not an empty archive: the item is
+                // withheld rather than admitted as a new download.
+                assertTrue(queuedItems.isEmpty())
+                assertTrue(
+                    database.downloadDao.getAllDownloadsList()
+                        .none { it.url == candidateUrl },
+                )
+            } finally {
+                ConfiguredDownloadArchiveStore.providerForTesting = null
+            }
+        }
+
+    private fun useSafArchive(provider: ConfiguredDownloadArchiveProvider) {
+        preferences.edit()
+            .putString("prevent_duplicate_downloads", "download_archive")
+            .putString(
+                ConfiguredDownloadArchiveStore.PREFERENCE_KEY,
+                "content://com.android.externalstorage.documents/tree/primary%3AYTDLnisx",
+            )
+            .commit()
+        ConfiguredDownloadArchiveStore.providerForTesting = provider
+    }
+
+    /** Deterministic stand-in for a persisted SAF tree grant. */
+    private class ArchiveProviderFake(private val contents: String?) :
+        ConfiguredDownloadArchiveProvider {
+        var readFailure: Throwable? = null
+
+        override fun readText(context: Context, treeUri: android.net.Uri): String? {
+            readFailure?.let { throw it }
+            return contents
+        }
+
+        override fun replaceText(
+            context: Context,
+            treeUri: android.net.Uri,
+            text: String,
+        ) = Unit
+
+        companion object {
+            const val MEMBER_ID = "dQw4w9WgXcQ"
+            const val NON_MEMBER_ID = "oHg5SJYRHA0"
+        }
     }
 
     private suspend fun insertSource(

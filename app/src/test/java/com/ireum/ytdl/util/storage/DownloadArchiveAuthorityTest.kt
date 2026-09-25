@@ -17,12 +17,17 @@ class DownloadArchiveAuthorityTest {
         try {
             val global = File(root, "global.txt").apply { writeText("youtube A\n") }
             val private = File(root, "private.txt").apply { writeText("youtube A\nyoutube B\n") }
-            val generation = DownloadArchiveAuthority.Generation(7L, "e1", private, global)
+            val generation = DownloadArchiveAuthority.Generation(
+                7L,
+                "e1",
+                private,
+                ConfiguredDownloadArchive.RawFile(global),
+            )
 
-            assertTrue(DownloadArchiveAuthority.promote(generation))
+            assertTrue(DownloadArchiveAuthority.promote(null, generation))
             assertEquals(listOf("youtube A", "youtube B"), global.readLines())
             assertFalse(private.exists())
-            assertTrue(DownloadArchiveAuthority.promote(generation))
+            assertTrue(DownloadArchiveAuthority.promote(null, generation))
             assertEquals(listOf("youtube A", "youtube B"), global.readLines())
         } finally {
             DownloadArchiveAuthority.syncForTesting = previousSync
@@ -59,7 +64,13 @@ class DownloadArchiveAuthorityTest {
             val private = File(root, "private.txt").apply { writeText("youtube A\nyoutube B\n") }
             assertTrue(
                 DownloadArchiveAuthority.promote(
-                    DownloadArchiveAuthority.Generation(7L, "e-sync", private, global),
+                    null,
+                    DownloadArchiveAuthority.Generation(
+                        7L,
+                        "e-sync",
+                        private,
+                        ConfiguredDownloadArchive.RawFile(global),
+                    ),
                 ),
             )
             assertTrue(descriptorWasOpen)
@@ -82,7 +93,13 @@ class DownloadArchiveAuthorityTest {
             val private = File(root, "private.txt").apply { writeText("youtube A\nyoutube B\n") }
             assertThrows(java.io.IOException::class.java) {
                 DownloadArchiveAuthority.promote(
-                    DownloadArchiveAuthority.Generation(7L, "e-failure", private, global),
+                    null,
+                    DownloadArchiveAuthority.Generation(
+                        7L,
+                        "e-failure",
+                        private,
+                        ConfiguredDownloadArchive.RawFile(global),
+                    ),
                 )
             }
             assertEquals(listOf("youtube A"), global.readLines())

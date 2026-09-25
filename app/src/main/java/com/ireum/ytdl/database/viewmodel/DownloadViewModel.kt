@@ -80,6 +80,9 @@ import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveRead
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveEntry
 import com.ireum.ytdl.util.storage.DownloadArchiveIdentity
 import com.google.gson.Gson
 import kotlinx.coroutines.CancellationException
@@ -270,6 +273,19 @@ class DownloadViewModel private constructor(
         var downloadItemID: Long,
         var historyItemID : Long?
     ) : Parcelable
+
+    /**
+     * Outcome of one duplicate preflight pass.  [archiveUnavailableItemIDs]
+     * are not duplicates: they are items withheld because the configured
+     * archive could not be read, so membership stayed unknown.
+     */
+    private data class DuplicateCheckOutcome(
+        val duplicates: List<AlreadyExistsIDs>,
+        val archiveUnavailableItemIDs: List<Long>,
+    )
+
+    private val archiveUnavailableMessage: String
+        get() = App.instance.getString(R.string.download_archive_unavailable)
 
     val alreadyExistsUiState: MutableStateFlow<List<AlreadyExistsIDs>> = MutableStateFlow(
         mutableListOf()
@@ -2101,7 +2117,7 @@ class DownloadViewModel private constructor(
     suspend fun checkProcessingDuplicates(ignoreDuplicates: Boolean = false): List<AlreadyExistsIDs> {
         ensureRestoreAdmission()
         val processingItems = repository.getAllProcessingDownloads()
-        return detectAndMarkDuplicates(processingItems, ignoreDuplicates)
+        return detectAndMarkDuplicates(processingItems, ignoreDuplicates).duplicates
     }
 
     private suspend fun hydrateHistoryRedownloadBeforeQueue(
@@ -2420,12 +2436,21 @@ class DownloadViewModel private constructor(
             return persisted
         }
 
-        val duplicateIDs = detectAndMarkDuplicates(queuedItems, ignoreDuplicates)
+        val duplicateCheck = detectAndMarkDuplicates(queuedItems, ignoreDuplicates)
+        val duplicateIDs = duplicateCheck.duplicates
         if (duplicateIDs.isNotEmpty()) {
             existingItemIDs.addAll(duplicateIDs)
             queuedItems.removeAll { item ->
                 duplicateIDs.any { dup -> dup.downloadItemID == item.id }
             }
+        }
+        // Items whose archive membership could not be read are withheld from
+        // this batch. They are recoverable: the user can retry them once the
+        // configured archive is readable again.
+        if (duplicateCheck.archiveUnavailableItemIDs.isNotEmpty()) {
+            val withheld = duplicateCheck.archiveUnavailableItemIDs.toSet()
+            queuedItems.removeAll { it.id in withheld }
+            result.succeeded = false
         }
 
         var hydrationError: Throwable? = null
@@ -2490,6 +2515,12 @@ class DownloadViewModel private constructor(
             alreadyExistsUiState.value = existingItemIDs.toList()
             result.duplicateDownloadIDs = existingItemIDs.toList()
         }
+        // The archive-unavailable refusal outranks the generic queue outcome:
+        // the user must know that some downloads were withheld, not started.
+        if (duplicateCheck.archiveUnavailableItemIDs.isNotEmpty()) {
+            result.succeeded = false
+            result.message = archiveUnavailableMessage
+        }
 
         return result
     }
@@ -2497,15 +2528,35 @@ class DownloadViewModel private constructor(
     private suspend fun detectAndMarkDuplicates(
         items: List<DownloadItem>,
         ignoreDuplicates: Boolean
-    ): List<AlreadyExistsIDs> {
+    ): DuplicateCheckOutcome {
         val context = App.instance
         val existingItemIDs = mutableListOf<AlreadyExistsIDs>()
-        val downloadArchive = runCatching {
-            File(FileUtil.getDownloadArchivePath(context)).useLines { it.toList() }
-        }
-            .getOrElse { listOf() }
-            .let(DownloadArchiveIdentity::parseLines)
+        val archiveUnavailableItemIDs = mutableListOf<Long>()
         val checkDuplicate = sharedPreferences.getString("prevent_duplicate_downloads", "")!!
+        // The configured archive is only consulted by the archive duplicate
+        // mode. An unreadable provider-backed archive is not an authoritative
+        // empty archive, so membership is unknown and admission fails closed.
+        val downloadArchive: Set<DownloadArchiveEntry>? =
+            if (checkDuplicate == "download_archive" && !ignoreDuplicates) {
+                when (
+                    val read = ConfiguredDownloadArchiveStore.read(
+                        context,
+                        ConfiguredDownloadArchiveStore.resolve(context),
+                    )
+                ) {
+                    is ConfiguredDownloadArchiveRead.Available ->
+                        DownloadArchiveIdentity.parseLines(read.lines)
+                    is ConfiguredDownloadArchiveRead.Unavailable -> {
+                        Log.w(
+                            DUP_LOG_TAG,
+                            "archive duplicate preflight unavailable; failing closed mode=$checkDuplicate"
+                        )
+                        null
+                    }
+                }
+            } else {
+                emptySet()
+            }
         val activeAndQueuedDownloads = withContext(Dispatchers.IO) {
             repository.getActiveAndQueuedDownloads()
         }
@@ -2524,6 +2575,27 @@ class DownloadViewModel private constructor(
             item.status = DownloadRepository.Status.Duplicate.toString()
             repository.update(item)
             existingItemIDs.add(AlreadyExistsIDs(item.id, historyId))
+        }
+
+        /**
+         * Records a recoverable archive-unavailable refusal. The item is not a
+         * duplicate, so it must not be reported as one; it is withheld from
+         * the batch and left retryable instead of being admitted against an
+         * archive whose membership could not be read.
+         */
+        suspend fun markArchiveUnavailable(item: DownloadItem) {
+            if (item.id == 0L) {
+                val id = repository.insert(item)
+                item.id = id
+            }
+            item.status = DownloadRepository.Status.Error.toString()
+            item.lastIssueCode = DownloadIssueCode.ARCHIVE_UNAVAILABLE.name
+            repository.update(item)
+            archiveUnavailableItemIDs.add(item.id)
+            Log.w(
+                DUP_LOG_TAG,
+                "archive unavailable; refusing duplicate admission id=${item.id} url=${item.url}"
+            )
         }
 
         items.forEachIndexed { idx, it ->
@@ -2575,7 +2647,15 @@ class DownloadViewModel private constructor(
                 }
                 when (checkDuplicate) {
                     "download_archive" -> {
-                        if (DownloadArchiveIdentity.matchesSource(it.url, downloadArchive)) {
+                        val archiveEntries = downloadArchive
+                        if (archiveEntries == null) {
+                            // The configured archive could not be read, so this
+                            // item cannot be proven new. Fail closed rather than
+                            // admitting it as though the archive were empty.
+                            markArchiveUnavailable(it)
+                            return@forEachIndexed
+                        }
+                        if (DownloadArchiveIdentity.matchesSource(it.url, archiveEntries)) {
                             isDuplicate = true
                             markDuplicate(it)
                         }
@@ -2683,7 +2763,7 @@ class DownloadViewModel private constructor(
         if (existingItemIDs.isNotEmpty()) {
             alreadyExistsUiState.value = existingItemIDs.toList()
         }
-        return existingItemIDs
+        return DuplicateCheckOutcome(existingItemIDs, archiveUnavailableItemIDs)
     }
 
     private fun DownloadItem.isHistoryRedownload(): Boolean {

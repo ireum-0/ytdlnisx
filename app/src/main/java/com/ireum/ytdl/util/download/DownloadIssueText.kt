@@ -51,5 +51,6 @@ internal fun summaryResourceId(code: DownloadIssueCode): Int = when (code) {
     DownloadIssueCode.NOTIFICATION_FAILED -> R.string.download_issue_notification_failed
     DownloadIssueCode.PUBLICATION_OUTCOME_UNKNOWN -> R.string.download_issue_unknown
     DownloadIssueCode.PUBLICATION_FINALIZATION_PENDING -> R.string.download_issue_history_failed
+    DownloadIssueCode.ARCHIVE_UNAVAILABLE -> R.string.download_issue_archive_unavailable
     DownloadIssueCode.UNKNOWN -> R.string.download_issue_unknown
 }

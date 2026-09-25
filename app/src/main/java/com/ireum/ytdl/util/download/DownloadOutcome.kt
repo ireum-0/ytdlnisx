@@ -43,6 +43,12 @@ enum class DownloadIssueCode {
     PUBLICATION_OUTCOME_UNKNOWN,
     /** An exact prior destination exists; only source retirement/finalization remains. */
     PUBLICATION_FINALIZATION_PENDING,
+    /**
+     * The configured duplicate archive could not be read, so membership stayed
+     * unknown. Admission fails closed; this is recoverable once the configured
+     * archive is readable again, and a same-settings retry cannot fix it.
+     */
+    ARCHIVE_UNAVAILABLE,
     UNKNOWN
 }
 

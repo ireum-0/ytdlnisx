@@ -805,6 +805,8 @@
     <!-- ?ш린???꾨옒 ??以꾩쓣 異붽??섏꽭??-->
     <string name="downloads_have_been_queued">Downloads have been queued</string>
     <string name="download_queue_failed">Downloads have been failed</string>
+    <string name="download_archive_unavailable">Download archive folder is unavailable. These downloads were not started so duplicates are not downloaded again.</string>
+    <string name="observe_log_download_archive_unavailable">Download archive folder is unavailable. New downloads were withheld so duplicates are not downloaded again.</string>
     <string name="playback_notification_channel_name">Playback</string>
     <string name="playback_notification_channel_description">Playback controls and status</string>
     <string name="playback_pip_notification">Playing in picture-in-picture</string>
@@ -816,6 +818,7 @@
     <string name="download_issue_format_unavailable">The selected format is unavailable</string>
     <string name="download_issue_storage_full">Storage is full</string>
     <string name="download_issue_destination_not_writable">The destination is not writable</string>
+    <string name="download_issue_archive_unavailable">The download archive folder is unavailable</string>
     <string name="download_issue_ffmpeg_failed">Media processing failed</string>
     <string name="download_issue_history_failed">The file was created, but History could not be updated</string>
     <string name="download_issue_history_source_mismatch">History replacement rejected: the current target source does not match the replacement download</string>

@@ -47,6 +47,9 @@ import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.SourceSnapshot
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
 import com.ireum.ytdl.util.storage.AndroidHistoryFileDeletionGateway
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveRead
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveEntry
 import com.ireum.ytdl.util.storage.DownloadArchiveIdentity
 import com.ireum.ytdl.util.storage.HistoryDeletionRecord
 import com.ireum.ytdl.util.storage.HistoryFileDeletionEngine
@@ -946,12 +949,33 @@ class ObserveSourceWorker(
                 // archive preflight and let the repository publish normally.
                 else -> DuplicateAdmissionMode.DISABLED
             }
-            val downloadArchive = runCatching {
-                File(FileUtil.getDownloadArchivePath(context)).useLines { lines ->
-                    lines.toList()
+            // The configured archive is only consulted by the archive
+            // duplicate mode. An unreadable provider-backed archive is not an
+            // authoritative empty archive, so membership stays unknown and
+            // admission fails closed instead of admitting as if it were empty.
+            var archiveUnavailable = false
+            val downloadArchive: Set<DownloadArchiveEntry>? =
+                if (checkDuplicate == "download_archive") {
+                    when (
+                        val read = ConfiguredDownloadArchiveStore.read(
+                            context,
+                            ConfiguredDownloadArchiveStore.resolve(context),
+                        )
+                    ) {
+                        is ConfiguredDownloadArchiveRead.Available ->
+                            DownloadArchiveIdentity.parseLines(read.lines)
+                        is ConfiguredDownloadArchiveRead.Unavailable -> {
+                            Log.w(
+                                OBS_DUP_LOG_TAG,
+                                "archive duplicate preflight unavailable; failing closed",
+                            )
+                            archiveUnavailable = true
+                            null
+                        }
+                    }
+                } else {
+                    emptySet()
                 }
-            }.getOrElse { emptyList() }
-                .let(DownloadArchiveIdentity::parseLines)
 
             //if scheduler is on
             val useScheduler = sharedPreferences.getBoolean("use_scheduler", false)
@@ -973,11 +997,22 @@ class ObserveSourceWorker(
                 val parsedCurrentCommand = ytdlpUtil.parseYTDLRequestString(currentCommand)
                 var isDuplicate = false
                 var insertedByFinalAdmission = false
+                // Set when this item cannot be admitted because archive
+                // membership is unknown. It is a recoverable refusal, not a
+                // duplicate, so the item is withheld and left for a later run.
+                var withholdForUnavailableArchive = false
 
                 if (checkDuplicate.isNotEmpty()) {
                     when (checkDuplicate) {
                         "download_archive" -> {
-                            if (DownloadArchiveIdentity.matchesSource(it.url, downloadArchive)) {
+                            val archiveEntries = downloadArchive
+                            if (archiveEntries == null) {
+                                withholdForUnavailableArchive = true
+                                Log.w(
+                                    OBS_DUP_LOG_TAG,
+                                    "queue withheld archive-unavailable sourceId=$sourceID url=${it.url}"
+                                )
+                            } else if (DownloadArchiveIdentity.matchesSource(it.url, archiveEntries)) {
                                 isDuplicate = true
                                 Log.d(
                                     OBS_DUP_LOG_TAG,
@@ -1046,7 +1081,7 @@ class ObserveSourceWorker(
                     }
                 }
 
-                if (!isDuplicate) {
+                if (!isDuplicate && !withholdForUnavailableArchive) {
                     var admissionDuplicate: DuplicateAdmissionResult.Duplicate? = null
                     var admissionRefusal: DuplicateAdmissionResult.Refused? = null
                     if (it.id == 0L) {
@@ -1090,7 +1125,7 @@ class ObserveSourceWorker(
                     }
                 }
 
-                if (!isDuplicate) {
+                if (!isDuplicate && !withholdForUnavailableArchive) {
                     Log.d(
                         OBS_DUP_LOG_TAG,
                         "queue add sourceId=$sourceID url=${it.url} canonical=${canonicalUrl(it.url)}"
@@ -1108,9 +1143,11 @@ class ObserveSourceWorker(
                         rememberRetryPromptedUrl(currentCanonicalUrl)
                         confirmedRetryHandled = true
                     }
-                } else if (isConfirmedRetry) {
+                } else if (isConfirmedRetry && !withholdForUnavailableArchive) {
                     // The user already made a durable decision. A duplicate policy
                     // rejection is a handled result, not a transient fetch failure.
+                    // An archive-unavailable withholding is recoverable, so the
+                    // confirmed retry stays available instead of being consumed.
                     rememberRetryPromptedUrl(currentCanonicalUrl)
                     confirmedRetryHandled = true
                 }
@@ -1128,7 +1165,12 @@ class ObserveSourceWorker(
                 startObserveDownloads(downloadRepo, queuedItems)
             }
 
-            runMessage = if (queuedItems.isEmpty() && confirmationCandidates.isNotEmpty()) {
+            runMessage = if (archiveUnavailable) {
+                // A recoverable archive-unavailable condition outranks the
+                // generic "nothing queued" summaries: the user must know that
+                // downloads were withheld rather than already downloaded.
+                context.getString(com.ireum.ytdl.R.string.observe_log_download_archive_unavailable)
+            } else if (queuedItems.isEmpty() && confirmationCandidates.isNotEmpty()) {
                 runMessage
             } else if (queuedItems.isEmpty()) {
                 context.getString(com.ireum.ytdl.R.string.observe_log_all_already_downloaded)

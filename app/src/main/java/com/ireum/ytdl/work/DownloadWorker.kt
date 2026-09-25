@@ -1479,7 +1479,7 @@ class DownloadWorker(
         private fun currentDownloadArchiveDelta(): String =
             downloadArchiveGeneration?.let { generation ->
                 runCatching {
-                    DownloadArchiveAuthority.delta(generation).joinToString("\n")
+                    DownloadArchiveAuthority.delta(context, generation).joinToString("\n")
                 }.onFailure { failure ->
                     Log.w(
                         TAG,
@@ -2712,6 +2712,7 @@ class DownloadWorker(
                 if (ordinaryPrimarySuccessCommitted) {
                     val promoted = runCatching {
                         DownloadArchiveAuthority.promote(
+                            context = context,
                             generation = downloadArchiveGeneration!!,
                             fallbackDelta = producerArchiveDelta()
                                 .split('\n')

@@ -50,6 +50,7 @@ import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
 import com.ireum.ytdl.util.SourceSnapshot
 import com.ireum.ytdl.util.SourceSnapshotAuthority
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
 import com.ireum.ytdl.util.process.ProcessQuiescence
 import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.google.gson.Gson
@@ -2159,10 +2160,16 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             sharedPreferences.getString("prevent_duplicate_downloads", "")!! == "download_archive" &&
             HistoryRedownloadQueuePolicy.shouldUseDownloadArchive(downloadItem.playlistURL)
         ) {
-            request.addOption(
-                "--download-archive",
-                downloadArchivePath ?: FileUtil.getDownloadArchivePath(context),
-            )
+            // A trusted app-owned generation-private archive always wins.
+            // Otherwise only a configured archive with real raw filesystem
+            // authority may be named: a persisted provider tree has no native
+            // path, and synthesizing one would hand yt-dlp a pathname it can
+            // never read.
+            val trustedArchivePath = downloadArchivePath?.takeIf(String::isNotBlank)
+                ?: ConfiguredDownloadArchiveStore.nativeArchivePathOrNull(context)
+            if (trustedArchivePath != null) {
+                request.addOption("--download-archive", trustedArchivePath)
+            }
         }
 
         val preferredAudioCodec = sharedPreferences.getString("audio_codec", "")!!

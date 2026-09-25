@@ -17,8 +17,8 @@ import androidx.preference.SwitchPreferenceCompat
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreMutationAdmission
-import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.UiUtil
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
 import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +51,9 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
         }
 
         archivePath = findPreference("download_archive_path")!!
-        archivePath.summary = FileUtil.getDownloadArchivePath(requireContext())
+        // Display only. The persisted preference stays the original provider
+        // URI; a formatted summary must never become storage authority.
+        archivePath.summary = ConfiguredDownloadArchiveStore.describe(requireContext())
         archivePath.isVisible = preferences.getString("prevent_duplicate_downloads", "") == "download_archive"
         archivePath.onPreferenceClickListener =
             Preference.OnPreferenceClickListener {
@@ -302,9 +304,11 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             val path = result.data!!.data.toString()
             val preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())
             val editor = preferences.edit()
-            editor.putString("download_archive_path", path)
+            // Persist the provider URI itself. A reconstructed filesystem
+            // pathname would silently drop the SAF authority.
+            editor.putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, path)
             RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), editor)
-            archivePath.summary = FileUtil.getDownloadArchivePath(requireContext())
+            archivePath.summary = ConfiguredDownloadArchiveStore.describe(requireContext())
         }
     }
 
