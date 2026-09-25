@@ -1,0 +1,262 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "segment_range": [
+    656,
+    660
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M15-20260925T0226Z-001/r651-655.json",
+    "blob_sha": "148ed89fdf5000addc5625bd0ee011eec67df406"
+  },
+  "rank_receipts": [
+    {
+      "rank": 656,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r656.json",
+      "blob_sha": "1395520860ff2723e262d15ee4115aac04f430ff"
+    },
+    {
+      "rank": 657,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r657.json",
+      "blob_sha": "dd6debf253b7ee8c70d6925c4b236531dc421479"
+    },
+    {
+      "rank": 658,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r658.json",
+      "blob_sha": "449c5f4a6f423f4d92bea8159018160e5ad33217"
+    },
+    {
+      "rank": 659,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r659.json",
+      "blob_sha": "ebea485848d5d9f9dfea69c7caf4fa64552acbc0"
+    },
+    {
+      "rank": 660,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r660.json",
+      "blob_sha": "1cb55ca19a2a61089fcca32bcf44c0dcc255d7e6"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      656,
+      657,
+      658,
+      659,
+      660
+    ],
+    "triggers": [
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B6",
+        "evidence": "source explicitly confirms recovered-prior-publication-vs-E2-producer behavior as B6 under existing P2-B",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-J/J1-J3",
+        "evidence": "source explicitly expands existing P2-J into process-death, post-insert-exception, and late-user-stop/status subpaths J1-J3 under one root finding",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source reconfirms P2-H without count change, keeps P2-C provider-specific, rejects adjacent Terminal marker-reuse promotion, and states working count remains P0 0 / P1 0 / P2 8",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source notes DownloadCacheOwnership.listOwnedRoots has a similar fail-open shape but no production admission/recovery impact was proven, so it remains scope-adjacent rather than canonical P2-H",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records INDEPENDENT EXECUTION: NOT EXECUTED",
+        "rank": 656,
+        "source_blob_sha": "5832d806b4240b90d5997467094a0bb55ff68cf8"
+      },
+      {
+        "type": "MODIFIED_CHECKPOINT",
+        "evidence": "the resolved rank-657 commit modifies an existing checkpoint path rather than adding a new checkpoint file",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B5+B6",
+        "evidence": "source strengthens existing P2-B with B5 nondeterministic multi-generation supersession and B6 prior-publication adoption versus E2 producer execution",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-J/J1-J5",
+        "evidence": "source explicitly expands existing P2-J with ordinary-History process-death, ancillary failure, user-stop, cross-storage atomicity, and ancillary-recovery obligations",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source refines P2-C, reminds P2-H, rejects adjacent hypotheses, and explicitly states no new canonical P2 with working count P0 0 / P1 0 / P2 8",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and Track A remains pinned to the same Review Basis",
+        "rank": 657,
+        "source_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "P2-B",
+        "evidence": "source explicitly labels ordinary History commit followed by producer replay after process death as P2-B — NEW",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "finding_id": "P2-C",
+        "evidence": "source explicitly labels committed provider destination recreated after source-retirement failure as P2-C — NEW",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records final provisional P0 0 / P1 0 / P2 3 OPEN with P2-A existing and P2-B/P2-C new",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source explicitly labels the severity count Final provisional severity count",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "source leaves malformed publication journal replay/destructive consequence NOT_VERIFIED and not counted as a finding",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source reports no combined-status contexts and no Actions workflow runs for the exact implementation SHA; independent JVM/emulator/device execution remains NOT_VERIFIED",
+        "rank": 658,
+        "source_blob_sha": "f3638dcc746f5850c830ee4ae7cf5e0a77597d89"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "evidence": "source explicitly states New provider post-commit P2 now source-reproduced",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "EXPLICIT_NEW_FINDING",
+        "evidence": "source provisional count explicitly describes new ordinary-History success replay",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 3 open: existing opaque-provider UNKNOWN convergence, new ordinary-History success replay, and new provider/source-retirement replay",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "PROVISIONAL_COUNTS",
+        "evidence": "source section is Provisional severity count",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "evidence": "malformed publication-journal discovery remains NOT_VERIFIED because end-to-end destructive/replay consequence has not been proven",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "final exact branch recount, GitHub status/workflow evidence, upstream semantic refresh, and final gate recount remain; independent JVM/emulator/device execution is NOT_VERIFIED",
+        "rank": 659,
+        "source_blob_sha": "cf76cdc84e3ad4bc4074128fc00496e2320ff2af"
+      },
+      {
+        "type": "SOURCE_FROZEN_MISMATCH",
+        "evidence": "rank-660 historical source blob a5021a886f5065e78828a1596c84b83bc099bfd8 differs from frozen-snapshot blob fa1086d7b119c19da12dcb17785a84072e35ed57 for the same checkpoint path; the frozen version reflects a later modification",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-B/B5+B6",
+        "evidence": "historical source strengthens existing P2-B with deterministic supersession and producer-versus-prior-publication authority requirements",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      },
+      {
+        "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "finding_id": "P2-J/J1-J5",
+        "evidence": "historical source explicitly expands existing P2-J across process-death, ancillary-failure, user-stop, atomic finalization-witness, and ancillary-recovery obligations",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      },
+      {
+        "type": "COUNT_RECONCILIATION",
+        "evidence": "historical source refines P2-C, reminds P2-H, rejects adjacent hypotheses, and states no new canonical P2 with P0 0 / P1 0 / P2 8",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      },
+      {
+        "type": "PROVENANCE_AMBIGUITY",
+        "evidence": "source identifies Review Basis 67c7a58a... but does not label it as implementation SHA/frozen implementation SHA",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      },
+      {
+        "type": "STATUS_BASIS_HISTORICAL_ONLY",
+        "evidence": "source records Independent execution: NOT EXECUTED and the bound historical source is not byte-identical to the frozen snapshot",
+        "rank": 660,
+        "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8"
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 4,
+    "source_frozen_identity_mismatches": 1,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 641-690 is receipted"
+  }
+}
