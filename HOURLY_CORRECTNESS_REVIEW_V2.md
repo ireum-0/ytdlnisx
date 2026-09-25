@@ -184,25 +184,37 @@ Severity handling:
 - P1/P2: governed by the Master Plan/v6 CLEAN gate;
 - P3: record and track, normally nonblocking unless governing evidence explicitly says otherwise.
 
-Default current-basis work priority:
+Default work priority:
 1. newly introduced or newly exposed P0/P1/P2 on the pinned SHA;
 2. unresolved blocker/status-transition evidence from the latest valid review;
-3. canonical open findings in severity order P0 -> P1 -> P2;
-4. P3/nonblocking work.
+3. the same SHA's required lens-coverage progression and blind-spot search;
+4. a different canonical open root when current review evidence supplies a meaningful next root or when the selected lens naturally targets it;
+5. P3/nonblocking work.
 
-Within the same severity, use explicit current-basis queue/next-action evidence when it is current, exact-SHA-compatible, and does not merely demand another identical revalidation of an already-covered OPEN root. If no such queue evidence selects a different eligible root, use stable canonical identifier order over the effective OPEN registry. Do not use the Master Plan's historical F1-F22 implementation order as the default current-basis sweep order.
+Do not use the Master Plan's historical F1-F22 implementation order as the default current-basis sweep order.
 
-### Same-SHA anti-starvation and current-basis sweep
+### Same-SHA anti-starvation, lens progression, and current-basis coverage
 
-Do not let one unchanged OPEN finding monopolize every scheduler invocation.
+Do not let one unchanged OPEN finding monopolize every scheduler invocation, but also do not reconstruct the entire historical registry merely to pick a different root.
 
-For each implementation SHA, maintain `current_basis_review_coverage` over canonical roots that have an explicit exact-SHA revalidation. Existing pre-v2 review evidence may count for this **queue/sweep coverage only** when the root, exact implementation SHA, and disposition are explicit and unambiguous; it does not become v2 lens/effectiveness history. Build the candidate root set from the effective current registry/status, not from the Master Plan's historical defect snapshot.
+For each implementation SHA, maintain:
+- `current_basis_review_coverage` for canonical roots actually revalidated at that SHA;
+- `lens_coverage_current_sha` as the primary same-SHA progress mechanism;
+- enough scope history to avoid repeating an identical no-op review.
 
-If an OPEN root already has a valid exact-current-SHA revalidation and there is no relevant production change, new semantic evidence, material status transition, newly exposed residual/subcase, verification result that can change disposition, or deliberate DEEP-lens reason to revisit it, advance to the next canonical root that lacks current-basis revalidation instead of selecting the same root again.
+Existing pre-v2 exact-SHA review evidence may count for root queue/sweep context when the root, exact implementation SHA, and disposition are explicit and unambiguous; it does not become v2 lens/effectiveness history.
 
-A new implementation SHA resets the current-basis sweep because prior exact-SHA disposition is not inherited. Within one SHA, completion of a review for one root does not require that root to be fixed before other canonical roots are reviewed.
+On a repeated SHA with no new implementation/status evidence:
+1. select the next DEEP lens using the deterministic lens rule;
+2. choose a concrete production scope that is relevant to that lens and was not already exhaustively DEEP-reviewed for the same SHA;
+3. prefer unresolved `NOT_VERIFIED` cells, cross-feature propagation, or a different known open root when they give the selected lens meaningful work;
+4. do not repeat the same root/path/evidence merely because the scheduler fired.
 
-When all intended P0/P1/P2 roots have explicit current-basis coverage for the SHA, subsequent same-SHA runs may revisit roots for DEEP-lens rotation, unresolved NOT_VERIFIED evidence, new execution evidence, or periodic independent re-proof. Record the reason; do not create identical no-op revalidations merely because the scheduler fired.
+An explicit current review queue may select a different canonical root when it is current and exact-SHA-compatible. If there is no such usable queue, lens progression itself is sufficient; do **not** require a full effective-OPEN-registry reconstruction solely to choose the next hourly scope.
+
+If an intentional canonical-root sweep is performed, build its candidate set from the effective current registry/status rather than the Master Plan's historical defect snapshot. Use stable canonical identifier order only when the effective candidate set is already explicitly available and no stronger current queue exists.
+
+A new implementation SHA resets per-SHA lens coverage and root current-basis coverage. A root that remains OPEN may be revisited when new code/evidence/status appears, when an unresolved verification cell can be advanced, or when the selected DEEP lens gives a specific non-duplicative reason.
 
 ## 7. Scope verdict versus overall remediation gate
 
@@ -353,8 +365,8 @@ Every v2 checkpoint must include, as applicable:
 - execution-evidence provenance;
 - ledger-vs-review reconciliation gaps, if any;
 - `superseded_by_current_head`, when applicable;
-- `current_basis_review_coverage` and the next uncovered/selected canonical root where applicable;
-- `exact_next_action`.
+- `current_basis_review_coverage` and selected/next review focus where applicable;
+- `exact_next_action`, preferably expressed as the next SHA-change review or the next deterministic DEEP-lens/scope step rather than an unverified root guess.
 
 Missing required evidence is represented as `NOT_VERIFIED` plus reason, never by omitting the field or guessing.
 
