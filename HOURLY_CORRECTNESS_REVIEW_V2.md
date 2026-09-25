@@ -107,6 +107,8 @@ If another writer is visibly advancing the same logical run or an overlapping sc
 - re-fetch the latest state;
 - resume only from its verified append-only progress, or no-op with the conflict/blocker recorded if safe ownership cannot be established.
 
+Treat a writer as visibly active when, after the invocation's initial observation/pin, a relevant production or review HEAD advances during that same invocation with evidence overlapping the intended review work, or when an explicit repository in-progress/lease marker proves ownership. A recent timestamp by itself is **not** an active-writer lock. A completed checkpoint that already existed before the invocation is review evidence, not a reason to no-op indefinitely.
+
 Start a new logical run only when:
 - no resumable v2 run remains; and
 - the intended review target is not already being processed by another active writer.
