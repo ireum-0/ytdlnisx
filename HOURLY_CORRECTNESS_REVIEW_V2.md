@@ -40,7 +40,7 @@ At the start of every logical review run:
 
 1. read `plan/remediation/SOURCE_ARTIFACTS.md`;
 2. identify the recorded Master Plan identity and SHA-256;
-3. use the available `YTDLnisX_CORRECTNESS_REMEDIATION_MASTER_PLAN.md` only if its SHA-256 exactly matches the recorded identity;
+3. read `YTDLnisX_CORRECTNESS_REMEDIATION_MASTER_PLAN.md` from the same frozen `plan/remediation` commit and use it only if its SHA-256 exactly matches the identity recorded by `SOURCE_ARTIFACTS.md`;
 4. read the current governing review checklist identified by the repository, currently `REVIEW_CHECKLIST_V6_OPERATIONAL.md`;
 5. bind exact branch/file/blob identities used by the run.
 
@@ -48,7 +48,7 @@ The registered Master Plan identity for this protocol's adoption is:
 - file: `YTDLnisX_CORRECTNESS_REMEDIATION_MASTER_PLAN.md`;
 - SHA-256: `7f3a554a87eae50368edaf0a35f0fcb5d4b85aaea532bb818c90dbc45d90c5fa`.
 
-If the Master Plan body is unavailable or its hash does not match, record `MASTER_PLAN_BODY_NOT_VERIFIED`; do not fabricate its content or claim Master-Plan-complete closure.
+If the frozen-plan Master Plan body is unavailable or its hash does not match, record `MASTER_PLAN_BODY_NOT_VERIFIED`; do not fall back to an unpinned copy, do not fabricate its content, and do not claim Master-Plan-complete closure.
 
 ### Registry and status history
 
