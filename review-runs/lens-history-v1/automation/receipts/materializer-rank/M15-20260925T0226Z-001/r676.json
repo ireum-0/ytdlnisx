@@ -1,0 +1,141 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 676,
+  "materializer_state_blob": "d95642d13cd3cbd47c94aa4722f6f84e9ced98ce",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r675.json",
+    "blob_sha": "0cf15fb13972ba4d8f60b13a41f5999ec8d1f9df"
+  },
+  "history": {
+    "commit_sha": "db4930f425f51ac0b50e3217c6a47dd3a90e8b6c",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=676"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T042133Z__2e12975a__run9-final-checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "eadaf240b41db814aed9649a8321baa737d119d7",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "eadaf240b41db814aed9649a8321baa737d119d7",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T042133Z__2e12975a__run9-final-checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "eadaf240b41db814aed9649a8321baa737d119d7",
+    "frozen_blob_sha": "eadaf240b41db814aed9649a8321baa737d119d7",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "2e12975a4b044d52986ec9ac0f3204f6e6bdc326",
+      "evidence": "source Pinned authorities explicitly records Implementation: checkpoint/pre-baseline-review @ exact SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Hourly correctness review checkpoint — run 9 (final)"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 remains OPEN; exact-URI post-create rollback/fallback fencing subcase is closed, but opaque provider UNKNOWN remains non-convergent and reconfigure does not discharge old authority",
+        "evidence": "source Final verdict retains BUG-OUTPUT-01 OPEN and Existing P2 retained explicitly distinguishes the correctly closed exact-URI rollback subcase from unresolved opaque UNKNOWN convergence"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Final P0 0 / P1 0 / P2 1 existing OPEN; new canonical findings 0"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly records New canonical findings: 0 while existing BUG-OUTPUT-01 remains one P2"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OUTPUT-01 exact-URI rollback/fallback subcase",
+      "evidence": "source explicitly states the current commit correctly closes the subcase where exact provider URI exists but reservation persistence failed, while the root BUG-OUTPUT-01 remains OPEN"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-OUTPUT-01",
+      "evidence": "source independently confirms opaque UNKNOWN remains non-convergent and RECONFIGURE does not resolve, rollback, revoke, or transfer old UNKNOWN authority"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records final P0 0 / P1 0 / P2 1 existing OPEN and new canonical findings 0"
+    },
+    {
+      "type": "CHECKLIST_REFINEMENT",
+      "evidence": "source says no new core rule is required but explicitly refines the existing external-UNKNOWN row so user-facing retry/reconfigure counts as resolution only with exact resolution, deterministic rollback, or durable authority revocation/transfer"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source records no combined-status contexts and independent JVM/emulator/device execution remains NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
