@@ -1,0 +1,246 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "data_head": "17ddbb48d7aeb93a88fb24bf3f74bdd9614d556d",
+  "complete_state_blob": "f28878046c36cee91f8e5680766944d7c087322d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "039d77802f010c23cac1500f83fd32571b72fa89",
+    "a693bcf799b802c4476dc9a2c085dac0c1655ff9",
+    "7070b574208f0d54e446d9824d118d85e102c18d",
+    "b49dbc1af4c576da622f84b16eeb82093b45939c",
+    "e14ff148dbbe3ad1924df0422b9b586b42522e1b",
+    "5039ea9c9b9a85adbfd77e5b9b4b4fde6556c48f",
+    "b8f43db1d7c2f7c22f6623ad88797d79f549fa47",
+    "605c7b6279c03c2d163543f7adef23ea59d3bf95",
+    "dc9fa3760fa39d67b0f1563e2c7fda8d167993d6",
+    "b51776c04848319a2d0ff48aa0a7c22c80d83951"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M16-20260925T1415Z-001-materialization-691-740.json",
+    "blob_sha": "79c7fa0db456c38a52b1c8e3d4264643ecfa78ea",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "source_frozen_blob_mismatch_ranks": [],
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        691,
+        695
+      ],
+      "blob_sha": "abfae780a1f2e8e12c429cedeb3c4554f15a5619"
+    },
+    {
+      "range": [
+        696,
+        700
+      ],
+      "blob_sha": "03f30a7059eacd88394502498773d8c3b6039427"
+    },
+    {
+      "range": [
+        701,
+        705
+      ],
+      "blob_sha": "f2a0f3e70c3b6301be54b1c4866ae7f4500d5dfc"
+    },
+    {
+      "range": [
+        706,
+        710
+      ],
+      "blob_sha": "0047cfe8a588eb03acc566bce3f15760e8a594d4"
+    },
+    {
+      "range": [
+        711,
+        715
+      ],
+      "blob_sha": "7260ecc655e6c26183c6da7d342d7abf9f1cce01"
+    },
+    {
+      "range": [
+        716,
+        720
+      ],
+      "blob_sha": "7273e759e736ca34596d2784bffc2819fe3278e5"
+    },
+    {
+      "range": [
+        721,
+        725
+      ],
+      "blob_sha": "b2fa6b5c50a2665806916083e72921407d1fc9fb"
+    },
+    {
+      "range": [
+        726,
+        730
+      ],
+      "blob_sha": "faabc53b43e275554d1d9e6f54a94b1d1008f884"
+    },
+    {
+      "range": [
+        731,
+        735
+      ],
+      "blob_sha": "992858af68b6a06f941598aa22ff71b1857b7688"
+    },
+    {
+      "range": [
+        736,
+        740
+      ],
+      "blob_sha": "9cd6d429bead2f89c1428b527cf6caf6fa02a7d2"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "03d82ce2239578db41c17ba0ac556441fb37a887",
+  "materializer_exception_rank_count": 50,
+  "independent_exception_ranks": [
+    691,
+    692,
+    693,
+    694,
+    695,
+    696,
+    697,
+    698,
+    699,
+    700,
+    701,
+    702,
+    703,
+    704,
+    705,
+    706,
+    707,
+    708,
+    709,
+    710,
+    711,
+    712,
+    713,
+    714,
+    715,
+    716,
+    717,
+    718,
+    719,
+    720,
+    721,
+    722,
+    723,
+    724,
+    725,
+    726,
+    727,
+    728,
+    729,
+    730,
+    731,
+    732,
+    733,
+    734,
+    735,
+    736,
+    737,
+    738,
+    739,
+    740
+  ],
+  "independent_exception_rank_count": 50,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "chronology_status_count_root_and_subcase_boundaries",
+      "rank_range": [
+        691,
+        740
+      ],
+      "requirement": "Preserve exact historical NEW-vs-existing finding evidence, material status transitions, count reconciliation, same-root residual/subcase boundaries, explicit no-count-change decisions, and historical finding names without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_structural_and_execution_uncertainty",
+      "rank_range": [
+        691,
+        740
+      ],
+      "requirement": "Preserve AMBIGUOUS_KIND, PROVISIONAL_COUNTS, NOT_VERIFIED semantic candidates, historical-only status/runtime basis, and execution uncertainty; never convert filenames, chronology, absent metrics, or provisional prose into deterministic modern kind, lens coverage, or effectiveness."
+    },
+    {
+      "topic": "provider_unknown_convergence_semantics",
+      "rank_range": [
+        691,
+        711
+      ],
+      "requirement": "Preserve the distinction between replay/fallback fencing improvements and the still-open opaque-provider UNKNOWN convergence obligation. Rank 710's explicitly new blocker is a same-root BUG-OUTPUT-01 subcase, not evidence for an independently invented canonical root or numeric root-count delta."
+    },
+    {
+      "topic": "terminal_semantic_commit_vs_scheduler_result",
+      "rank_range": [
+        712,
+        723
+      ],
+      "requirement": "Preserve the historical contradiction where durable semantic commit/recovery can represent success while the live worker may return WorkManager Result.failure after a fallible post-commit journal or cleanup step; later fixes must not rewrite earlier evidence."
+    },
+    {
+      "topic": "terminal_recovery_discovery_and_carrier_loss",
+      "rank_range": [
+        724,
+        740
+      ],
+      "requirement": "Preserve the distinction among physical artifact preservation, marker-revoked discovery, journal-only surviving carriers, production candidate construction, and semantic recovery convergence. Later discovery improvements must not retroactively normalize earlier recovery-discovery gaps."
+    },
+    {
+      "topic": "provenance_metadata_correction",
+      "rank_range": [
+        730,
+        730
+      ],
+      "requirement": "Preserve the explicit historical correction of the stale implementation-parent metadata to 79e5be84377c98f1610a5a99dc6fe90de82d92cf while keeping findings and severity unchanged."
+    },
+    {
+      "topic": "explicit_checklist_refinements_without_metric_inference",
+      "rank_range": [
+        696,
+        726
+      ],
+      "requirement": "Preserve the explicit historical refinements for UNKNOWN user-action/reconfigure consumers, the PROVEN_NOT_CREATED / CREATED_WITH_EXACT_ID / UNKNOWN completion trichotomy, and the two-dimensional recovery matrix as semantic evidence only; do not infer modern checklist-gap counts or numeric lens effectiveness."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_691_740": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false,
+    "all_triage_previous_receipt_bindings_match_actual_blobs": true
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
