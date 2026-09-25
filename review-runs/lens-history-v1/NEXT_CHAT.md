@@ -68,18 +68,50 @@ Never redo or overwrite an already valid immutable rank receipt.
 
 ## Two-level checkpoint model
 
-For Materializer runs:
+For Materializer runs, the logical order remains strict even when publication is optimized:
 
 1. Fully verify a rank.
-2. Seal it as immutable:
+2. Seal it as an immutable rank-receipt Git object:
    `automation/receipts/materializer-rank/<run_id>/rNNN.json`
-3. After five contiguous valid rank receipts exist, create:
+3. Preserve one distinct rank commit per rank. A rank commit may be staged as an unattached Git commit before publication, but it must remain a distinct ancestry node.
+4. After five contiguous valid rank receipts exist in the staged ancestry, create a distinct aggregate commit:
    `automation/receipts/materializer/<run_id>/rNNN-NNN.json`
-4. Only after the five-rank aggregate is sealed, advance `materializer-state.json`.
-5. For a new materialization range, do **not** write official inventory / ledger / validation / progress until the entire logical batch is complete.
-6. No partial official batch output.
+5. Only after that five-rank aggregate commit, create a distinct state-advance commit for `materializer-state.json`.
+6. For a new materialization range, do **not** write official inventory / ledger / validation / progress until the entire logical batch is complete.
+7. No partial official batch output.
 
 A rank receipt must preserve exact history resolution, complete changed-file pagination through explicit `files: []` closure, exact source/frozen blobs, implementation provenance, structural-kind evidence, effectiveness eligibility, lens/effectiveness evidence, factual exception triggers, and previous-rank binding.
+
+The required ancestry shape for one microsegment is therefore:
+
+`base HEAD -> rank N -> rank N+1 -> ... -> rank N+4 -> aggregate N-(N+4) -> state advance`
+
+Do not collapse multiple rank receipts, the aggregate, or the state advance into one commit. The optimization is **single publication of a prebuilt linear commit chain**, not squashing.
+
+### Optimized atomic publication
+
+Preferred Materializer publication mode:
+
+1. Capture a fresh live base HEAD, live state blob, authoritative aggregate prefix, effective next rank, governing pins, remediation bindings, and writer status.
+2. Prefetch and independently verify the target ranks' history commits, complete changed-file pagination, source checkpoint blobs, and frozen checkpoint blobs in parallel where possible.
+3. Build rank receipt contents in rank order. Each receipt must bind the actual Git blob SHA of the immediately previous rank receipt.
+4. Create the rank receipt blobs, trees, and distinct commits as a linear chain rooted at the captured base HEAD **without moving the live branch ref**.
+5. After each complete five-rank staged segment, create its aggregate blob/tree/commit, then create its state blob/tree/commit. The next staged segment, if any, must bind the staged state blob produced by the preceding segment.
+6. Verify the staged Git objects before publication: exact blob SHAs, expected file paths, expected parent chain, run_id/rank/range bindings, aggregate bindings, state bindings, and absence of unrelated or production/application-source changes.
+7. Perform the final publication gate described in **Write / race safety**.
+8. Advance `review/lens-history-v1` with exactly one non-force ref update to the final staged commit.
+9. Perform the post-publication verification described below.
+
+Git blob/tree/commit creation that is not reachable from `review/lens-history-v1` is staging only; it is not authoritative live state. If the final publication gate fails, abandon the staged chain and reconstruct from the new live state. Never force, rebase, transplant, or partially reuse a chain whose captured base HEAD/state is no longer current.
+
+### Publication-unit rollout
+
+- The first execution after this protocol amendment MUST use exactly one complete five-rank microsegment as the atomic publication unit.
+- After that publication passes all post-publication verification, later executions MAY stage multiple complete five-rank microsegments in one publication, bounded by the current Materializer logical batch.
+- A multi-segment publication must preserve the full alternating ancestry:
+  `rank commits -> aggregate -> state -> next rank commits -> aggregate -> state -> ...`
+- Do not cross from Materializer into Triage/Auditor in the same atomic publication.
+- If tooling, validation, race conditions, or any anomaly makes atomic staging uncertain, fall back to the smaller five-rank publication unit or the legacy per-rank publication path. Safety wins over throughput.
 
 ---
 
@@ -109,30 +141,66 @@ Lens definitions remain:
 
 ## Write / race safety
 
-Before every live-branch write:
+Distinguish **Git-object staging** from **live-branch publication**:
 
-1. fresh-fetch `review/lens-history-v1` HEAD;
-2. require the expected parent;
-3. ensure no other Materializer writer has advanced the branch;
-4. never amend, rebase, squash, force-push, or rewrite referenced history;
-5. never update/delete immutable receipts.
+- Creating blobs, trees, or commits that are not reachable from `review/lens-history-v1` does not change authoritative live state.
+- Moving `review/lens-history-v1` is the publication event.
 
-After every write:
+### Before starting an atomic publication unit
 
-1. re-fetch the new file;
-2. record the actual blob SHA;
-3. re-fetch the commit;
-4. require its parent equals the prior expected HEAD.
+1. fresh-fetch `review/lens-history-v1` HEAD and capture it as `base_head`;
+2. fresh-fetch `materializer-state.json` and capture its actual blob as `base_state_blob`;
+3. reconstruct the authoritative aggregate prefix and highest contiguous valid one-rank suffix;
+4. compute the effective next rank from evidence, never from `state.next_rank` alone;
+5. ensure no conflicting Materializer writer is enabled, active, or has just advanced the branch;
+6. fresh-fetch all governing pins, applicable corrections/remediations, and the prior certification required by state;
+7. never amend, rebase, squash, force-push, rewrite referenced history, or update/delete immutable receipts.
 
-If another writer advances the branch, stop writing, reconstruct the new authoritative prefix, then continue from the new effective next rank.
+### During staging
+
+1. Keep every rank receipt as a distinct commit and preserve exact previous-rank blob binding.
+2. Keep every five-rank aggregate and state advance as distinct commits in the required order.
+3. Root the entire staged chain at the captured `base_head`.
+4. Do not move the live branch ref while constructing the staged chain.
+5. Verify staged commits by SHA before publication. Every commit must have the expected parent and expected tree/file blob mapping.
+6. Do not include unrelated files or production/application source in the staged trees.
+7. Unattached objects from an abandoned or failed staging attempt are non-authoritative and must be ignored on resume unless they later become reachable from the live branch through an explicitly verified publication.
+
+### Final publication gate
+
+Immediately before moving the live ref:
+
+1. re-check writer/automation status;
+2. fresh-fetch the live HEAD and require it is still exactly `base_head`;
+3. fresh-fetch the live state and require its blob is still exactly `base_state_blob`;
+4. require that no conflicting receipt/aggregate/state artifact has appeared on the live branch;
+5. require the final staged commit descends linearly from `base_head` and every staged commit/object verification has passed.
+
+Then perform exactly one **non-force** ref update from `base_head` to the final staged commit.
+
+The non-force update is the race barrier. If the branch moved or GitHub rejects the update as non-fast-forward, do not retry with force and do not rebase/cherry-pick the staged chain. Reconstruct the new authoritative live prefix and build a new chain from that state.
+
+### After publication
+
+1. re-fetch `review/lens-history-v1` and require HEAD equals the final staged commit;
+2. re-fetch the final state file and require its actual blob equals the staged state blob;
+3. re-fetch/list every newly published rank receipt and aggregate and require their actual live blobs equal the staged blobs;
+4. verify the published commit parent chain from the old `base_head` through the final state commit;
+5. require no unrelated or production/application-source path entered the published chain.
+
+These post-publication checks may be batched/parallelized because the ref has already been published, but every required binding must be checked before beginning another publication unit.
+
+If post-publication verification fails, enter a fail-closed HOLD and perform no further repository write until the discrepancy is reconstructed.
+
+The legacy per-rank publish-and-refetch procedure remains a safe fallback when atomic staging cannot be proven correct, but it is no longer the preferred path.
 
 ### Scheduled-task interaction
 
-Before manually writing, inspect whether Lens History Materializer / Lens Exception Triage / Lens History Auditor automations are enabled or have just run.
+Before manually staging or publishing, inspect whether Lens History Materializer / Lens Exception Triage / Lens History Auditor automations are enabled or have just run.
 
 Do not let a manual writer race an active scheduled writer on the same branch.
 
-If necessary, temporarily disable the role that would conflict, perform the serialized work, then re-enable only after the branch is in a safe gate state.
+If necessary, temporarily disable the role that would conflict, perform the atomic publication unit, then re-enable only after the branch is in a safe gate state.
 
 ---
 
