@@ -1,0 +1,116 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "segment_range": [
+    681,
+    685
+  ],
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M15-20260925T0226Z-001/r676-680.json",
+    "blob_sha": "56e711f6159504db932b3e07c34a4fc1a95769ab"
+  },
+  "rank_receipts": [
+    {
+      "rank": 681,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r681.json",
+      "blob_sha": "9393d7bdb376c41154dc451c1fe0651822fa82a4"
+    },
+    {
+      "rank": 682,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r682.json",
+      "blob_sha": "8052030aadf9fd12f17591281168dad76b35f906"
+    },
+    {
+      "rank": 683,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r683.json",
+      "blob_sha": "61a4bd3bb5e7a5aa6b95cac970f79a93f0034109"
+    },
+    {
+      "rank": 684,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r684.json",
+      "blob_sha": "28783e37925713566bc60dabd23a8b1308ae1b1f"
+    },
+    {
+      "rank": 685,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r685.json",
+      "blob_sha": "a0e06eddb04ffd06d029f62fd8e4954558f9b4a9"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 5,
+    "ranks": [
+      681,
+      682,
+      683,
+      684,
+      685
+    ],
+    "by_rank": [
+      {
+        "rank": 681,
+        "types": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 682,
+        "types": [
+          "COUNT_RECONCILIATION",
+          "CONFIRMED_RESIDUAL_OR_SUBCASE",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 683,
+        "types": [
+          "PROVISIONAL_COUNTS",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 684,
+        "types": [
+          "COUNT_RECONCILIATION",
+          "CONFIRMED_RESIDUAL_OR_SUBCASE",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 685,
+        "types": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 5,
+    "history_bindings_complete": 5,
+    "changed_file_enumeration_closed": 5,
+    "source_frozen_identity_matches": 5,
+    "source_frozen_identity_mismatches": 0,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "inventory/ledger/validation/progress are written only after full logical range 641-690 is receipted"
+  }
+}
