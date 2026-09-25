@@ -1,0 +1,131 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "rank": 730,
+  "materializer_state_blob": "1fb1416b599962e5a673b7e42b243e6c29e1e8ff",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6ad31f7bc3f5b41fd091dd3ab15edccc0980abe3",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M16-20260925T1415Z-001/r729.json",
+    "blob_sha": "df254fa0c066320d0195673d0728777b29f5e80a"
+  },
+  "history": {
+    "commit_sha": "01f9bb842466c425922ed53ae4d0eb599438e2e5",
+    "resolution": "exact frozen history rank 730"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-08T013642Z__2207a870__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "e4b6cdf6403d00241139d5b0fa6faf07498779ee",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "e4b6cdf6403d00241139d5b0fa6faf07498779ee",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-08T013642Z__2207a870__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "e4b6cdf6403d00241139d5b0fa6faf07498779ee",
+    "frozen_blob_sha": "e4b6cdf6403d00241139d5b0fa6faf07498779ee",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "2207a8706eaabbaaf58ea6351d1111444c89d125",
+      "evidence": "source fixed target"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Final Checkpoint"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing Terminal partial-publication recovery P2 remains unchanged",
+        "evidence": "source Existing P2 section"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Final P0 0 / P1 0 / P2 1 existing/open; new finding none; material state change none"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly records no new finding and no material state change"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "PROVENANCE_CORRECTION",
+      "evidence": "source explicitly corrects stale implementation-parent metadata in the earlier checkpoint to 79e5be84377c98f1610a5a99dc6fe90de82d92cf and states findings/severity unchanged"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source records final counts with no new finding or material change"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "runtime execution NOT_VERIFIED and status contexts none"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
