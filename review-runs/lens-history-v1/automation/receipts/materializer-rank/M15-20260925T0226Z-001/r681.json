@@ -1,0 +1,132 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 681,
+  "materializer_state_blob": "4708dd21a268f3caac694b313d3c65366ca19a9d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r680.json",
+    "blob_sha": "94eff2a6ce2700f9aad68e073d3f57e18dbda913"
+  },
+  "history": {
+    "commit_sha": "50463881aac04acf8cf9b2df65704b787774533e",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=681"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T023700Z__ee470570__run9-mid-checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "bd058b717709d35751bddc423b11d08eaa6237c3",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "bd058b717709d35751bddc423b11d08eaa6237c3",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T023700Z__ee470570__run9-mid-checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "bd058b717709d35751bddc423b11d08eaa6237c3",
+    "frozen_blob_sha": "bd058b717709d35751bddc423b11d08eaa6237c3",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "ee4705703bf736284427b8380b9042af6b051e53",
+      "evidence": "source Pinned refs explicitly records implementation branch and exact SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "title marks this as run9 mid checkpoint but there is no explicit canonical checkpoint type/kind field; UI/recovery consumer closure, exact queue mutation, restart behavior, status evidence, and final recount remain"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing incomplete-remediation P2 remains provisional; reconfigured retry preserves the old operation authority, while end-to-end resolve/revoke/transfer closure remains unverified",
+        "evidence": "source provisional severity, confirmed fixed invariants, and open candidate/question explicitly state this"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional P0 0 / P1 0 / P2 1 existing"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "mid checkpoint does not state a final canonical count/status delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "source title indicates a mid checkpoint but has no explicit canonical kind field and substantial review scope remains"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 1 existing BUG-OUTPUT-01"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source leaves UI/recovery convergence and authority resolve/revoke/transfer closure open"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source retains previously verified Android provider ambiguity semantics and exact implementation CI/status evidence remains unverified"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
