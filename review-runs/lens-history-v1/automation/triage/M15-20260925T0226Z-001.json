@@ -1,0 +1,232 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "data_head": "b6b1fb5d96919fbcde3a2d43c7a0b8e6dc22cab6",
+  "complete_state_blob": "be0425f97590d249e1e1b9e522f676bf1737d3c6",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "b78291a38a0780aeacba2b07b6047d3d1e9d69ae",
+    "ae2cd5e15a89e010d6d01185e26e3271e0a65e3c",
+    "148ed89fdf5000addc5625bd0ee011eec67df406",
+    "3fc43be78ee3d64489c3c77199dfc62ab25d1f91",
+    "c063caf81bce177fb1cec400f64c8a05465848d1",
+    "c1014d784b60964269ebd463ccc340e46ac4e4c2",
+    "44a61212b597b3bfd033fdae69d7d5fe74cd3bde",
+    "56e711f6159504db932b3e07c34a4fc1a95769ab",
+    "f20170f4fcd03662a2118a7804c619efaff527cb",
+    "c13511c568170521777aeaad84c67b9775b8b529"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M15-20260925T0226Z-001-materialization-641-690.json",
+    "blob_sha": "d9499de20a5b0451e6ecf43a6a75e7b51f41d129",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 1,
+    "source_frozen_blob_mismatch_ranks": [
+      660
+    ],
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        641,
+        645
+      ],
+      "blob_sha": "469d783281d29a4dbf39259099f9c417b30ef826"
+    },
+    {
+      "range": [
+        646,
+        650
+      ],
+      "blob_sha": "fcb3c5106c78b05870d6a5fc5796d5d029f0e725"
+    },
+    {
+      "range": [
+        651,
+        655
+      ],
+      "blob_sha": "c654c8fa29b75d858b3ea714fd5942b56da51a5a"
+    },
+    {
+      "range": [
+        656,
+        660
+      ],
+      "blob_sha": "0564ad29562f902d9ad0bc94938fd7d19039a91c"
+    },
+    {
+      "range": [
+        661,
+        665
+      ],
+      "blob_sha": "fde15fc697c0c9a0d256d6eade1fae1126baa088"
+    },
+    {
+      "range": [
+        666,
+        670
+      ],
+      "blob_sha": "717ad09edad9f98f5e63500b18003f3c0283f2f0"
+    },
+    {
+      "range": [
+        671,
+        675
+      ],
+      "blob_sha": "4f43c2c01978ba2cd90125303d2c9876f3b48a79"
+    },
+    {
+      "range": [
+        676,
+        680
+      ],
+      "blob_sha": "582cefc1601c160376800f6c5b3ec2ed8e12c286"
+    },
+    {
+      "range": [
+        681,
+        685
+      ],
+      "blob_sha": "c908f80ac6c912b76c745a1a9ec08f939f8eb0db"
+    },
+    {
+      "range": [
+        686,
+        690
+      ],
+      "blob_sha": "4db52f552290b43600310231882b4be141706336"
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "bcd8ecd9096305a593d350d2bf808b33b6666745",
+  "materializer_exception_rank_count": 50,
+  "independent_exception_ranks": [
+    641,
+    642,
+    643,
+    644,
+    645,
+    646,
+    647,
+    648,
+    649,
+    650,
+    651,
+    652,
+    653,
+    654,
+    655,
+    656,
+    657,
+    658,
+    659,
+    660,
+    661,
+    662,
+    663,
+    664,
+    665,
+    666,
+    667,
+    668,
+    669,
+    670,
+    671,
+    672,
+    673,
+    674,
+    675,
+    676,
+    677,
+    678,
+    679,
+    680,
+    681,
+    682,
+    683,
+    684,
+    685,
+    686,
+    687,
+    688,
+    689,
+    690
+  ],
+  "independent_exception_rank_count": 50,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "chronology_status_count_and_root_boundaries",
+      "rank_range": [
+        641,
+        690
+      ],
+      "requirement": "Preserve exact historical NEW-vs-existing finding evidence, material status transitions, count reconciliation, same-root residual/subcase boundaries, and explicit no-count-advance decisions without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_structural_and_execution_uncertainty",
+      "rank_range": [
+        641,
+        690
+      ],
+      "requirement": "Preserve AMBIGUOUS_KIND, PROVISIONAL_COUNTS, NOT_VERIFIED semantic candidates, provenance ambiguity, historical-only status basis, and independent execution uncertainty; never convert absent/provisional prose into deterministic modern kind/lens/effectiveness data."
+    },
+    {
+      "topic": "source_frozen_identity_mismatch",
+      "rank_range": [
+        660,
+        660
+      ],
+      "requirement": "Preserve rank 660 historical source blob a5021a886f5065e78828a1596c84b83bc099bfd8 as distinct from frozen snapshot blob fa1086d7b119c19da12dcb17785a84072e35ed57; the later frozen version must not overwrite or normalize the historical source evidence."
+    },
+    {
+      "topic": "unknown_provider_convergence_semantics",
+      "rank_range": [
+        666,
+        690
+      ],
+      "requirement": "Preserve the distinction between fixed exact-identity/rollback/quarantine subcases and the still-open opaque provider UNKNOWN convergence root; deterministic re-entry into the same unresolved authority is a residual/subcase, not evidence of convergence."
+    },
+    {
+      "topic": "checklist_refinement_without_metric_inference",
+      "rank_range": [
+        676,
+        676
+      ],
+      "requirement": "Preserve the explicit external-UNKNOWN checklist refinement as historical semantic evidence only; do not infer modern checklist-gap counts or numeric lens effectiveness unless explicitly supported by governing structured fields."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_641_690": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": false,
+    "all_triage_previous_receipt_bindings_match_actual_blobs": true
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
