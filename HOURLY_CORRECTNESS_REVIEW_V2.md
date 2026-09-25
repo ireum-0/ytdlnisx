@@ -50,6 +50,22 @@ The registered Master Plan identity for this protocol's adoption is:
 
 If the frozen-plan Master Plan body is unavailable or its hash does not match, record `MASTER_PLAN_BODY_NOT_VERIFIED`; do not fall back to an unpinned copy, do not fabricate its content, and do not claim Master-Plan-complete closure.
 
+### Semantic-source precedence and historical-snapshot rule
+
+The Master Plan contains both durable normative rules and a historical session-handoff snapshot. Do **not** treat all statements in it as equally current.
+
+Use this precedence:
+
+1. pinned `checkpoint/pre-baseline-review@<SHA>` — production behavior truth;
+2. currently adopted `REVIEW_CHECKLIST_V6_OPERATIONAL.md` — review method and CLEAN/evidence gate;
+3. effective canonical registry/status: `TASKS.md + TASKS_DELTA.md + CURRENT_STATUS.md + exact later review/closure evidence` — current finding identity/status/count/ownership state;
+4. Master Plan — durable correctness invariants, severity/gate policy, workflow discipline, hard dependencies, and historical remediation intent where not superseded;
+5. this v2 protocol — orchestration only.
+
+The Master Plan's embedded branch SHAs, active-defect counts, "current F1 state", immediate-next-actions, and F1-F22 implementation order are a historical snapshot. They MUST NOT override later canonical registry/status/review evidence and MUST NOT be used as the automatic current-basis sweep order unless a current repository artifact explicitly re-adopts that order for the present state.
+
+When a Master Plan hard dependency or invariant applies to an exact current root and has not been superseded, preserve it. When current status/history has evolved beyond the Master Plan snapshot, use the current registry/review evidence for state and queue decisions while retaining the Master Plan's still-valid normative invariant.
+
 ### Registry and status history
 
 Interpret canonical history using:
@@ -174,13 +190,13 @@ Default current-basis work priority:
 3. canonical open findings in severity order P0 -> P1 -> P2;
 4. P3/nonblocking work.
 
-Within the same severity, use explicit current-basis queue/next-action evidence when valid; otherwise use governing plan order, then stable canonical identifier order.
+Within the same severity, use explicit current-basis queue/next-action evidence when it is current, exact-SHA-compatible, and does not merely demand another identical revalidation of an already-covered OPEN root. If no such queue evidence selects a different eligible root, use stable canonical identifier order over the effective OPEN registry. Do not use the Master Plan's historical F1-F22 implementation order as the default current-basis sweep order.
 
 ### Same-SHA anti-starvation and current-basis sweep
 
 Do not let one unchanged OPEN finding monopolize every scheduler invocation.
 
-For each implementation SHA, maintain `current_basis_review_coverage` over canonical roots that have an explicit exact-SHA revalidation. Existing pre-v2 review evidence may count for this **queue/sweep coverage only** when the root, exact implementation SHA, and disposition are explicit and unambiguous; it does not become v2 lens/effectiveness history.
+For each implementation SHA, maintain `current_basis_review_coverage` over canonical roots that have an explicit exact-SHA revalidation. Existing pre-v2 review evidence may count for this **queue/sweep coverage only** when the root, exact implementation SHA, and disposition are explicit and unambiguous; it does not become v2 lens/effectiveness history. Build the candidate root set from the effective current registry/status, not from the Master Plan's historical defect snapshot.
 
 If an OPEN root already has a valid exact-current-SHA revalidation and there is no relevant production change, new semantic evidence, material status transition, newly exposed residual/subcase, verification result that can change disposition, or deliberate DEEP-lens reason to revisit it, advance to the next canonical root that lacks current-basis revalidation instead of selecting the same root again.
 
