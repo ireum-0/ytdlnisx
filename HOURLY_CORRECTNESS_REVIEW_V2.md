@@ -174,6 +174,18 @@ Default current-basis work priority:
 
 Within the same severity, use explicit current-basis queue/next-action evidence when valid; otherwise use governing plan order, then stable canonical identifier order.
 
+### Same-SHA anti-starvation and current-basis sweep
+
+Do not let one unchanged OPEN finding monopolize every scheduler invocation.
+
+For each implementation SHA, maintain `current_basis_review_coverage` over canonical roots that have an explicit exact-SHA revalidation. Existing pre-v2 review evidence may count for this **queue/sweep coverage only** when the root, exact implementation SHA, and disposition are explicit and unambiguous; it does not become v2 lens/effectiveness history.
+
+If an OPEN root already has a valid exact-current-SHA revalidation and there is no relevant production change, new semantic evidence, material status transition, newly exposed residual/subcase, verification result that can change disposition, or deliberate DEEP-lens reason to revisit it, advance to the next canonical root that lacks current-basis revalidation instead of selecting the same root again.
+
+A new implementation SHA resets the current-basis sweep because prior exact-SHA disposition is not inherited. Within one SHA, completion of a review for one root does not require that root to be fixed before other canonical roots are reviewed.
+
+When all intended P0/P1/P2 roots have explicit current-basis coverage for the SHA, subsequent same-SHA runs may revisit roots for DEEP-lens rotation, unresolved NOT_VERIFIED evidence, new execution evidence, or periodic independent re-proof. Record the reason; do not create identical no-op revalidations merely because the scheduler fired.
+
 ## 7. Scope verdict versus overall remediation gate
 
 Never overload one `CLEAN` label.
@@ -323,6 +335,7 @@ Every v2 checkpoint must include, as applicable:
 - execution-evidence provenance;
 - ledger-vs-review reconciliation gaps, if any;
 - `superseded_by_current_head`, when applicable;
+- `current_basis_review_coverage` and the next uncovered/selected canonical root where applicable;
 - `exact_next_action`.
 
 Missing required evidence is represented as `NOT_VERIFIED` plus reason, never by omitting the field or guessing.
