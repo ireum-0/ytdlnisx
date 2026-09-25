@@ -1,0 +1,127 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 670,
+  "materializer_state_blob": "ac764424148650440c3b8a4644a6e6adcdd585b4",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M15-20260925T0226Z-001/r669.json",
+    "blob_sha": "7b0e52833681f468a2f936a8a1d30891725d5bf2"
+  },
+  "history": {
+    "commit_sha": "4796aa4a9ec3b1f6059da5f303fe53669b9611e1",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=670"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T073100Z__2e12975a__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "a942cfa7e842359a743c51ba913fbcd6a300ef66",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "a942cfa7e842359a743c51ba913fbcd6a300ef66",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T073100Z__2e12975a__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "a942cfa7e842359a743c51ba913fbcd6a300ef66",
+    "frozen_blob_sha": "a942cfa7e842359a743c51ba913fbcd6a300ef66",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "2e12975a4b044d52986ec9ac0f3204f6e6bdc326",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source explicitly records Checkpoint type: final"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 remains OPEN unchanged; no new canonical finding; no status changes",
+        "evidence": "source Independent verdict and Findings sections explicitly state one existing BUG-OUTPUT-01 P2 remains OPEN, no new canonical finding, and no status changes"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Final P0 0 / P1 0 / P2 1 existing"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly states no new canonical finding and no status changes"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records final P0 0 / P1 0 / P2 1 existing with no new finding/status change"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source says previously established Android provider UNKNOWN semantics apply with no new upstream delta; exact-SHA CI/workflow and runtime/device execution remain unavailable/NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
