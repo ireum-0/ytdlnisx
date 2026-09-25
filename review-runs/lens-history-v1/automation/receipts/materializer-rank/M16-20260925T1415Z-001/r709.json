@@ -1,0 +1,138 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "rank": 709,
+  "materializer_state_blob": "ac60af23382738b3f78a5407119a898f9deba360",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6ad31f7bc3f5b41fd091dd3ab15edccc0980abe3",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M16-20260925T1415Z-001/r708.json",
+    "blob_sha": "94055150dd517014463f3d6e95e9ae052c94615d"
+  },
+  "history": {
+    "commit_sha": "ec8b64359e91f1de8a0d9e66ab6f8090065c08d3",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=709"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-08T122700Z__b5c57f00__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "c208b93c2d57a9b2a6f006f7b1347b8080a99128",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "c208b93c2d57a9b2a6f006f7b1347b8080a99128",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-08T122700Z__b5c57f00__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "c208b93c2d57a9b2a6f006f7b1347b8080a99128",
+    "frozen_blob_sha": "c208b93c2d57a9b2a6f006f7b1347b8080a99128",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "b5c57f00c5e6dbd9fb6dfb6fc17c0eeccbfee529",
+      "evidence": "source explicitly records fixed target implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint has no explicit checkpoint type/kind and Terminal/startup consumer closure, status evidence, and final recount remain"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing P2 remains open; the previous UNKNOWN-clear-and-replay mechanism is source-level fixed, but recovery now remains durably fail-closed without an established production convergence path",
+        "evidence": "source Provisional findings explicitly distinguishes the fixed replay mechanism from the remaining convergence debt"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional P0 0 / P1 0 / P2 1 existing/open"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source records a subcase behavior change while the root remains open but does not state a final canonical count/status delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "finding_id": "BUG-OUTPUT-01",
+      "evidence": "source explicitly states the prior UNKNOWN-clear-and-replay defect mechanism is source-level fixed and the failure changes to durable fail-closed recovery debt"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source records provisional P0 0 / P1 0 / P2 1 existing/open"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "finding_id": "BUG-OUTPUT-01",
+      "evidence": "fixed duplicate-risk replay behavior is distinct from the remaining non-convergent recovery debt"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source leaves Terminal/startup recovery consumers, bypass search, and exact convergence ownership for further verification"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source leaves exact-SHA status/test evidence outstanding"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
