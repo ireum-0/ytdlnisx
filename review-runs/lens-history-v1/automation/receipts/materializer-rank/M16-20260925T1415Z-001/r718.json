@@ -1,0 +1,127 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "rank": 718,
+  "materializer_state_blob": "bc82393008ee60c860886901c7cbc2331c063cca",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6ad31f7bc3f5b41fd091dd3ab15edccc0980abe3",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M16-20260925T1415Z-001/r717.json",
+    "blob_sha": "df630bae5522e1aefbfb0abec41efb9fb731c9dd"
+  },
+  "history": {
+    "commit_sha": "6fe78ebfcd362d7eaed55e1bf5ff835fbd2e9c2f",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=718"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-08T073300Z__b16add5d__run08-final__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "429157dd2b8890aefb083a2c9fd548543b38056d",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "429157dd2b8890aefb083a2c9fd548543b38056d",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-08T073300Z__b16add5d__run08-final__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "429157dd2b8890aefb083a2c9fd548543b38056d",
+    "frozen_blob_sha": "429157dd2b8890aefb083a2c9fd548543b38056d",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "b16add5da1abd292515c8fadb07d251457daa41d",
+      "evidence": "source explicitly records fixed target implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "DIRECT",
+      "value": "FINAL",
+      "evidence": "source title explicitly states Hourly Correctness Review Checkpoint — run08 final"
+    },
+    "effectiveness_eligibility": {
+      "state": "DERIVABLE",
+      "value": "NO_EXPLICIT_EFFECTIVENESS_PAYLOAD",
+      "rule": "lens-history-v1/final-only-explicit"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing BUG-OUTPUT-01 incomplete-remediation P2 remains OPEN; durable semantic success can contradict Result.failure() after post-commit ancillary failure",
+        "evidence": "source Existing P2 section explicitly describes this"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Final P0 0 / P1 0 / P2 1 existing/open; state vs previous review: no material change"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 0,
+        "evidence": "source explicitly states no new finding and no material change"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "COUNT_RECONCILIATION",
+      "evidence": "source explicitly records final P0 0 / P1 0 / P2 1 existing/open with no material change"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source reports no combined status contexts and independent JVM/emulator execution NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
