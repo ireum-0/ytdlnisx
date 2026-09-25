@@ -46,6 +46,9 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
         var readFailure: Throwable? = null
         var writeFailure: Throwable? = null
 
+        /** Models a provider that mutates partially and then fails. */
+        var partialWriteThenFailure: String? = null
+
         override fun readText(context: Context, treeUri: Uri): String? {
             readCount++
             readFailure?.let { throw it }
@@ -54,6 +57,13 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
 
         override fun replaceText(context: Context, treeUri: Uri, text: String) {
             writeCount++
+            partialWriteThenFailure?.let { partial ->
+                // The provider truncated to a readable partial state and only
+                // then reported failure.
+                contents = partial
+                partialWriteThenFailure = null
+                throw DownloadArchiveUnavailableException("provider write failed after partial mutation")
+            }
             writeFailure?.let { throw it }
             contents = text
         }
@@ -87,6 +97,8 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
         provider.writeCount = 0
         provider.readFailure = null
         provider.writeFailure = null
+        provider.partialWriteThenFailure = null
+        DownloadArchiveProviderFence.clearAllForTesting(context)
         ConfiguredDownloadArchiveStore.providerForTesting = provider
         preferences.edit()
             .putString("prevent_duplicate_downloads", "download_archive")
@@ -96,6 +108,7 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
     @After
     fun tearDown() {
         ConfiguredDownloadArchiveStore.providerForTesting = null
+        DownloadArchiveProviderFence.clearAllForTesting(context)
         if (::database.isInitialized) database.close()
         val editor = preferences.edit()
         if (hadArchivePath) {
@@ -364,6 +377,152 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
             "${DownloadArchiveAuthority.stableKey(44L, "exec-unreadable")}.txt",
         )
         assertFalse(expected.exists())
+    }
+
+    /**
+     * A provider that truncates to readable partial contents and then fails
+     * must not be trusted by ordinary admission, must survive a simulated
+     * process restart, and must converge through recovery.
+     */
+    @Test
+    fun partialProviderWriteKeepsAdmissionClosedUntilRecoveryConverges() {
+        useSafTree()
+        provider.contents = "youtube A\nyoutube B\n"
+        val authority = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authority is ConfiguredDownloadArchive.SafTree)
+
+        val generation = DownloadArchiveAuthority.prepare(context, 51L, "exec-partial")
+        try {
+            generation.privateArchive.writeText("youtube A\nyoutube B\nyoutube C\n")
+            // The provider truncates to a readable partial state and throws.
+            provider.partialWriteThenFailure = "youtube A\n"
+
+            val reported = runCatching { DownloadArchiveAuthority.promote(context, generation) }
+            assertTrue(
+                "partial provider write must not report success",
+                reported.getOrNull() != true,
+            )
+            // The provider is readable again, but only holds partial contents.
+            assertEquals("youtube A\n", provider.contents)
+            // Generation evidence and the durable fence both survive.
+            assertTrue(generation.privateArchive.exists())
+            assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authority))
+            assertNotNull(DownloadArchiveProviderFence.read(context, authority))
+
+            // Ordinary admission reads fail closed while the fence stands,
+            // even though the provider document itself is readable.
+            val fenced = ConfiguredDownloadArchiveStore.read(context, authority)
+            assertTrue(fenced is ConfiguredDownloadArchiveRead.Unavailable)
+            assertNull(fenced.linesOrNull)
+
+            // A fresh store object over the same app-private files (simulated
+            // process restart) still observes the fence.
+            val afterRestart = ConfiguredDownloadArchiveStore.read(context, authority)
+            assertTrue(afterRestart is ConfiguredDownloadArchiveRead.Unavailable)
+            assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authority))
+
+            // Recovery converges the provider from preserved generation evidence.
+            assertTrue(DownloadArchiveAuthority.promote(context, generation))
+            assertEquals(
+                listOf("youtube A", "youtube B", "youtube C"),
+                ConfiguredDownloadArchiveStore.parseLines(provider.contents.orEmpty()),
+            )
+            // Fence and private generation retire only after verification.
+            assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authority))
+            assertFalse(generation.privateArchive.exists())
+
+            // Admission trusts the verified provider again.
+            val recovered = ConfiguredDownloadArchiveStore.read(context, authority)
+            assertTrue(recovered is ConfiguredDownloadArchiveRead.Available)
+            assertEquals(
+                listOf("youtube A", "youtube B", "youtube C"),
+                (recovered as ConfiguredDownloadArchiveRead.Available).lines,
+            )
+        } finally {
+            generation.privateArchive.delete()
+        }
+    }
+
+    /** A fence left by a crash before any provider mutation still fails closed. */
+    @Test
+    fun fenceInstalledBeforeProviderMutationFailsClosedUntilConverged() {
+        useSafTree()
+        provider.contents = "youtube A\n"
+        val authority = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authority is ConfiguredDownloadArchive.SafTree)
+
+        DownloadArchiveProviderFence.install(
+            context = context,
+            authority = authority,
+            downloadId = 52L,
+            executionId = "exec-crash-before-write",
+            generationKey = "fence-key",
+        )
+        try {
+            val fenced = ConfiguredDownloadArchiveStore.read(context, authority)
+            assertTrue(fenced is ConfiguredDownloadArchiveRead.Unavailable)
+
+            // Seeding a new generation from a fenced authority is refused, so
+            // no producer can start against an unresolved provider.
+            val prepareFailure = runCatching {
+                DownloadArchiveAuthority.prepare(context, 52L, "exec-crash-before-write")
+            }
+            assertTrue(prepareFailure.isFailure)
+            val expectedPrivate = File(
+                File(context.filesDir, "download-archive-generations"),
+                "${DownloadArchiveAuthority.stableKey(52L, "exec-crash-before-write")}.txt",
+            )
+            assertFalse(expectedPrivate.exists())
+        } finally {
+            DownloadArchiveProviderFence.clear(context, authority)
+        }
+    }
+
+    /**
+     * Raw app-owned archives keep their atomic replacement boundary and are
+     * never fenced.
+     */
+    @Test
+    fun rawAuthorityIsNeverFenced() {
+        preferences.edit().remove(ConfiguredDownloadArchiveStore.PREFERENCE_KEY).commit()
+        val authority = ConfiguredDownloadArchiveStore.resolve(context)
+        val rawFile = assertRawFile(authority)
+
+        DownloadArchiveProviderFence.install(
+            context = context,
+            authority = authority,
+            downloadId = 53L,
+            executionId = "exec-raw",
+            generationKey = "raw-key",
+        )
+        try {
+            assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authority))
+            rawFile.writeText("youtube RAW\n")
+            val read = ConfiguredDownloadArchiveStore.read(context, authority)
+            assertTrue(read is ConfiguredDownloadArchiveRead.Available)
+        } finally {
+            rawFile.delete()
+        }
+    }
+
+    /**
+     * A legacy persisted raw value keeps its historical folder meaning, so a
+     * folder is never reinterpreted as the archive file itself.
+     */
+    @Test
+    fun legacyAbsolutePersistedValueRemainsAFolder() {
+        val folder = File(context.filesDir, "legacy-raw-folder").apply { mkdirs() }
+        preferences.edit()
+            .putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, folder.absolutePath)
+            .commit()
+        try {
+            val authority = ConfiguredDownloadArchiveStore.resolve(context)
+            val rawFile = assertRawFile(authority)
+            assertEquals(folder.absolutePath, rawFile.parentFile?.absolutePath)
+            assertEquals(ConfiguredDownloadArchiveStore.ARCHIVE_FILE_NAME, rawFile.name)
+        } finally {
+            folder.deleteRecursively()
+        }
     }
 
     private fun assertRawFile(authority: ConfiguredDownloadArchive): File {

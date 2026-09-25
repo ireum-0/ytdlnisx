@@ -12,6 +12,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveProvider
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveProviderFence
 import com.ireum.ytdl.util.storage.DownloadArchiveUnavailableException
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
@@ -121,6 +122,8 @@ class ObserveSourceWorkerProductionWiringTest {
             workManager.cancelAllWork().result.get(20, TimeUnit.SECONDS)
             WorkManagerHandoffRecovery.clearForTesting()
         ObserveSourceWorkerEffectTestHooks.clearForTesting()
+        ConfiguredDownloadArchiveStore.providerForTesting = null
+        DownloadArchiveProviderFence.clearAllForTesting(context)
         ObserveSourcesRepository.beforeFinalEffectForTesting = null
         ObserveSourcesRepository.afterDurableStopBeforeCancellationForTesting = null
         ObserveSourcesRepository.observeRequestCreatedForTesting = null
@@ -649,6 +652,44 @@ class ObserveSourceWorkerProductionWiringTest {
                 ConfiguredDownloadArchiveStore.providerForTesting = null
             }
         }
+
+    @Test
+    fun unresolvedProviderPromotionFenceWithholdsObserveQueueAdmission() = runBlocking {
+        // A provider promotion is unresolved even though the provider document
+        // itself is still readable.
+        useSafArchive(ArchiveProviderFake("youtube ${ArchiveProviderFake.MEMBER_ID}\n"))
+        val authority = ConfiguredDownloadArchiveStore.resolve(context)
+        DownloadArchiveProviderFence.install(
+            context = context,
+            authority = authority,
+            downloadId = 91L,
+            executionId = "exec-observe-fence",
+            generationKey = "fence-key",
+        )
+        try {
+            val sourceId = insertSource(
+                getOnlyNewUploads = true,
+                runCount = 0,
+                syncWithSource = true,
+                alreadyProcessedLinks = mutableListOf("https://youtu.be/old"),
+            )
+            val memberUrl = "https://youtu.be/${ArchiveProviderFake.MEMBER_ID}"
+
+            runWorker(
+                sourceId,
+                SourceSnapshot.partial(listOf(result(memberUrl)), "archive"),
+            )
+
+            // Unknown membership: nothing is queued and no row is inserted.
+            assertTrue(queuedItems.isEmpty())
+            assertTrue(
+                database.downloadDao.getAllDownloadsList().none { it.url == memberUrl },
+            )
+        } finally {
+            DownloadArchiveProviderFence.clear(context, authority)
+            ConfiguredDownloadArchiveStore.providerForTesting = null
+        }
+    }
 
     private fun useSafArchive(provider: ConfiguredDownloadArchiveProvider) {
         preferences.edit()

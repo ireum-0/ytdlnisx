@@ -15,8 +15,10 @@ import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.download.DownloadIssueCode
+import com.ireum.ytdl.util.storage.ConfiguredDownloadArchive
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveProvider
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveProviderFence
 import com.ireum.ytdl.util.storage.DownloadArchiveUnavailableException
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -73,11 +75,13 @@ class DownloadQueueArchivePreflightProductionWiringTest {
             )
             .commit()
         ConfiguredDownloadArchiveStore.providerForTesting = ArchiveProviderFake(null)
+        DownloadArchiveProviderFence.clearAllForTesting(context)
     }
 
     @After
     fun tearDown() {
         ConfiguredDownloadArchiveStore.providerForTesting = null
+        DownloadArchiveProviderFence.clearAllForTesting(context)
         val editor = preferences.edit()
         if (hadArchivePath) {
             editor.putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, previousArchivePath)
@@ -124,6 +128,40 @@ class DownloadQueueArchivePreflightProductionWiringTest {
             DownloadIssueCode.ARCHIVE_UNAVAILABLE.name,
             persisted.lastIssueCode,
         )
+    }
+
+    @Test
+    fun unresolvedProviderPromotionFenceWithholdsQueueAdmission() = runBlocking {
+        // A provider promotion is unresolved even though the provider document
+        // itself is still readable.
+        val provider = ArchiveProviderFake("youtube $MEMBER_ID\n")
+        ConfiguredDownloadArchiveStore.providerForTesting = provider
+        val authority = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authority is ConfiguredDownloadArchive.SafTree)
+        DownloadArchiveProviderFence.install(
+            context = context,
+            authority = authority,
+            downloadId = 90L,
+            executionId = "exec-fence",
+            generationKey = "fence-key",
+        )
+        try {
+            val itemId = insertProcessingItem("https://www.youtube.com/watch?v=$MEMBER_ID")
+
+            val duplicates = viewModel().checkProcessingDuplicates()
+
+            // A fenced archive is unknown membership, so nothing is admitted
+            // and nothing is reported as a duplicate.
+            assertTrue(duplicates.isEmpty())
+            val persisted = requireNotNull(database.downloadDao.getNullableDownloadById(itemId))
+            assertEquals(DownloadRepository.Status.Error.name, persisted.status)
+            assertEquals(
+                DownloadIssueCode.ARCHIVE_UNAVAILABLE.name,
+                persisted.lastIssueCode,
+            )
+        } finally {
+            DownloadArchiveProviderFence.clear(context, authority)
+        }
     }
 
     private fun viewModel(): DownloadViewModel = DownloadViewModel(context, database, true)

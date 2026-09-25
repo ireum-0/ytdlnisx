@@ -84,7 +84,11 @@ internal object DownloadArchiveAuthority {
             fallbackDelta.distinct()
         }
         val configured = generation.configuredArchive
-        val existing = when (val read = ConfiguredDownloadArchiveStore.read(context, configured)) {
+        // Promotion owns this authority, so it inspects the provider through
+        // the repair read rather than the admission read.
+        val existing = when (
+            val read = ConfiguredDownloadArchiveStore.readForPromotion(context, configured)
+        ) {
             is ConfiguredDownloadArchiveRead.Available -> read.lines
             is ConfiguredDownloadArchiveRead.Unavailable -> return@synchronized false
         }
@@ -92,14 +96,25 @@ internal object DownloadArchiveAuthority {
             addAll(existing)
             addAll(privateLines)
         }.toList()
+        // Durable before the first destructive provider write, and retained
+        // across process death, provider failure and verification failure.
+        if (context != null) {
+            DownloadArchiveProviderFence.install(
+                context = context,
+                authority = configured,
+                downloadId = generation.downloadId,
+                executionId = generation.executionId,
+                generationKey = stableKey(generation.downloadId, generation.executionId),
+            )
+        }
         if (merged != existing) {
             ConfiguredDownloadArchiveStore.replace(context, configured, merged)
         }
         // A provider write that returned without error is not proof. Re-read
-        // through the same authority and keep the private generation unless the
-        // promoted delta is actually present.
+        // through the same authority and keep the private generation and the
+        // fence unless the promoted delta is actually present.
         val verified = when (
-            val read = ConfiguredDownloadArchiveStore.read(context, configured)
+            val read = ConfiguredDownloadArchiveStore.readForPromotion(context, configured)
         ) {
             is ConfiguredDownloadArchiveRead.Available -> read.lines
             is ConfiguredDownloadArchiveRead.Unavailable -> return@synchronized false
@@ -109,6 +124,10 @@ internal object DownloadArchiveAuthority {
             check(generation.privateArchive.delete() || !generation.privateArchive.exists()) {
                 "Could not retire promoted Download archive generation"
             }
+        }
+        if (complete && context != null) {
+            // The provider is verified complete, so admission may trust it again.
+            DownloadArchiveProviderFence.clear(context, configured)
         }
         complete
     }
@@ -136,27 +155,22 @@ internal object DownloadArchiveAuthority {
     }
 
     /** Checked durable replacement used for every raw archive write. */
-    internal fun writeAtomically(file: File, lines: List<String>) = atomicWrite(file, lines)
+    internal fun writeAtomically(file: File, lines: List<String>) =
+        writeDurably(file, ConfiguredDownloadArchiveStore.serialize(lines))
 
-    private fun readLinesStrict(file: File): List<String> {
-        check(file.isFile) { "Download archive is not a regular file: ${file.absolutePath}" }
-        return file.readLines(StandardCharsets.UTF_8)
-            .map(String::trimEnd)
-            .filter(String::isNotBlank)
-    }
-
-    private fun atomicWrite(file: File, lines: List<String>) {
-        val parent = file.parentFile ?: error("Download archive has no parent")
-        check(parent.exists() || parent.mkdirs()) { "Could not create archive parent" }
+    /**
+     * Checked durable replacement of exact text.  The descriptor stays open
+     * through the sync boundary and the rename is atomic, so a reader never
+     * observes a partially written durable record.
+     */
+    internal fun writeDurably(file: File, text: String) {
+        val parent = file.parentFile ?: error("Durable record has no parent")
+        check(parent.exists() || parent.mkdirs()) { "Could not create record parent" }
         val temporary = File(parent, ".${file.name}.tmp-${System.nanoTime()}")
         try {
             FileOutputStream(temporary).use { output ->
-                // Keep the descriptor open through the complete durability
-                // boundary. Closing a Writer backed by this stream would
-                // close the stream before sync() on production runtimes.
-                if (lines.isNotEmpty()) {
-                    output.write((lines.joinToString("\n") + "\n")
-                        .toByteArray(StandardCharsets.UTF_8))
+                if (text.isNotEmpty()) {
+                    output.write(text.toByteArray(StandardCharsets.UTF_8))
                 }
                 output.flush()
                 beforeSyncForTesting?.invoke(output)
@@ -171,11 +185,20 @@ internal object DownloadArchiveAuthority {
                 )
             } catch (_: Exception) {
                 check(temporary.renameTo(file) || !temporary.exists()) {
-                    "Could not replace Download archive atomically"
+                    "Could not replace durable record atomically"
                 }
             }
         } finally {
             if (temporary.exists()) temporary.delete()
         }
     }
+
+    private fun readLinesStrict(file: File): List<String> {
+        check(file.isFile) { "Download archive is not a regular file: ${file.absolutePath}" }
+        return file.readLines(StandardCharsets.UTF_8)
+            .map(String::trimEnd)
+            .filter(String::isNotBlank)
+    }
+
+    private fun atomicWrite(file: File, lines: List<String>) = writeAtomically(file, lines)
 }

@@ -73,7 +73,6 @@ internal object ConfiguredDownloadArchiveStore {
     const val ARCHIVE_FILE_NAME = "download_archive.txt"
 
     private const val TAG = "DownloadArchiveStore"
-    private const val RAW_PATH_PREFIX = "raw:"
 
     /** Deterministic provider seam; production resolves the persisted grant. */
     @Volatile
@@ -87,31 +86,53 @@ internal object ConfiguredDownloadArchiveStore {
         if (persisted.isEmpty()) {
             return ConfiguredDownloadArchive.RawFile(defaultArchiveFile(context))
         }
-        if (persisted.startsWith(RAW_PATH_PREFIX)) {
-            val raw = persisted.removePrefix(RAW_PATH_PREFIX)
-            return if (raw.isBlank()) {
-                ConfiguredDownloadArchive.Unresolved(persisted)
-            } else {
-                ConfiguredDownloadArchive.RawFile(File(raw))
-            }
-        }
         val uri = Uri.parse(persisted)
         if (ContentResolver.SCHEME_CONTENT.equals(uri.scheme, ignoreCase = true) &&
             !uri.authority.isNullOrBlank()
         ) {
             return ConfiguredDownloadArchive.SafTree(uri)
         }
-        // A legacy app-owned raw location stays raw authority. Anything else is
-        // not a location this app can read or write.
+        // Historical semantics treated every non-empty stored value as the
+        // archive FOLDER and appended the archive file name.  A legacy raw
+        // folder must never be reinterpreted as the archive file itself, so
+        // the folder interpretation is preserved for absolute raw values.
         return if (File(persisted).isAbsolute) {
-            ConfiguredDownloadArchive.RawFile(File(persisted))
+            ConfiguredDownloadArchive.RawFile(File(persisted, ARCHIVE_FILE_NAME))
         } else {
             Log.w(TAG, "Configured download archive is not a usable location")
             ConfiguredDownloadArchive.Unresolved(persisted)
         }
     }
 
+    /**
+     * Ordinary admission read.  While a provider promotion fence is
+     * unresolved this authority is UNAVAILABLE even when the provider document
+     * itself is readable, because a partially written document can be
+     * readable and still incomplete.
+     */
     fun read(
+        context: Context?,
+        authority: ConfiguredDownloadArchive,
+    ): ConfiguredDownloadArchiveRead {
+        if (context != null && DownloadArchiveProviderFence.isUnresolved(context, authority)) {
+            return ConfiguredDownloadArchiveRead.Unavailable(
+                "provider archive promotion is unresolved",
+            )
+        }
+        return readProviderState(context, authority)
+    }
+
+    /**
+     * Internal repair/verification read used by exact promotion and recovery.
+     * It deliberately ignores this promotion's own fence so recovery can
+     * inspect and converge the provider it is responsible for.
+     */
+    internal fun readForPromotion(
+        context: Context?,
+        authority: ConfiguredDownloadArchive,
+    ): ConfiguredDownloadArchiveRead = readProviderState(context, authority)
+
+    private fun readProviderState(
         context: Context?,
         authority: ConfiguredDownloadArchive,
     ): ConfiguredDownloadArchiveRead = when (authority) {
