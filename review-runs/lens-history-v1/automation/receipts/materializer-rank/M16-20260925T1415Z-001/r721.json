@@ -1,0 +1,128 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "rank": 721,
+  "materializer_state_blob": "5162d2bf06824b088ccc6e5b49a5c82e0a23090d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "6ad31f7bc3f5b41fd091dd3ab15edccc0980abe3",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M16-20260925T1415Z-001/r720.json",
+    "blob_sha": "956c16462daf14526bbe180a7f42e814f416aedf"
+  },
+  "history": {
+    "commit_sha": "2e0e763f82acb64785e6f75c7404548e089a020d",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=721"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-08T062600Z__b16add5d__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "981f82009c7531ea8f5e3adfd4565c6cc76eace9",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "981f82009c7531ea8f5e3adfd4565c6cc76eace9",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-08T062600Z__b16add5d__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "981f82009c7531ea8f5e3adfd4565c6cc76eace9",
+    "frozen_blob_sha": "981f82009c7531ea8f5e3adfd4565c6cc76eace9",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "b16add5da1abd292515c8fadb07d251457daa41d",
+      "evidence": "source explicitly records fixed target implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint with remaining final recount/status/final checkpoint scope"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-OUTPUT-01"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "existing Terminal post-commit result contradiction remains source-level present",
+        "evidence": "source Provisional findings section"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional P0 0 / P1 0 / P2 1 existing/open"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "in-progress checkpoint"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint with remaining final scope"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly records provisional counts"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "runtime execution remains NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
