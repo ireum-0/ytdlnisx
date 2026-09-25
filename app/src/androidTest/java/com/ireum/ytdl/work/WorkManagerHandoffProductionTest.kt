@@ -26,6 +26,7 @@ import com.ireum.ytdl.database.models.AutomaticKeywordSyncStatus
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
+import com.ireum.ytdl.database.repository.AutomaticKeywordRuleInput
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -533,6 +534,113 @@ class WorkManagerHandoffProductionTest {
     }
 
     @Test
+    fun automaticKeywordRepositorySaveStagesExactOwnerBeforeAcceptance() = runBlocking {
+        val playlistUrl = "https://www.youtube.com/playlist?list=save-owner"
+        insertActivePublicSource(playlistUrl)
+        val repository = AutomaticKeywordRuleRepository(context, database)
+
+        val ruleId = repository.save(
+            AutomaticKeywordRuleInput(
+                playlistUrl = playlistUrl,
+                playlistName = "Save owner",
+                keywords = listOf("alpha"),
+                enabled = true,
+                applyToExistingVideos = false,
+            ),
+        )
+        val operation = awaitOperation()
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        val request = requests.single()
+
+        assertTrue(rule.enabled)
+        assertEquals(1L, rule.revision)
+        assertFalse(rule.baselineComplete)
+        assertFalse(rule.pendingApplyToExisting)
+        assertEquals(AutomaticKeywordSyncStatus.QUEUED, rule.manualSyncStatus)
+        assertEquals(ruleId, carrier.sourceId)
+        assertEquals(rule.revision, carrier.sourceConfigurationGeneration)
+        assertEquals("BASELINE_ONLY", carrier.decision)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, carrier.state)
+        assertTrue(carrier.generationId.isNotBlank())
+        assertEquals(carrier.requestId, request.id.toString())
+        assertEquals(carrier.handoffId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_HANDOFF_ID))
+        assertEquals(carrier.generationId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_GENERATION_ID))
+        assertEquals(carrier.requestId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_REQUEST_ID))
+        assertEquals(ruleId, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, -1L))
+        assertEquals(rule.revision, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_REVISION, -1L))
+        assertEquals("BASELINE_ONLY", request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_MODE))
+        assertFalse(operation.getResult().isDone)
+
+        operation.succeed()
+        withTimeout(2_000L) {
+            while (
+                database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state !=
+                WorkManagerHandoffCarrier.ACCEPTED
+            ) {
+                delay(5L)
+            }
+        }
+    }
+
+    @Test
+    fun automaticKeywordRepositorySetEnabledTrueStagesExactOwnerBeforeAcceptance() = runBlocking {
+        val ruleId = insertAutomaticKeywordRule(
+            revision = 17L,
+            baselineComplete = false,
+            status = AutomaticKeywordSyncStatus.NEVER,
+            enabled = false,
+        )
+        val before = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        insertActivePublicSource(before.conditionValue)
+        val repository = AutomaticKeywordRuleRepository(context, database)
+
+        repository.setEnabled(ruleId, true)
+        val operation = awaitOperation()
+        val rule = requireNotNull(database.automaticKeywordRuleDao.getRule(ruleId))
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC,
+                ruleId.toString(),
+            ),
+        )
+        val request = requests.single()
+
+        assertTrue(rule.enabled)
+        assertEquals(before.revision + 1L, rule.revision)
+        assertFalse(rule.baselineComplete)
+        assertEquals(AutomaticKeywordSyncStatus.QUEUED, rule.manualSyncStatus)
+        assertEquals(ruleId, carrier.sourceId)
+        assertEquals(rule.revision, carrier.sourceConfigurationGeneration)
+        assertEquals("BASELINE_ONLY", carrier.decision)
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, carrier.state)
+        assertTrue(carrier.generationId.isNotBlank())
+        assertEquals(carrier.requestId, request.id.toString())
+        assertEquals(carrier.handoffId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_HANDOFF_ID))
+        assertEquals(carrier.generationId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_GENERATION_ID))
+        assertEquals(carrier.requestId, request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_REQUEST_ID))
+        assertEquals(ruleId, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_RULE_ID, -1L))
+        assertEquals(rule.revision, request.workSpec.input.getLong(AutomaticKeywordRuleSyncWorker.INPUT_REVISION, -1L))
+        assertEquals("BASELINE_ONLY", request.workSpec.input.getString(AutomaticKeywordRuleSyncWorker.INPUT_MODE))
+        assertFalse(operation.getResult().isDone)
+
+        operation.succeed()
+        withTimeout(2_000L) {
+            while (
+                database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state !=
+                WorkManagerHandoffCarrier.ACCEPTED
+            ) {
+                delay(5L)
+            }
+        }
+    }
+
+    @Test
     fun automaticKeywordAcceptedOwnerWithMissingWorkInfoIsNotDuplicatedAfterRestart() = runBlocking {
         val ruleId = insertAutomaticKeywordRule(revision = 3L)
         val change = database.withTransaction {
@@ -773,6 +881,57 @@ class WorkManagerHandoffProductionTest {
             }
         }
         return requireNotNull(operation)
+    }
+
+    private suspend fun insertActivePublicSource(url: String) {
+        val sourceId = database.observeSourcesDao.insert(
+            ObserveSourcesItem(
+                id = 0L,
+                name = "Public source",
+                url = url,
+                downloadItemTemplate = DownloadItem(
+                    id = 0L,
+                    url = url,
+                    title = "",
+                    author = "",
+                    thumb = "",
+                    duration = "",
+                    type = DownloadType.video,
+                    format = Format(),
+                    container = "",
+                    downloadSections = "",
+                    allFormats = mutableListOf(),
+                    downloadPath = "",
+                    website = "",
+                    downloadSize = "",
+                    playlistTitle = "",
+                    audioPreferences = AudioPreferences(),
+                    videoPreferences = VideoPreferences(),
+                    extraCommands = "",
+                    customFileNameTemplate = "",
+                    SaveThumb = false,
+                    status = "Cancelled",
+                    downloadStartTime = 0L,
+                    logID = null,
+                ),
+                everyNr = 1,
+                everyCategory = ObserveSourcesRepository.EveryCategory.DAY,
+                everyTime = 0L,
+                weeklyConfig = null,
+                monthlyConfig = null,
+                status = ObserveSourcesRepository.SourceStatus.ACTIVE,
+                startsTime = 0L,
+                endsDate = 0L,
+                endsAfterCount = 0,
+                runCount = 0,
+                getOnlyNewUploads = false,
+                retryMissingDownloads = false,
+                ignoredLinks = mutableListOf(),
+                alreadyProcessedLinks = mutableListOf(),
+                syncWithSource = false,
+            ),
+        )
+        assertTrue(sourceId > 0L)
     }
 
     private suspend fun insertAutomaticKeywordRule(
