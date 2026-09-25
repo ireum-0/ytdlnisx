@@ -1,0 +1,126 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "microsegment_rank_range": [
+    706,
+    710
+  ],
+  "data_head": "17ddbb48d7aeb93a88fb24bf3f74bdd9614d556d",
+  "complete_state_blob": "f28878046c36cee91f8e5680766944d7c087322d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M16-20260925T1415Z-001/r706-710.json",
+    "blob_sha": "b49dbc1af4c576da622f84b16eeb82093b45939c"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "03d82ce2239578db41c17ba0ac556441fb37a887",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M16-20260925T1415Z-001/r701-705.json",
+    "blob_sha": "f2a0f3e70c3b6301be54b1c4866ae7f4500d5dfc"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 706,
+      "path": "review-runs/checkpoints/2026-09-08T132700Z__b5c57f00__final-checkpoint.md",
+      "source_blob": "740d309ba3469351ef1f69eaef977d9d5a90183e",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the existing BUG-OUTPUT-01 provider-UNKNOWN convergence residual and exact no-material-change final recount without inferring modern lens attribution or closure."
+    },
+    {
+      "rank": 707,
+      "path": "review-runs/checkpoints/2026-09-08T132300Z__b5c57f00__checkpoint.md",
+      "source_blob": "13ff79ed10c582e571b236c989b253b1d16756bc",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional BUG-OUTPUT-01 UNKNOWN-convergence question and still-open FileUtil/provider, worker/Terminal, status, and final-recount scope without resolving checkpoint kind or effectiveness."
+    },
+    {
+      "rank": 708,
+      "path": "review-runs/checkpoints/2026-09-08T123100Z__b5c57f00__final-checkpoint.md",
+      "source_blob": "a28e21dfb6d3033f7d31acec3feeb9ce57546c47",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "COUNT_RECONCILIATION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the explicit subcase status transition: the prior duplicate-risk replay mechanism is source-level fixed, while BUG-OUTPUT-01 remains open because UNKNOWN lacks a production convergence owner. Do not collapse this into root closure."
+    },
+    {
+      "rank": 709,
+      "path": "review-runs/checkpoints/2026-09-08T122700Z__b5c57f00__checkpoint.md",
+      "source_blob": "c208b93c2d57a9b2a6f006f7b1347b8080a99128",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "PROVISIONAL_COUNTS",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional transition from UNKNOWN-clear-and-replay risk to durable fail-closed recovery debt, together with unresolved Terminal/startup consumer and convergence-owner questions."
+    },
+    {
+      "rank": 710,
+      "path": "review-runs/checkpoints/2026-09-08T113000Z__563b4b34__final-checkpoint.md",
+      "source_blob": "bb0050db4bfcfa56dd63f1b2b8c6a2b74f6dd8f8",
+      "independent_exception_triggers": [
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "MATERIAL_STATUS_TRANSITION",
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "CHECKLIST_REFINEMENT",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the implementation transition and the explicitly new provider-UNKNOWN blocker/subcase under existing BUG-OUTPUT-01, including the explicit three-state completion checklist refinement. Do not reinterpret it as a separate canonical root finding or infer a numeric root-count delta."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      706,
+      707,
+      708,
+      709,
+      710
+    ],
+    "materializer_flagged_exception_ranks": [
+      706,
+      707,
+      708,
+      709,
+      710
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
