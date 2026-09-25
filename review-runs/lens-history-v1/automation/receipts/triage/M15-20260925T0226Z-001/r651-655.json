@@ -1,0 +1,128 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "microsegment_rank_range": [
+    651,
+    655
+  ],
+  "data_head": "b6b1fb5d96919fbcde3a2d43c7a0b8e6dc22cab6",
+  "complete_state_blob": "be0425f97590d249e1e1b9e522f676bf1737d3c6",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M15-20260925T0226Z-001/r651-655.json",
+    "blob_sha": "148ed89fdf5000addc5625bd0ee011eec67df406"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "bcd8ecd9096305a593d350d2bf808b33b6666745",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M15-20260925T0226Z-001/r646-650.json",
+    "blob_sha": "fcb3c5106c78b05870d6a5fc5796d5d029f0e725"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 651,
+      "path": "review-runs/checkpoints/2026-09-09T124500Z__8de0e0f8__checkpoint.md",
+      "source_blob": "8abaa39e16b4e79ecc247de9182ea3571a664e0c",
+      "independent_exception_triggers": [
+        "EXPLICIT_NEW_FINDING",
+        "COUNT_RECONCILIATION",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 652,
+      "path": "review-runs/checkpoints/2026-09-09T123800Z__8de0e0f8__checkpoint.md",
+      "source_blob": "fd5de887b456f996c2b797d3de7b8fa379055355",
+      "independent_exception_triggers": [
+        "EXPLICIT_NEW_FINDING",
+        "PROVISIONAL_COUNTS",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 653,
+      "path": "review-runs/checkpoints/2026-09-09T122600Z__8de0e0f8__checkpoint.md",
+      "source_blob": "1759f5aa0a7da7ba71ac271801482ea1fc3089cc",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 654,
+      "path": "review-runs/checkpoints/2026-09-09__67c7a58__track-a-download-authority-checkpoint-4.md",
+      "source_blob": "ff0ca39d9150167d6a2fc64128b77fd3a417b40a",
+      "independent_exception_triggers": [
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "PROVENANCE_AMBIGUITY",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    },
+    {
+      "rank": 655,
+      "path": "review-runs/checkpoints/2026-09-09__67c7a58__track-a-download-authority-checkpoint-3.md",
+      "source_blob": "544ce8299eeb86b5f4ce50988351226433ec85fc",
+      "independent_exception_triggers": [
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "COUNT_RECONCILIATION",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "PROVENANCE_AMBIGUITY",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve exact historical status/count/root/runtime uncertainty and structural-kind evidence conservatively; do not resolve semantic exceptions or convert NOT_VERIFIED/provisional evidence into deterministic ordinary data."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      651,
+      652,
+      653,
+      654,
+      655
+    ],
+    "materializer_flagged_exception_ranks": [
+      651,
+      652,
+      653,
+      654,
+      655
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
