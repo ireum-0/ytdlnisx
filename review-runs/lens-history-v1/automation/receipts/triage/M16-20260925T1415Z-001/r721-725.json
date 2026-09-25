@@ -1,0 +1,118 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M16-20260925T1415Z-001",
+  "stage": "MATERIALIZE_691_740",
+  "logical_rank_range": [
+    691,
+    740
+  ],
+  "microsegment_rank_range": [
+    721,
+    725
+  ],
+  "data_head": "17ddbb48d7aeb93a88fb24bf3f74bdd9614d556d",
+  "complete_state_blob": "f28878046c36cee91f8e5680766944d7c087322d",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M16-20260925T1415Z-001/r721-725.json",
+    "blob_sha": "b8f43db1d7c2f7c22f6623ad88797d79f549fa47"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [],
+  "exception_queue_blob": "03d82ce2239578db41c17ba0ac556441fb37a887",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M16-20260925T1415Z-001/r716-720.json",
+    "blob_sha": "7273e759e736ca34596d2784bffc2819fe3278e5"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 721,
+      "path": "review-runs/checkpoints/2026-09-08T062600Z__b16add5d__checkpoint.md",
+      "source_blob": "981f82009c7531ea8f5e3adfd4565c6cc76eace9",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional recount and remaining final recount/status evidence without turning the repeated existing Terminal post-commit contradiction into a new semantic event."
+    },
+    {
+      "rank": 722,
+      "path": "review-runs/checkpoints/2026-09-08T143800+0900__b16add5d__final-checkpoint.md",
+      "source_blob": "cb4bacb3ea4ef83e406ecfe877802e441f1625ac",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the final count and historical-only execution evidence. The source keeps the existing BUG-OUTPUT-01 Terminal obligation open but does not establish a distinct new residual or status transition."
+    },
+    {
+      "rank": 723,
+      "path": "review-runs/checkpoints/2026-09-08T142900+0900__b16add5d__checkpoint.md",
+      "source_blob": "52a05b54be34af5c55d03f07b37d7146a358e507",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the active re-review state and unresolved carrier/process-death closure questions without inferring checkpoint kind, finding closure, or a new status/count delta."
+    },
+    {
+      "rank": 724,
+      "path": "review-runs/checkpoints/2026-09-08T042350Z__d07e90b9__final-checkpoint.md",
+      "source_blob": "91728b346fb8b377d74aec2675f0b6742aaf086d",
+      "independent_exception_triggers": [
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "COUNT_RECONCILIATION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the implementation transition and the two explicitly retained BUG-OUTPUT-01 Terminal recovery closure gaps as same-root residuals, together with the no-new-finding/no-status-change final chronology."
+    },
+    {
+      "rank": 725,
+      "path": "review-runs/checkpoints/2026-09-08T042224Z__d07e90b9__checkpoint.md",
+      "source_blob": "cacf2643a7875b4a8639c4653a47c74add96c5fe",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the provisional BUG-OUTPUT-01 recovery-closure recount and historical-only status/runtime basis without promoting the repeated existing defect evidence into a new exception event."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      721,
+      722,
+      723,
+      724,
+      725
+    ],
+    "materializer_flagged_exception_ranks": [
+      721,
+      722,
+      723,
+      724,
+      725
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
