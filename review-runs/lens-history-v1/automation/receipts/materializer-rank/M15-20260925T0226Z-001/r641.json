@@ -1,0 +1,140 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M15-20260925T0226Z-001",
+  "stage": "MATERIALIZE_641_690",
+  "logical_rank_range": [
+    641,
+    690
+  ],
+  "rank": 641,
+  "materializer_state_blob": "935893781fd813c965e2bdbdc15175dd9944a734",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "fb7c37898058c13bcfb18cf86bf368cc37ab9a4b",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": null,
+  "history": {
+    "commit_sha": "78ba5e94e903d142a6cb8eea52e944b0d4541511",
+    "resolution": "exact commits?sha=frozen&path=review-runs/checkpoints&per_page=1&page=641"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/2026-09-09T153900Z__8de0e0f8__checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/2026-09-09T153900Z__8de0e0f8__checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+    "frozen_blob_sha": "7ebe36df8b3c6732c6dd8b815300d2ff07aa377c",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "8de0e0f8aa7c0f4294c41b4b6e958acf53a778fa",
+      "evidence": "source explicitly records Exact implementation SHA"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic Independent correctness review checkpoint records provisional P2 state, open candidates/questions, and remaining review/final-gate/execution-evidence work without an explicit or rule-allowed positive structural kind"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "checkpoint kind is NOT_VERIFIED and no structured lens/effectiveness payload exists"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-DUPLICATE-01 / F19"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "NEW candidate now source-confirmed",
+        "evidence": "source provisional P2 list explicitly labels BUG-DUPLICATE-01 / F19 as NEW candidate now source-confirmed"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "P0 0 / P1 0 / P2 4 provisional"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1,
+        "evidence": "source explicitly enumerates three existing P2 shapes plus one NEW BUG-DUPLICATE-01 / F19 candidate in the provisional P2=4 list"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic correctness review checkpoint lacks an explicit or rule-allowed positive structural kind and still has remaining review scope"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "finding_id": "BUG-DUPLICATE-01 / F19",
+      "evidence": "source explicitly labels BUG-DUPLICATE-01 / F19 as a NEW candidate now source-confirmed"
+    },
+    {
+      "type": "COUNT_RECONCILIATION",
+      "finding_id": "BUG-DUPLICATE-01 / F19",
+      "evidence": "source explicitly records provisional P0 0 / P1 0 / P2 4 and enumerates three existing P2 shapes plus one NEW candidate"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source labels the P2 count as 4 provisional rather than a final gate"
+    },
+    {
+      "type": "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+      "evidence": "source retains open candidates/questions and requires revalidation of existing P2 paths plus final gate/execution evidence"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source leaves final gate and execution evidence to remaining review scope, so final exact status/workflow execution basis is not established in this checkpoint"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
