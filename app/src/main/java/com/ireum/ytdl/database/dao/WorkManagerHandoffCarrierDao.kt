@@ -134,6 +134,18 @@ interface WorkManagerHandoffCarrierDao {
         updatedAt: Long,
     ): Int
 
+    @Query(
+        "UPDATE work_manager_handoff_carriers SET state = 'RESOLVED', updatedAt = :updatedAt " +
+            "WHERE handoffId = :handoffId AND requestId = :requestId " +
+            "AND kind = 'TERMINAL_DISPATCH' " +
+            "AND state IN ('PENDING_ENQUEUE', 'ACCEPTED')"
+    )
+    suspend fun markTerminalResolved(
+        handoffId: String,
+        requestId: String,
+        updatedAt: Long,
+    ): Int
+
     /** A failed WorkManager generation keeps the same semantic handoff id. */
     @Query(
         "UPDATE work_manager_handoff_carriers SET requestId = :newRequestId, " +

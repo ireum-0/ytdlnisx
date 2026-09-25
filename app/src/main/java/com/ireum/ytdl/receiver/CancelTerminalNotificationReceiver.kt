@@ -3,10 +3,10 @@ package com.ireum.ytdl.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import androidx.work.WorkManager
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.work.TerminalExecutionRegistry
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -20,12 +20,10 @@ class CancelTerminalNotificationReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val cancellationRequested = runCatching {
-                    WorkManager.getInstance(context)
-                        .cancelUniqueWork(terminalId.toString())
-                        .result
-                        .get()
-                }.isSuccess
+                val cancellationRequested = WorkManagerHandoffRecovery.cancelTerminalDispatch(
+                    context,
+                    terminalId,
+                )
                 if (!cancellationRequested || !TerminalExecutionRegistry.cancel(context, terminalId)) {
                     // Native quiescence or cancellation is unresolved. Keep
                     // the exact row/witness; startup recovery owns the next

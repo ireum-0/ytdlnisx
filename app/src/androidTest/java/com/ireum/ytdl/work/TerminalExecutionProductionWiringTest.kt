@@ -2,6 +2,7 @@ package com.ireum.ytdl.work
 
 import android.content.Context
 import androidx.preference.PreferenceManager
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.work.OneTimeWorkRequest
@@ -26,6 +27,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -45,18 +47,23 @@ class TerminalExecutionProductionWiringTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         db = DBManager.getInstance(context)
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = db
         TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpResponseForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
         TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = null
+        TerminalDownloadWorkerEffectTestHooks.databaseForTesting = null
     }
 
     @After
     fun tearDown() {
+        WorkManagerHandoffRecovery.clearForTesting()
         TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpResponseForTesting = null
         TerminalDownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
         TerminalDownloadWorkerEffectTestHooks.afterAdmissionForTesting = null
+        TerminalDownloadWorkerEffectTestHooks.databaseForTesting = null
     }
 
     @Test
@@ -65,7 +72,17 @@ class TerminalExecutionProductionWiringTest {
         // simulation keeps this production-boundary test independent of
         // network/native output while still exercising the no-cache path.
         val command = "--simulate -P /storage/emulated/0/Download https://example.com/terminal-witness"
-        val itemId = db.terminalDao.insert(TerminalItem(command = command))
+        val itemId = db.withTransaction {
+            val id = db.terminalDao.insert(TerminalItem(command = command))
+            WorkManagerHandoffRecovery.stageTerminalDispatchWithinTransaction(db, id, command)
+            id
+        }
+        val carrier = requireNotNull(
+            db.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                com.ireum.ytdl.database.models.WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                itemId.toString(),
+            ),
+        )
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         val hadCachePreference = preferences.contains("cache_downloads")
         val previousCache = preferences.getBoolean("cache_downloads", true)
@@ -83,7 +100,7 @@ class TerminalExecutionProductionWiringTest {
             TerminalDownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { observedId, _ ->
                 assertEquals(itemId.toInt(), observedId)
                 assertEquals(
-                    TerminalExecutionRecovery.Phase.NATIVE_STARTED,
+                    TerminalExecutionRecovery.Phase.ADMITTED,
                     TerminalExecutionRecovery.read(context, itemId)?.phase,
                 )
                 witnessedBeforeNative.set(true)
@@ -94,10 +111,16 @@ class TerminalExecutionProductionWiringTest {
                 ""
             }
             request = OneTimeWorkRequestBuilder<TerminalDownloadWorker>()
+                .setId(UUID.fromString(carrier.requestId))
                 .setInputData(
                     workDataOf(
-                        "id" to itemId.toInt(),
-                        "command" to command,
+                        TerminalDownloadWorker.INPUT_ID to itemId.toInt(),
+                        TerminalDownloadWorker.INPUT_COMMAND to command,
+                        TerminalDownloadWorker.INPUT_HANDOFF_ID to carrier.handoffId,
+                        TerminalDownloadWorker.INPUT_REQUEST_ID to carrier.requestId,
+                        TerminalDownloadWorker.INPUT_GENERATION_ID to carrier.generationId,
+                        TerminalDownloadWorker.INPUT_BOUNDARY to carrier.boundary,
+                        TerminalDownloadWorker.INPUT_COMMAND_FINGERPRINT to carrier.configFingerprint,
                     ),
                 )
                 .addTag("terminal-execution-recovery")
@@ -116,6 +139,7 @@ class TerminalExecutionProductionWiringTest {
                 WorkManager.getInstance(context).cancelWorkById(it.id).result.get(10, TimeUnit.SECONDS)
             }
             db.terminalDao.delete(itemId)
+            db.workManagerHandoffCarrierDao.delete(carrier.handoffId)
             TerminalExecutionRecovery.clearForTesting(
                 File(context.filesDir, "terminal-execution-recovery"),
                 itemId,
@@ -139,7 +163,17 @@ class TerminalExecutionProductionWiringTest {
         val externalFiles = requireNotNull(context.getExternalFilesDir(null))
         val admittedRoot = File(externalFiles, "terminal-bound-${System.nanoTime()}").canonicalFile
         val command = "--simulate https://example.com/terminal-bound-root"
-        val itemId = db.terminalDao.insert(TerminalItem(command = command))
+        val itemId = db.withTransaction {
+            val id = db.terminalDao.insert(TerminalItem(command = command))
+            WorkManagerHandoffRecovery.stageTerminalDispatchWithinTransaction(db, id, command)
+            id
+        }
+        val carrier = requireNotNull(
+            db.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                com.ireum.ytdl.database.models.WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                itemId.toString(),
+            ),
+        )
         val observedStagingRoot = AtomicReference<File?>(null)
         val observedFallbackRoot = AtomicReference<File?>(null)
         var request: OneTimeWorkRequest? = null
@@ -185,7 +219,18 @@ class TerminalExecutionProductionWiringTest {
                 ""
             }
             request = OneTimeWorkRequestBuilder<TerminalDownloadWorker>()
-                .setInputData(workDataOf("id" to itemId.toInt(), "command" to command))
+                .setId(UUID.fromString(carrier.requestId))
+                .setInputData(
+                    workDataOf(
+                        TerminalDownloadWorker.INPUT_ID to itemId.toInt(),
+                        TerminalDownloadWorker.INPUT_COMMAND to command,
+                        TerminalDownloadWorker.INPUT_HANDOFF_ID to carrier.handoffId,
+                        TerminalDownloadWorker.INPUT_REQUEST_ID to carrier.requestId,
+                        TerminalDownloadWorker.INPUT_GENERATION_ID to carrier.generationId,
+                        TerminalDownloadWorker.INPUT_BOUNDARY to carrier.boundary,
+                        TerminalDownloadWorker.INPUT_COMMAND_FINGERPRINT to carrier.configFingerprint,
+                    ),
+                )
                 .addTag("terminal-bound-cache-root")
                 .build()
             WorkManager.getInstance(context).enqueue(checkNotNull(request))
@@ -206,6 +251,7 @@ class TerminalExecutionProductionWiringTest {
                 WorkManager.getInstance(context).cancelWorkById(it.id).result.get(10, TimeUnit.SECONDS)
             }
             db.terminalDao.delete(itemId)
+            db.workManagerHandoffCarrierDao.delete(carrier.handoffId)
             TerminalExecutionRecovery.clearForTesting(
                 File(context.filesDir, "terminal-execution-recovery"),
                 itemId,

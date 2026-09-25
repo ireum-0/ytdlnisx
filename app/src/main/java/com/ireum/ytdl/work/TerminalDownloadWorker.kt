@@ -60,6 +60,10 @@ internal object TerminalDownloadWorkerEffectTestHooks {
     /** Observes the exact cache root bound by admission before plan/staging. */
     @Volatile
     internal var afterAdmissionForTesting: ((Int, File) -> Unit)? = null
+
+    /** Keeps production worker wiring tests on the same injected Room graph. */
+    @Volatile
+    internal var databaseForTesting: DBManager? = null
 }
 
 
@@ -78,6 +82,14 @@ class TerminalDownloadWorker(
     private val terminalPublishedOutputPaths = mutableListOf<String>()
     /** Set once the Terminal row has been durably deleted after publication. */
     private var terminalSemanticCommit = false
+    private var terminalDispatchHandoffId: String? = null
+    private var terminalDispatchRequestId: String? = null
+    private var terminalDispatchGenerationId: String? = null
+    private var terminalDispatchBoundary: String? = null
+    private var terminalDispatchCommandFingerprint: String? = null
+
+    private fun workerDatabase(): DBManager =
+        TerminalDownloadWorkerEffectTestHooks.databaseForTesting ?: DBManager.getInstance(context)
 
     private fun cleanupTerminalOutputDirectory() {
         val directory = terminalOutputDirectory ?: return
@@ -215,7 +227,7 @@ class TerminalDownloadWorker(
             runCatching { cleanupTerminalOutputDirectory() }
         }
         val rowConverged = runCatching {
-            val dao = DBManager.getInstance(context).terminalDao
+            val dao = workerDatabase().terminalDao
             dao.delete(itemId.toLong())
             dao.getTerminalById(itemId.toLong()) == null
         }.getOrDefault(false)
@@ -239,10 +251,35 @@ class TerminalDownloadWorker(
             )
         ) return@withContext false
         runCatching {
-            val dao = DBManager.getInstance(context).terminalDao
+            val dao = workerDatabase().terminalDao
             dao.delete(itemId.toLong())
         }
         true
+    }
+
+    private suspend fun resolveTerminalDispatchIfConverged() = withContext(Dispatchers.IO + NonCancellable) {
+        if (itemId <= 0) return@withContext
+        val handoffId = terminalDispatchHandoffId ?: return@withContext
+        val requestId = terminalDispatchRequestId ?: return@withContext
+        val generationId = terminalDispatchGenerationId ?: return@withContext
+        val boundary = terminalDispatchBoundary ?: return@withContext
+        val commandFingerprint = terminalDispatchCommandFingerprint ?: return@withContext
+        if (workerDatabase().terminalDao.getTerminalById(itemId.toLong()) != null) {
+            return@withContext
+        }
+        runCatching {
+            WorkManagerHandoffRecovery.resolveTerminalDispatch(
+                context = context,
+                terminalId = itemId.toLong(),
+                handoffId = handoffId,
+                requestId = requestId,
+                generationId = generationId,
+                boundary = boundary,
+                commandFingerprint = commandFingerprint,
+            )
+        }.onFailure { error ->
+            Log.w(TAG, "Terminal dispatch carrier resolution deferred id=$itemId", error)
+        }
     }
 
     override suspend fun doWork(): Result {
@@ -252,6 +289,7 @@ class TerminalDownloadWorker(
             if (isStopped) {
                 cleanupStoppedWorker()
             }
+            resolveTerminalDispatchIfConverged()
             TerminalExecutionRegistry.release(
                 context,
                 itemId.toLong(),
@@ -261,16 +299,65 @@ class TerminalDownloadWorker(
     }
 
     private suspend fun doWorkInternal(): Result {
-        itemId = inputData.getInt("id", 0)
-        val command = inputData.getString("command")
-        val dao = DBManager.getInstance(context).terminalDao
-        if (itemId == 0) return Result.failure()
-        if (command.isNullOrBlank()) return Result.failure()
+        itemId = inputData.getInt(INPUT_ID, 0)
+        val command = inputData.getString(INPUT_COMMAND)
+        if (itemId <= 0 || command.isNullOrBlank()) return Result.success()
+        val handoffId = inputData.getString(INPUT_HANDOFF_ID)
+        val requestId = inputData.getString(INPUT_REQUEST_ID)
+        val generationId = inputData.getString(INPUT_GENERATION_ID)
+        val boundary = inputData.getString(INPUT_BOUNDARY)
+        val commandFingerprint = inputData.getString(INPUT_COMMAND_FINGERPRINT)
+        if (
+            handoffId.isNullOrBlank() || requestId.isNullOrBlank() ||
+            generationId.isNullOrBlank() || boundary.isNullOrBlank() ||
+            commandFingerprint.isNullOrBlank() ||
+            !WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
+                context = context,
+                terminalId = itemId.toLong(),
+                command = command,
+                handoffId = handoffId,
+                requestId = requestId,
+                generationId = generationId,
+                boundary = boundary,
+                commandFingerprint = commandFingerprint,
+                workRequestId = id.toString(),
+            )
+        ) {
+            // Legacy, malformed, superseded, and copied requests are harmless
+            // no-ops. They must not reach registry admission or native setup.
+            Log.i(TAG, "Skipping Terminal request without current dispatch authority id=$itemId")
+            return Result.success()
+        }
+        terminalDispatchHandoffId = handoffId
+        terminalDispatchRequestId = requestId
+        terminalDispatchGenerationId = generationId
+        terminalDispatchBoundary = boundary
+        terminalDispatchCommandFingerprint = commandFingerprint
+
         // A stale WorkManager request can outlive semantic Terminal row
-        // convergence.  It has no subject authority once the row is gone and
-        // must not recreate an execution merely from its copied input data.
+        // convergence.  The durable authority check above also requires the
+        // current row, but retain this explicit refusal at the execution edge.
+        val dao = workerDatabase().terminalDao
         if (dao.getTerminalById(itemId.toLong()) == null) {
             Log.i(TAG, "Skipping Terminal request whose row is already converged id=$itemId")
+            return Result.success()
+        }
+
+        // Recheck immediately before admission so a cancellation that won the
+        // carrier race cannot be overtaken by an old request.
+        if (!WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
+                context = context,
+                terminalId = itemId.toLong(),
+                command = command,
+                handoffId = handoffId,
+                requestId = requestId,
+                generationId = generationId,
+                boundary = boundary,
+                commandFingerprint = commandFingerprint,
+                workRequestId = id.toString(),
+            )
+        ) {
+            Log.i(TAG, "Skipping Terminal request after dispatch supersession id=$itemId")
             return Result.success()
         }
 
@@ -340,7 +427,7 @@ class TerminalDownloadWorker(
             taskId = terminalTaskToken,
             cacheRoot = boundCacheRoot,
         )
-        val dbManager = DBManager.getInstance(context)
+        val dbManager = workerDatabase()
         val logRepo = LogRepository(dbManager.logDao)
         val notificationUtil = NotificationUtil(context)
         val handler = Handler(Looper.getMainLooper())
@@ -784,6 +871,13 @@ class TerminalDownloadWorker(
 
     companion object {
         const val TAG = "DownloadWorker"
+        const val INPUT_ID = "id"
+        const val INPUT_COMMAND = "command"
+        const val INPUT_HANDOFF_ID = "handoffId"
+        const val INPUT_REQUEST_ID = "handoffRequestId"
+        const val INPUT_GENERATION_ID = "handoffGenerationId"
+        const val INPUT_BOUNDARY = "handoffBoundary"
+        const val INPUT_COMMAND_FINGERPRINT = "handoffCommandFingerprint"
     }
 
 }

@@ -217,6 +217,183 @@ internal object WorkManagerHandoffRecovery {
         }
     }
 
+    internal fun terminalCommandFingerprint(command: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(command.toByteArray(StandardCharsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+    private fun terminalWorkName(terminalId: Long): String = terminalId.toString()
+
+    /** Stages the exact Terminal dispatch owner in the caller's Room transaction. */
+    internal suspend fun stageTerminalDispatchWithinTransaction(
+        db: DBManager,
+        terminalId: Long,
+        command: String,
+    ): String {
+        require(terminalId > 0L)
+        val carrierDao = db.workManagerHandoffCarrierDao
+        val boundary = terminalId.toString()
+        val previous = carrierDao.getOutstandingForBoundary(
+            WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+            boundary,
+        )
+        previous?.let {
+            carrierDao.markSuperseded(it.handoffId, it.requestId, System.currentTimeMillis())
+        }
+        val handoffId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val carrier = WorkManagerHandoffCarrier(
+            handoffId = handoffId,
+            kind = WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+            generationId = handoffId,
+            requestId = UUID.randomUUID().toString(),
+            uniqueWorkName = terminalWorkName(terminalId),
+            sourceId = terminalId,
+            // The generic carrier has no command column; confirmedUrl is its
+            // existing opaque payload slot, while the fingerprint remains the
+            // semantic identity checked at every boundary.
+            confirmedUrl = command,
+            decision = TERMINAL_DISPATCH_DECISION,
+            configFingerprint = terminalCommandFingerprint(command),
+            sourceConfigurationGeneration = 1L,
+            boundary = boundary,
+            createdAt = now,
+            updatedAt = now,
+        )
+        check(carrierDao.insert(carrier) != -1L) {
+            "Terminal dispatch handoff already exists: $handoffId"
+        }
+        return handoffId
+    }
+
+    internal fun dispatchTerminalDispatch(context: Context, terminalId: Long) {
+        convergenceScope.launch {
+            val handoffId = database(context).workManagerHandoffCarrierDao
+                .getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    terminalId.toString(),
+                )?.handoffId ?: return@launch
+            enqueueAndAwait(context.applicationContext, handoffId).await()
+        }
+    }
+
+    /** Supersedes first, then cancels only the exact old request identity. */
+    internal suspend fun cancelTerminalDispatch(context: Context, terminalId: Long): Boolean {
+        val requestId = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            database(context).withTransaction {
+                val carrier = database(context).workManagerHandoffCarrierDao
+                    .getOutstandingForBoundary(
+                        WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                        terminalId.toString(),
+                    )
+                carrier?.let {
+                    database(context).workManagerHandoffCarrierDao.markSuperseded(
+                        it.handoffId,
+                        it.requestId,
+                        System.currentTimeMillis(),
+                    )
+                    it.requestId
+                }
+            }
+        }
+        return runCatching {
+            if (requestId != null) {
+                cancelWorkByIdAndAwait(context, requestId)
+            } else {
+                cancelUniqueWorkAndAwait(context, terminalWorkName(terminalId))
+            }
+        }.isSuccess
+    }
+
+    /** Resolves only the exact worker that also converged the Terminal row. */
+    internal suspend fun resolveTerminalDispatch(
+        context: Context,
+        terminalId: Long,
+        handoffId: String,
+        requestId: String,
+        generationId: String,
+        boundary: String,
+        commandFingerprint: String,
+    ): Boolean {
+        if (
+            terminalId <= 0L || handoffId.isBlank() || requestId.isBlank() ||
+            generationId.isBlank() || boundary.isBlank() || commandFingerprint.isBlank()
+        ) return false
+        val execution = TerminalExecutionRecovery.read(context, terminalId)
+        if (execution != null && !execution.terminal) return false
+        return RestoreMutationAdmission.withOrdinaryMutation(context) {
+            val db = database(context)
+            db.withTransaction {
+                if (db.terminalDao.getTerminalById(terminalId) != null) return@withTransaction false
+                val dao = db.workManagerHandoffCarrierDao
+                val carrier = dao.get(handoffId) ?: return@withTransaction false
+                val current = dao.getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    boundary,
+                )
+                if (
+                    carrier.kind != WorkManagerHandoffCarrier.TERMINAL_DISPATCH ||
+                    carrier.sourceId != terminalId ||
+                    carrier.requestId != requestId ||
+                    carrier.generationId != generationId ||
+                    carrier.boundary != boundary ||
+                    carrier.uniqueWorkName != terminalWorkName(terminalId) ||
+                    carrier.configFingerprint != terminalCommandFingerprint(carrier.confirmedUrl) ||
+                    carrier.configFingerprint != commandFingerprint ||
+                    current?.handoffId != handoffId ||
+                    current.requestId != requestId
+                ) {
+                    return@withTransaction false
+                }
+                dao.markTerminalResolved(handoffId, requestId, System.currentTimeMillis()) == 1
+            }
+        }
+    }
+
+    internal suspend fun isCurrentTerminalDispatchRequest(
+        context: Context,
+        terminalId: Long,
+        command: String,
+        handoffId: String,
+        requestId: String,
+        generationId: String,
+        boundary: String,
+        commandFingerprint: String,
+        workRequestId: String,
+    ): Boolean {
+        if (
+            RestoreGate.isRestoreInProgress(context) ||
+            terminalId <= 0L || command.isBlank() || handoffId.isBlank() || requestId.isBlank() ||
+            generationId.isBlank() || boundary != terminalId.toString() ||
+            commandFingerprint.isBlank() || requestId != workRequestId
+        ) return false
+        val db = database(context)
+        val carrier = db.workManagerHandoffCarrierDao.get(handoffId) ?: return false
+        if (
+            carrier.kind != WorkManagerHandoffCarrier.TERMINAL_DISPATCH ||
+            carrier.sourceId != terminalId ||
+            carrier.requestId != requestId ||
+            carrier.generationId != generationId ||
+            carrier.boundary != boundary ||
+            carrier.uniqueWorkName != terminalWorkName(terminalId) ||
+            carrier.decision != TERMINAL_DISPATCH_DECISION ||
+            carrier.confirmedUrl != command ||
+            commandFingerprint != terminalCommandFingerprint(command) ||
+            carrier.configFingerprint != commandFingerprint ||
+            carrier.state !in setOf(
+                WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+                WorkManagerHandoffCarrier.ACCEPTED,
+            )
+        ) return false
+        val current = db.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+            WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+            boundary,
+        )
+        if (current?.handoffId != handoffId || current.requestId != requestId) return false
+        val terminal = db.terminalDao.getTerminalById(terminalId) ?: return false
+        return terminal.command == command
+    }
+
     /**
      * Worker-boundary validation for the exact rule revision, semantic mode,
      * carrier generation, WorkRequest UUID, and current durable owner.
@@ -843,6 +1020,7 @@ internal object WorkManagerHandoffRecovery {
             dao.deleteResolved()
         }
         reconcileAutomaticKeywordRules(appContext)
+        reconcileTerminalDispatches(appContext)
         dao.getSuperseded().forEach { carrier ->
             reconcileSuperseded(appContext, carrier)
         }
@@ -924,6 +1102,74 @@ internal object WorkManagerHandoffRecovery {
         }
         changes.forEach { dispatchAutomaticKeywordOwnerChange(context, it) }
     }
+    /**
+     * Reconstructs one durable owner for every ordinary Terminal row.  A
+     * superseded tombstone is treated as a cancellation/recovery barrier; it
+     * must not turn an unresolved cancellation back into a fresh command.
+     */
+    private suspend fun reconcileTerminalDispatches(context: Context) {
+        val db = database(context)
+        val handoffIds = RestoreMutationAdmission.withOrdinaryMutation(context) {
+            db.withTransaction {
+                val supersededBoundaries = db.workManagerHandoffCarrierDao
+                    .getSuperseded()
+                    .asSequence()
+                    .filter { it.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH }
+                    .map { it.boundary }
+                    .toSet()
+                buildList {
+                    db.terminalDao.getActiveTerminalDownloads().forEach { terminal ->
+                        if (TerminalExecutionRecovery.hasRecordFile(context, terminal.id)) {
+                            return@forEach
+                        }
+                        val boundary = terminal.id.toString()
+                        val current = db.workManagerHandoffCarrierDao
+                            .getOutstandingForBoundary(
+                                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                                boundary,
+                            )
+                        val ownerMatches = current?.let {
+                            it.sourceId == terminal.id &&
+                                it.requestId.isNotBlank() &&
+                                it.generationId.isNotBlank() &&
+                                it.uniqueWorkName == terminalWorkName(terminal.id) &&
+                                it.boundary == boundary &&
+                                it.decision == TERMINAL_DISPATCH_DECISION &&
+                                it.sourceConfigurationGeneration == 1L &&
+                                it.confirmedUrl == terminal.command &&
+                                it.configFingerprint == terminalCommandFingerprint(terminal.command)
+                        } == true
+                        if (ownerMatches) {
+                            add(checkNotNull(current).handoffId)
+                        } else if (boundary !in supersededBoundaries) {
+                            current?.let {
+                                db.workManagerHandoffCarrierDao.markSuperseded(
+                                    it.handoffId,
+                                    it.requestId,
+                                    System.currentTimeMillis(),
+                                )
+                            }
+                            add(
+                                stageTerminalDispatchWithinTransaction(
+                                    db,
+                                    terminal.id,
+                                    terminal.command,
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        handoffIds.forEach { handoffId -> dispatchTerminalHandoff(context, handoffId) }
+    }
+
+    private fun dispatchTerminalHandoff(context: Context, handoffId: String) {
+        convergenceScope.launch {
+            enqueueAndAwait(context.applicationContext, handoffId).await()
+        }
+    }
+
     suspend fun markObserveRetryResolved(
         context: Context,
         handoffId: String,
@@ -977,7 +1223,8 @@ internal object WorkManagerHandoffRecovery {
         kind == WorkManagerHandoffCarrier.SCHEDULE_START ||
             kind == WorkManagerHandoffCarrier.SCHEDULE_END ||
             kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ||
-            kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
+            kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH
     private suspend fun reconcileSuperseded(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -1005,7 +1252,8 @@ internal object WorkManagerHandoffRecovery {
     }
 
     private fun retainsSupersededTombstone(kind: String): Boolean =
-        kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
+        kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH
     private suspend fun reconcileCarrier(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -1048,6 +1296,12 @@ internal object WorkManagerHandoffRecovery {
                     workInfo?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) -> {
                     retryAfterFailure(context, carrier, null)
                 }
+                carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH &&
+                    workInfo?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) -> {
+                    retryAfterFailure(context, carrier, null)
+                }
+                carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH &&
+                    workInfo?.state == WorkInfo.State.SUCCEEDED -> Unit
                 retainsCarrierUntilWorkerTerminal(carrier.kind) && workInfo == null -> {
                     // Operation.result acceptance is durable authority; a transiently
                     // absent WorkInfo must not advance the request identity and
@@ -1195,6 +1449,23 @@ internal object WorkManagerHandoffRecovery {
     private fun expectedAutomaticKeywordMode(pendingApplyToExisting: Boolean): String =
         if (pendingApplyToExisting) "APPLY_EXISTING" else "BASELINE_ONLY"
 
+    private suspend fun isCurrentTerminalDispatchAuthority(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.TERMINAL_DISPATCH) return true
+        val terminal = database(context).terminalDao.getTerminalById(carrier.sourceId)
+            ?: return false
+        return carrier.requestId.isNotBlank() &&
+            carrier.boundary == carrier.sourceId.toString() &&
+            carrier.uniqueWorkName == terminalWorkName(carrier.sourceId) &&
+            carrier.generationId.isNotBlank() &&
+            carrier.decision == TERMINAL_DISPATCH_DECISION &&
+            carrier.sourceConfigurationGeneration == 1L &&
+            carrier.confirmedUrl == terminal.command &&
+            carrier.configFingerprint == terminalCommandFingerprint(terminal.command)
+    }
+
     private suspend fun isCurrentObserveExecutionAuthority(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
@@ -1205,6 +1476,8 @@ internal object WorkManagerHandoffRecovery {
             isCurrentObserveRecurrenceAuthority(context, carrier)
         WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ->
             isCurrentAutomaticKeywordAuthority(context, carrier)
+        WorkManagerHandoffCarrier.TERMINAL_DISPATCH ->
+            isCurrentTerminalDispatchAuthority(context, carrier)
         else -> true
     }
 
@@ -1253,11 +1526,37 @@ internal object WorkManagerHandoffRecovery {
         return stale
     }
 
+    private suspend fun retireStaleTerminalDispatchCarrier(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+    ): Boolean {
+        if (carrier.kind != WorkManagerHandoffCarrier.TERMINAL_DISPATCH) return false
+        val execution = TerminalExecutionRecovery.read(context, carrier.sourceId)
+        if (execution != null && !execution.terminal) return false
+        val stale = withCarrierMutation(context, null) {
+            if (isCurrentTerminalDispatchAuthority(context, carrier) &&
+                isDurablyCurrentRetainedCarrier(context, carrier)
+            ) {
+                false
+            } else {
+                database(context).workManagerHandoffCarrierDao.markSuperseded(
+                    carrier.handoffId,
+                    carrier.requestId,
+                    System.currentTimeMillis(),
+                )
+                true
+            }
+        }
+        if (stale) reconcileSuperseded(context, carrier)
+        return stale
+    }
+
     private suspend fun retireStaleObserveCarrier(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
         authority: RestoreReconciliationAuthority? = null,
     ): Boolean = retireStaleAutomaticKeywordCarrier(context, carrier, authority) ||
+        retireStaleTerminalDispatchCarrier(context, carrier) ||
         retireStaleObserveRetryCarrier(context, carrier, authority) ||
         retireStaleObserveRecurrenceCarrier(context, carrier)
 
@@ -1314,6 +1613,46 @@ internal object WorkManagerHandoffRecovery {
                     OutcomeKind.SUPERSEDED
                 }
             )
+        }
+        if (carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH) {
+            // Once TerminalExecutionRecovery has a witness, this subject is
+            // already owned by the admitted/recovery path. Do not publish a
+            // second request merely because WorkInfo is absent.
+            if (TerminalExecutionRecovery.hasRecordFile(context, carrier.sourceId)) {
+                return EnqueueOutcome(OutcomeKind.ACCEPTED)
+            }
+            val existingWork = workInfo(context, carrier.requestId)
+            if (existingWork != null) {
+                if (existingWork.state == WorkInfo.State.SUCCEEDED ||
+                    !existingWork.state.isFinished
+                ) {
+                    val marked = withCarrierMutation(context, authority) {
+                        val dao = database(context).workManagerHandoffCarrierDao
+                        val changed = dao.markAccepted(
+                            carrier.handoffId,
+                            carrier.requestId,
+                            System.currentTimeMillis(),
+                        )
+                        if (changed == 0) {
+                            val current = dao.get(carrier.handoffId)
+                            if (current?.requestId == carrier.requestId &&
+                                current.state == WorkManagerHandoffCarrier.ACCEPTED &&
+                                isCurrentGeneration(carrier) &&
+                                isCurrentObserveExecutionAuthority(context, carrier) &&
+                                isDurablyCurrentRetainedCarrier(context, carrier)
+                            ) 1 else 0
+                        } else {
+                            changed
+                        }
+                    }
+                    return if (marked > 0) {
+                        EnqueueOutcome(OutcomeKind.ACCEPTED)
+                    } else {
+                        EnqueueOutcome(OutcomeKind.SUPERSEDED)
+                    }
+                }
+                return retryAfterFailure(context, carrier, null, authority)
+            }
         }
         val remainingDelay = carrier.notBeforeAt - System.currentTimeMillis()
         if (remainingDelay > 0L && authority == null &&
@@ -1509,6 +1848,12 @@ internal object WorkManagerHandoffRecovery {
         }
         if (retireStaleObserveCarrier(context, carrier, authority)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
+        }
+        if (
+            carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH &&
+            TerminalExecutionRecovery.hasRecordFile(context, carrier.sourceId)
+        ) {
+            return EnqueueOutcome(OutcomeKind.ACCEPTED, failure)
         }
 
         val existingWork = workInfo(context, carrier.requestId)
@@ -2002,6 +2347,25 @@ internal object WorkManagerHandoffRecovery {
                     .build()
             }
 
+            WorkManagerHandoffCarrier.TERMINAL_DISPATCH -> {
+                val terminalInput = Data.Builder()
+                    .putInt(TerminalDownloadWorker.INPUT_ID, carrier.sourceId.toInt())
+                    .putString(TerminalDownloadWorker.INPUT_COMMAND, carrier.confirmedUrl)
+                    .putString(TerminalDownloadWorker.INPUT_HANDOFF_ID, carrier.handoffId)
+                    .putString(TerminalDownloadWorker.INPUT_REQUEST_ID, carrier.requestId)
+                    .putString(TerminalDownloadWorker.INPUT_GENERATION_ID, carrier.generationId)
+                    .putString(TerminalDownloadWorker.INPUT_BOUNDARY, carrier.boundary)
+                    .putString(TerminalDownloadWorker.INPUT_COMMAND_FINGERPRINT, carrier.configFingerprint)
+                    .build()
+                OneTimeWorkRequestBuilder<TerminalDownloadWorker>()
+                    .setId(requestId)
+                    .addTag("terminal")
+                    .addTag(carrier.sourceId.toString())
+                    .setInputData(terminalInput)
+                    .setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
+                    .build()
+            }
+
             else -> error("Unknown WorkManager handoff kind ${carrier.kind}")
         }
     }
@@ -2010,6 +2374,7 @@ internal object WorkManagerHandoffRecovery {
     private const val INPUT_REQUEST_ID = "handoffRequestId"
     internal const val INPUT_GENERATION_ID = "handoffGenerationId"
     internal const val INPUT_BOUNDARY = "handoffBoundary"
+    private const val TERMINAL_DISPATCH_DECISION = "EXECUTE"
     private const val CANCELLED_GENERATION = "__CANCELLED__"
 
     private fun database(context: Context): DBManager =
@@ -2067,7 +2432,8 @@ internal object WorkManagerHandoffRecovery {
         // generation. A process-local map can lag a committed transaction if
         // its worker is cancelled before this process refreshes the map.
         if (carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ||
-            carrier.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC
+            carrier.kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH
         ) return true
         return latestGenerationByBoundary[boundaryKey(carrier.kind, carrier.boundary)]
             ?.let { it == carrier.handoffId }
