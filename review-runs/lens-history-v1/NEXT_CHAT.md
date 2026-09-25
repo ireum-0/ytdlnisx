@@ -166,6 +166,26 @@ Distinguish **Git-object staging** from **live-branch publication**:
 6. Do not include unrelated files or production/application source in the staged trees.
 7. Unattached objects from an abandoned or failed staging attempt are non-authoritative and must be ignored on resume unless they later become reachable from the live branch through an explicitly verified publication.
 
+### Efficient staged verification
+
+Avoid redundant GitHub round trips while preserving the same proof obligations:
+
+1. Treat successful `create_blob`, `create_tree`, and `create_commit` returned SHAs as construction evidence for the staged chain. Do not immediately re-fetch every newly created rank object solely to rediscover the same SHA.
+2. At each staged five-rank boundary, verify the staged state blob at the staged state commit before using that state blob as the binding for the next segment. This is required because intermediate state versions are overwritten in the final tree and are not visible in a final base-to-head file comparison.
+3. Before publication, prefer one `base_head...final_staged_commit` compare plus the staged state checks above. Require:
+   - exact expected commit count;
+   - strict first-parent continuity from `base_head` to the final staged commit;
+   - exact expected changed-path set;
+   - exact final blob SHA for every rank receipt and aggregate that is not overwritten later in the chain;
+   - final state blob equality;
+   - no path outside `review-runs/lens-history-v1/**`.
+4. A separate per-rank staged-file re-fetch is unnecessary when the compare proves that rank/aggregate path's exact blob and the object is not overwritten later.
+5. After publication, prefer a batched live verification: exact live HEAD, final state blob, directory listings for the newly published rank/aggregate blobs, and the already-validated base-to-final ancestry. Do not re-fetch every immutable rank file again unless a blob/path mismatch, transport anomaly, correction/remediation, or audit requirement makes it necessary.
+6. Parallelize frozen-history lookup, changed-file pagination, and source/frozen reads across multiple ranks. Classification remains rank-local and fail-closed even when transport is parallel.
+7. If the tool layer rejects a large staging request, split blob/tree/commit construction into smaller calls. This does not change atomic publication semantics as long as the live branch ref remains unchanged until the single final non-force update.
+
+This optimization removes duplicate transport verification only. It does not weaken history resolution, source/frozen equality, previous-rank binding, segment/state ordering, race gates, or post-publication fail-closed behavior.
+
 ### Final publication gate
 
 Immediately before moving the live ref:
