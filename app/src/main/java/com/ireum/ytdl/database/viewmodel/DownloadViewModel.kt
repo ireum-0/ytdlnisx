@@ -1247,70 +1247,105 @@ class DownloadViewModel private constructor(
     fun turnDownloadItemsToProcessingDownloads(itemIDs: List<Long>, deleteExisting : Boolean = false) = viewModelScope.launch(Dispatchers.IO){
         ensureRestoreAdmission()
         val job = viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteProcessing()
+            if (!deleteExisting) repository.deleteProcessing()
             processingItems.emit(true)
             try {
-                itemIDs.forEach {
-                    val item = repository.getItemByID(it)
-                    val errorSnapshot = item.takeIf {
-                        it.status == DownloadRepository.Status.Error.toString()
-                    }?.copy()
+                itemIDs.forEach { itemID ->
                     if (processingItemsJob?.isCancelled == true) throw CancellationException()
-                    val refusalConverged = convergePersistedHistoryRefusal(item.id)
-                    if (
-                        refusalConverged ||
-                            repository.isCommittedHistoryReplacement(item.id) ||
-                            HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
-                            dbManager.historyReplacementBarrierDao
-                                .getByDownloadIdBlocking(item.id) != null ||
-                            hasTerminalHistoryReplacementLedger(item)
-                    ) {
-                        throw IllegalStateException(
-                            retryBlockedMessage(
-                                DownloadRetryDecision.Blocked(
-                                    DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH
-                                )
-                            )
-                        )
-                    }
-                    if (item.status == DownloadRepository.Status.Error.toString()) {
-                        when (val decision = prepareRetryMetadata(
-                            item = item,
-                            strategy = DownloadRetryStrategy.RECONFIGURED,
-                            settingsConfirmed = true
-                        )) {
-                            is DownloadRetryDecision.Allowed ->
-                                applyRetryMetadata(item, decision.metadata)
-                            is DownloadRetryDecision.Blocked ->
-                                throw IllegalStateException(retryBlockedMessage(decision))
+                    if (deleteExisting) {
+                        try {
+                            val candidate = dao.getNullableDownloadById(itemID)
+                            when {
+                                candidate == null -> Unit
+                                candidate.status == DownloadRepository.Status.Error.toString() ->
+                                    processDownloadItemToProcessing(
+                                        itemID = itemID,
+                                        deleteExisting = true,
+                                        expectedFormatStatus = candidate.status,
+                                    )
+                                else -> repository.transitionFormatNotificationCandidateToProcessing(itemID)
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // A stale/deleted/refused candidate must not abort
+                            // the remaining notification bundle.
                         }
-                    }
-                    if (!deleteExisting) item.id = 0
-                    item.status = DownloadRepository.Status.Processing.toString()
-                    if (errorSnapshot != null && deleteExisting) {
-                        val transitioned = withDownloadWorkerExecutionLock {
-                            dao.updateForQueueIfSnapshot(
-                                item = item,
-                                expectedStatus = errorSnapshot.status,
-                                expectedExecutionId = errorSnapshot.executionId,
-                                expectedOperationId = errorSnapshot.operationId,
-                                expectedRetryAttempt = errorSnapshot.retryAttempt,
-                                expectedIssueCode = errorSnapshot.lastIssueCode,
-                                expectedIssueStage = errorSnapshot.lastIssueStage,
-                            )
-                        }
-                        check(transitioned) { "Download changed before Processing transition ${item.id}" }
                     } else {
-                        repository.update(item)
+                        processDownloadItemToProcessing(
+                            itemID = itemID,
+                            deleteExisting = false,
+                            expectedFormatStatus = null,
+                        )
                     }
                 }
                 processingItems.emit(false)
             } catch (e: Exception) {
-                deleteProcessing()
+                if (!deleteExisting) deleteProcessing()
                 processingItems.emit(false)
             }
         }
         processingItemsJob = job
+    }
+
+    private suspend fun processDownloadItemToProcessing(
+        itemID: Long,
+        deleteExisting: Boolean,
+        expectedFormatStatus: String?,
+    ) {
+        val item = repository.getItemByID(itemID)
+        if (expectedFormatStatus != null && item.status != expectedFormatStatus) return
+        val errorSnapshot = item.takeIf {
+            it.status == DownloadRepository.Status.Error.toString()
+        }?.copy()
+        if (processingItemsJob?.isCancelled == true) throw CancellationException()
+        val refusalConverged = convergePersistedHistoryRefusal(item.id)
+        if (
+            refusalConverged ||
+                repository.isCommittedHistoryReplacement(item.id) ||
+                HistoryReplacementDiagnostic.isPersistedHistoryReplacementRefusal(item.lastIssueCode) ||
+                dbManager.historyReplacementBarrierDao
+                    .getByDownloadIdBlocking(item.id) != null ||
+                hasTerminalHistoryReplacementLedger(item)
+        ) {
+            throw IllegalStateException(
+                retryBlockedMessage(
+                    DownloadRetryDecision.Blocked(
+                        DownloadRetryBlockReason.HISTORY_REPLACEMENT_MISMATCH
+                    )
+                )
+            )
+        }
+        if (item.status == DownloadRepository.Status.Error.toString()) {
+            when (val decision = prepareRetryMetadata(
+                item = item,
+                strategy = DownloadRetryStrategy.RECONFIGURED,
+                settingsConfirmed = true
+            )) {
+                is DownloadRetryDecision.Allowed ->
+                    applyRetryMetadata(item, decision.metadata)
+                is DownloadRetryDecision.Blocked ->
+                    throw IllegalStateException(retryBlockedMessage(decision))
+            }
+        }
+        if (!deleteExisting) item.id = 0
+        item.status = DownloadRepository.Status.Processing.toString()
+        if (errorSnapshot != null && deleteExisting) {
+            val transitioned = withDownloadWorkerExecutionLock {
+                dao.updateForQueueIfSnapshot(
+                    item = item,
+                    expectedStatus = errorSnapshot.status,
+                    expectedExecutionId = errorSnapshot.executionId,
+                    expectedOperationId = errorSnapshot.operationId,
+                    expectedRetryAttempt = errorSnapshot.retryAttempt,
+                    expectedIssueCode = errorSnapshot.lastIssueCode,
+                    expectedIssueStage = errorSnapshot.lastIssueStage,
+                )
+            }
+            check(transitioned) { "Download changed before Processing transition ${item.id}" }
+        } else {
+            repository.update(item)
+        }
     }
 
     fun turnHistoryItemsToProcessingDownloads(itemIDs: List<Long>, downloadNow: Boolean = false) = viewModelScope.launch(Dispatchers.IO) {

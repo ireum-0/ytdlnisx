@@ -46,6 +46,7 @@ import com.ireum.ytdl.work.AlarmScheduler
 import com.ireum.ytdl.work.DownloadCancellationRegistry
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadWorker
+import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
@@ -675,6 +676,44 @@ class DownloadRepository(private val database: DBManager) {
         RestoreMutationAdmission.withOrdinaryMutation(App.instance) {
             kotlin.runCatching { downloadDao.updateWithoutUpsert(item) }
         }
+
+    /**
+     * Reopens only a still-Saved, unowned format candidate.  The notification
+     * carries a numeric hint rather than an execution snapshot, so the final
+     * mutation must reload and CAS the current row without clearing any live
+     * execution, operation, or retry generation.
+     */
+    suspend fun transitionFormatNotificationCandidateToProcessing(id: Long): Boolean =
+        withOrdinaryMutation {
+            val candidate = downloadDao.getNullableDownloadById(id)
+                ?: return@withOrdinaryMutation false
+            if (!isFormatNotificationCandidate(candidate)) {
+                return@withOrdinaryMutation false
+            }
+            withDownloadWorkerExecutionLock {
+                val current = downloadDao.getNullableDownloadById(id)
+                    ?: return@withDownloadWorkerExecutionLock false
+                if (!isFormatNotificationCandidate(current)) {
+                    return@withDownloadWorkerExecutionLock false
+                }
+                downloadDao.updateForQueueIfSnapshot(
+                    item = current.copy(status = Status.Processing.toString()),
+                    expectedStatus = current.status,
+                    expectedExecutionId = current.executionId,
+                    expectedOperationId = current.operationId,
+                    expectedRetryAttempt = current.retryAttempt,
+                    expectedIssueCode = current.lastIssueCode,
+                    expectedIssueStage = current.lastIssueStage,
+                )
+            }
+        }
+
+    private fun isFormatNotificationCandidate(item: DownloadItem): Boolean =
+        item.status == Status.Saved.toString() &&
+            item.executionId.isBlank() &&
+            item.operationId.isBlank() &&
+            item.retryAttempt == 0 &&
+            !DownloadWorkerExecutionOwners.hasLiveOwner(item.id)
 
     /**
      * Direct/suspending callers select the semantic intent before the
