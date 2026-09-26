@@ -162,7 +162,12 @@ class TerminalExecutionProductionWiringTest {
         val previousCacheDownloads = preferences.getBoolean("cache_downloads", true)
         val externalFiles = requireNotNull(context.getExternalFilesDir(null))
         val admittedRoot = File(externalFiles, "terminal-bound-${System.nanoTime()}").canonicalFile
-        val command = "--simulate https://example.com/terminal-bound-root"
+        // This case is about cache-root ownership, not persisted-generation
+        // ambiguity, so the directly seeded row is materialized into the
+        // current durable format.  A row seeded without that format is a
+        // pre-materializer record and is correctly non-runnable.
+        val command = com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer
+            .materialize("--simulate https://example.com/terminal-bound-root", context.filesDir.absolutePath)
         val itemId = db.withTransaction {
             val id = db.terminalDao.insert(TerminalItem(command = command))
             WorkManagerHandoffRecovery.stageTerminalDispatchWithinTransaction(db, id, command)

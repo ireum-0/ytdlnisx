@@ -26,6 +26,7 @@ import com.ireum.ytdl.database.models.observeSources.ObserveSourcesItem
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.receiver.ObserveRetryDecisionReceiver
 import com.ireum.ytdl.util.Extensions.calculateNextTimeForObserving
+import com.ireum.ytdl.util.terminal.TerminalCommandMetadata
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -402,6 +403,12 @@ internal object WorkManagerHandoffRecovery {
             generationId.isBlank() || boundary != terminalId.toString() ||
             commandFingerprint.isBlank() || requestId != workRequestId
         ) return false
+        // Final execution gate.  A command with no durable destination authority
+        // is refused here even when every identity field matches, because
+        // matching identities over an incomplete record prove nothing about the
+        // original provider.  The planner would otherwise resolve the current
+        // preference and publish this old Terminal to a newer archive.
+        if (!hasDurableTerminalOutputAuthority(command)) return false
         val db = database(context)
         val carrier = db.workManagerHandoffCarrierDao.get(handoffId) ?: return false
         if (
@@ -1163,6 +1170,21 @@ internal object WorkManagerHandoffRecovery {
                                 WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
                                 boundary,
                             )
+                        // A persisted command with no durable destination
+                        // authority is never given a runnable carrier, and any
+                        // outstanding owner is revoked instead. The row and its
+                        // command/log are preserved: this is a non-runnable
+                        // disposition, not a deletion.
+                        if (!hasDurableTerminalOutputAuthority(terminal.command)) {
+                            current?.let {
+                                db.workManagerHandoffCarrierDao.markSuperseded(
+                                    it.handoffId,
+                                    it.requestId,
+                                    System.currentTimeMillis(),
+                                )
+                            }
+                            return@forEach
+                        }
                         val ownerMatches = current?.let {
                             it.sourceId == terminal.id &&
                                 it.requestId.isNotBlank() &&
@@ -1498,8 +1520,34 @@ internal object WorkManagerHandoffRecovery {
             carrier.decision == TERMINAL_DISPATCH_DECISION &&
             carrier.sourceConfigurationGeneration == 1L &&
             carrier.confirmedUrl == terminal.command &&
-            carrier.configFingerprint == terminalCommandFingerprint(terminal.command)
+            carrier.configFingerprint == terminalCommandFingerprint(terminal.command) &&
+            hasDurableTerminalOutputAuthority(terminal.command)
     }
+
+    /**
+     * Whether a durably stored Terminal command proves the output authority it
+     * would execute under.
+     *
+     * A pre-materializer command that carries neither explicit provider
+     * metadata nor an authored native destination has no durable record of the
+     * configured provider it was created under, and the original provider is
+     * unrecoverable from the row and carrier. Such a command is internally
+     * consistent and still incomplete, so it must never become runnable: the
+     * current preference is not evidence of its original authority.
+     */
+    private fun hasDurableTerminalOutputAuthority(command: String): Boolean =
+        when (TerminalCommandMetadata.classifyDurable(command)) {
+            TerminalCommandMetadata.DurableAuthority.CurrentFormat -> true
+            TerminalCommandMetadata.DurableAuthority.SelfBound -> true
+            TerminalCommandMetadata.DurableAuthority.Ambiguous -> {
+                Log.w(
+                    TAG,
+                    "Refusing Terminal dispatch for a persisted command with no durable " +
+                        "destination authority; it will not inherit the current preference",
+                )
+                false
+            }
+        }
 
     private suspend fun isCurrentObserveExecutionAuthority(
         context: Context,

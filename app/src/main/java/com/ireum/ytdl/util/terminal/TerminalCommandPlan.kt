@@ -77,11 +77,12 @@ object TerminalCommandPlanner {
     fun normalizeInput(input: String): String = input.replaceFirst("yt-dlp", "")
 
     fun create(command: String, environment: TerminalCommandEnvironment): TerminalCommandPlan {
-        // A Folder-picked provider destination is Terminal-owned execution
-        // metadata, not yt-dlp input.  It is removed before any shared parser
-        // or the native process can observe it, so a provider selection can
-        // never be mistaken for an authored native --paths destination.
-        val extracted = TerminalProviderDestinationOption.extract(command)
+        // Terminal-owned command metadata is not yt-dlp input.  Every
+        // Terminal-owned option is removed before any shared parser or the
+        // native process can observe it, so neither a Folder-picked provider
+        // destination nor the durable format marker can be mistaken for an
+        // authored native --paths destination.
+        val extracted = TerminalCommandMetadata.strip(command)
         val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(extracted.command)
         val outputTemplate = YtdlpCommandOutputTemplateParser.resolve(
             command = sanitized.commandString,

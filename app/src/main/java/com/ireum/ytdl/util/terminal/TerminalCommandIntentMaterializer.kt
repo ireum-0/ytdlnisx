@@ -30,33 +30,64 @@ object TerminalCommandIntentMaterializer {
      * `configured provider default` > `configured raw/default destination`.
      */
     fun materialize(command: String, configuredCommandPath: String): String {
-        // Malformed or repeated provider metadata stays fail-closed under the
-        // existing parser contract rather than being silently repaired.
-        val existing = TerminalProviderDestinationOption.extract(command).providerTreeUri
-        if (existing != null) {
-            // The selection is preserved exactly, but only when it is a usable
-            // provider authority.  A malformed value is refused here instead of
-            // becoming durable and failing later at execution.
-            if (TerminalDestinationAuthority.providerTreeOrNull(
-                    TerminalDestinationAuthority.classify(existing),
-                ) == null
-            ) {
-                throw IllegalArgumentException(
-                    "Terminal provider destination is not a usable location",
-                )
+        // Start from a fully stripped command so this is idempotent and a
+        // repeated materialization can never append a second format marker,
+        // which the durable classifier would refuse.
+        val stripped = TerminalCommandMetadata.strip(command)
+        val existingProvider = stripped.providerTreeUri
+        val body = when {
+            existingProvider != null -> {
+                // The selection is preserved exactly, but only when it is a
+                // usable provider authority.  A malformed value is refused here
+                // instead of becoming durable and failing later at execution.
+                if (TerminalDestinationAuthority.providerTreeOrNull(
+                        TerminalDestinationAuthority.classify(existingProvider),
+                    ) == null
+                ) {
+                    throw IllegalArgumentException(
+                        "Terminal provider destination is not a usable location",
+                    )
+                }
+                // An explicit selection is more specific than the configured
+                // default.
+                listOfNotNull(
+                    TerminalProviderDestinationOption.render(existingProvider),
+                    stripped.command.trim().takeIf(String::isNotEmpty),
+                ).joinToString(" ")
             }
-            // An explicit selection is more specific than the configured
-            // default and is preserved exactly as supplied.
-            return command
+            // A manual authored native destination already governs output, so
+            // the configured default must not be injected as competing
+            // authority.
+            declaresAuthoredOutputPath(stripped.command) -> stripped.command
+            else -> {
+                // Only a provider default becomes durable metadata.  A raw or
+                // default destination keeps its existing behavior and is not
+                // frozen here.
+                val configured = TerminalDestinationAuthority.classify(configuredCommandPath)
+                val provider = TerminalDestinationAuthority.providerTreeOrNull(configured)
+                    ?: return stampFormat(stripped.command)
+                listOfNotNull(
+                    TerminalProviderDestinationOption.render(provider.treeUri),
+                    stripped.command.trim().takeIf(String::isNotEmpty),
+                ).joinToString(" ")
+            }
         }
-        // A manual authored native destination already governs output, so the
-        // configured default must not be injected as competing authority.
-        if (declaresAuthoredOutputPath(command)) return command
-        // Only a provider default becomes durable metadata.  A raw or default
-        // destination keeps its existing behavior and is not frozen here.
-        val configured = TerminalDestinationAuthority.classify(configuredCommandPath)
-        if (TerminalDestinationAuthority.providerTreeOrNull(configured) == null) return command
-        return materializeProviderAuthority(command, configuredCommandPath)
+        return stampFormat(body)
+    }
+
+    /**
+     * Marks one newly created command as the current durable format.
+     *
+     * Every new row is stamped, not only provider-bound ones, so the persisted
+     * generation is explicit for raw and default destinations too.  Otherwise a
+     * legacy incomplete record would be indistinguishable from a complete
+     * current one, and fixing that ambiguity by blocking commands without
+     * provider metadata would block valid raw Terminal work as well.
+     */
+    private fun stampFormat(command: String): String {
+        val marker = TerminalCommandMetadata.renderCommandFormat()
+        val trimmed = command.trim()
+        return if (trimmed.isEmpty()) marker else "$marker $trimmed"
     }
 
     /**
@@ -76,18 +107,5 @@ object TerminalCommandIntentMaterializer {
         // An unparseable path is left for the planner to refuse with its own
         // diagnostic; it must not gain injected output authority here.
         return pathResolution is YtdlpCommandPathResolution.Explicit
-    }
-
-    /**
-     * Renders the configured provider authority as Terminal-owned metadata.
-     *
-     * Only the single structured option is added, so the exact provider URI
-     * survives process death and later planning removes it before any yt-dlp
-     * parser or the native process can observe it.
-     */
-    private fun materializeProviderAuthority(command: String, treeUri: String): String {
-        val option = TerminalProviderDestinationOption.render(treeUri)
-        val trimmed = command.trim()
-        return if (trimmed.isEmpty()) option else "$option $trimmed"
     }
 }

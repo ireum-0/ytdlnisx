@@ -1,0 +1,148 @@
+package com.ireum.ytdl.util.terminal
+
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpArgumentPolicy
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandPathParser
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandPathResolution
+
+/**
+ * Terminal-owned durable command metadata: the versioned command-format marker
+ * and the combined strip of every Terminal-owned option.
+ *
+ * The marker exists because a durably complete record and a durably incomplete
+ * record can be byte-identical. Before the provider authority was materialized
+ * into the command, a Terminal row could be perfectly consistent and still be
+ * missing the one dimension that decides where its output is published. Exact
+ * equality of such a record is not proof of the original provider, and it must
+ * not be completed from the current mutable preference.
+ *
+ * The marker makes the current format explicit in the durable command itself.
+ * It is Terminal-owned, is removed before any yt-dlp parser or the native
+ * process can observe it, and is part of the command fingerprint, so it
+ * inherits the exact durable dispatch ownership contract.
+ */
+object TerminalCommandMetadata {
+    const val COMMAND_FORMAT_OPTION = "--ytdlnisx-terminal-command-format"
+
+    /** The only durable command format this implementation writes or trusts. */
+    const val CURRENT_FORMAT = "1"
+
+    private val PATTERN = Regex(
+        "(?<!\\S)" + Regex.escape(COMMAND_FORMAT_OPTION) + "(?:=(?:\"([^\"]*)\"|'([^']*)'|([^\\s]+))|\\s+(?:\"([^\"]*)\"|'([^']*)'|(\\S+)))",
+    )
+
+    /** Detects the option appearing as a bare token with no usable value. */
+    private val BARE_TOKEN = Regex(
+        "(?<!\\S)" + Regex.escape(COMMAND_FORMAT_OPTION) + "(?=\\s|=|$)",
+    )
+
+    /** Renders the current-format marker for one new Terminal command. */
+    fun renderCommandFormat(format: String = CURRENT_FORMAT): String =
+        "$COMMAND_FORMAT_OPTION=$format"
+
+    /** A command with every Terminal-owned option removed. */
+    data class Stripped(
+        val command: String,
+        val providerTreeUri: String?,
+        val currentFormat: Boolean,
+    )
+
+    /**
+     * Removes every Terminal-owned option from [command].
+     *
+     * Malformed or repeated metadata is refused rather than repaired, so an
+     * unusable value can never be silently reinterpreted.
+     */
+    fun strip(command: String): Stripped {
+        val formatMatches = PATTERN.findAll(command).toList()
+        // A bare occurrence carries no value and must not be read as an
+        // absent option, so it is refused instead of guessed.
+        if (BARE_TOKEN.findAll(command).count() != formatMatches.size) {
+            throw IllegalArgumentException(
+                "Terminal command format is not a usable value",
+            )
+        }
+        val format = when {
+            formatMatches.isEmpty() -> null
+            // More than one format marker is ambiguous and refused.
+            formatMatches.size > 1 -> throw IllegalArgumentException(
+                "Terminal command declares more than one command format",
+            )
+            else -> formatMatches.single().groupValues.drop(1).firstOrNull { it.isNotEmpty() }
+                ?: throw IllegalArgumentException(
+                    "Terminal command format is not a usable value",
+                )
+        }
+        // Remove the format marker first, then the provider destination, so
+        // each removal operates on the result of the previous one and neither
+        // Terminal-owned option survives.
+        val withoutFormat = if (formatMatches.isEmpty()) {
+            command
+        } else {
+            command
+                .removeRange(formatMatches.single().range)
+                .replace(Regex(" +"), " ")
+                .trim()
+        }
+        val provider = TerminalProviderDestinationOption.extract(withoutFormat)
+        return Stripped(
+            command = provider.command,
+            providerTreeUri = provider.providerTreeUri,
+            currentFormat = format == CURRENT_FORMAT,
+        )
+    }
+
+    /**
+     * Whether a durably stored command carries proof of the output authority it
+     * will execute under.
+     */
+    sealed interface DurableAuthority {
+        /**
+         * Written by this implementation. The destination was materialized into
+         * the command before the row and carrier were staged, so the durable
+         * identity is complete.
+         */
+        data object CurrentFormat : DurableAuthority
+
+        /**
+         * A pre-materializer command that already carries its own exact output
+         * authority, either explicit provider metadata or a valid authored
+         * native home destination. It stays runnable under the existing
+         * contract.
+         */
+        data object SelfBound : DurableAuthority
+
+        /**
+         * A pre-materializer command with neither. Its original configured
+         * provider is unrecoverable from the durable representation, so it must
+         * never inherit authority from the current preference.
+         */
+        data object Ambiguous : DurableAuthority
+    }
+
+    /**
+     * Classifies one durably stored Terminal command.
+     *
+     * This is only meaningful for a command that is already durable. A command
+     * being composed for the first time has no format marker yet and is
+     * materialized before it is ever stored.
+     */
+    fun classifyDurable(command: String): DurableAuthority {
+        val stripped = strip(command)
+        if (stripped.currentFormat) return DurableAuthority.CurrentFormat
+        if (stripped.providerTreeUri != null) return DurableAuthority.SelfBound
+        // An authored native home destination is its own exact authority.
+        if (declaresAuthoredNativeHome(stripped.command)) return DurableAuthority.SelfBound
+        return DurableAuthority.Ambiguous
+    }
+
+    private fun declaresAuthoredNativeHome(command: String): Boolean {
+        val sanitized = runCatching {
+            YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(command)
+        }.getOrNull() ?: return false
+        val resolution = runCatching {
+            YtdlpCommandPathParser.resolve(sanitized.commandString)
+        }.getOrNull() ?: return false
+        val pathMap = (resolution as? YtdlpCommandPathResolution.Explicit)?.pathMap
+        return pathMap?.home != null
+    }
+}

@@ -138,7 +138,10 @@ class TerminalDispatchHandoffProductionWiringTest {
         assertEquals(carrier.generationId, request.workSpec.input.getString(TerminalDownloadWorker.INPUT_GENERATION_ID))
         assertEquals(carrier.boundary, request.workSpec.input.getString(TerminalDownloadWorker.INPUT_BOUNDARY))
         assertEquals(carrier.configFingerprint, request.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND_FINGERPRINT))
-        assertEquals(command, request.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND))
+        // The request carries the exact durable command, which is the
+        // materialized command rather than the raw caller text.
+        assertEquals(carrier.confirmedUrl, request.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND))
+        assertTrue(carrier.confirmedUrl.endsWith(command))
         assertEquals(terminalId.toString(), workNames.single())
         assertEquals(ExistingWorkPolicy.REPLACE, policies.single())
 
@@ -478,7 +481,9 @@ class TerminalDispatchHandoffProductionWiringTest {
             .setInputData(
                 androidx.work.workDataOf(
                     TerminalDownloadWorker.INPUT_ID to terminalId.toInt(),
-                    TerminalDownloadWorker.INPUT_COMMAND to command,
+                    // The worker must be given the exact durable command, which
+                    // is the materialized command held by the row and carrier.
+                    TerminalDownloadWorker.INPUT_COMMAND to carrier.confirmedUrl,
                     TerminalDownloadWorker.INPUT_HANDOFF_ID to carrier.handoffId,
                     TerminalDownloadWorker.INPUT_REQUEST_ID to carrier.requestId,
                     TerminalDownloadWorker.INPUT_GENERATION_ID to carrier.generationId,

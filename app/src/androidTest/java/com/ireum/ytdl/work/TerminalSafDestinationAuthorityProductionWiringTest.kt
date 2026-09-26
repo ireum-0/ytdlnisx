@@ -10,6 +10,7 @@ import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
 import com.ireum.ytdl.database.viewmodel.TerminalViewModel
+import com.ireum.ytdl.util.terminal.TerminalCommandMetadata
 import com.ireum.ytdl.util.terminal.TerminalCommandPlan
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.util.terminal.TerminalProviderDestinationOption
@@ -271,19 +272,25 @@ class TerminalSafDestinationAuthorityProductionWiringTest {
             )
 
             // The exact selection is durably bound to this Terminal identity.
-            assertEquals(boundCommand, carrier.confirmedUrl)
+            // The durable command is the current-format marker plus the exact
+            // user command, so the user's own text is preserved unchanged.
+            assertEquals(
+                TerminalCommandMetadata.renderCommandFormat() + " " + boundCommand,
+                carrier.confirmedUrl,
+            )
+            assertTrue(carrier.confirmedUrl.endsWith(boundCommand))
             assertEquals(
                 terminalId,
                 database.terminalDao.getTerminalById(terminalId)?.id,
             )
             assertTrue(carrier.confirmedUrl.contains(providerTreeUri))
 
-            // The current owner is accepted for its own exact command.
+            // The current owner is accepted for its own exact durable command.
             assertTrue(
                 WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
                     context = context,
                     terminalId = terminalId,
-                    command = boundCommand,
+                    command = carrier.confirmedUrl,
                     handoffId = carrier.handoffId,
                     requestId = carrier.requestId,
                     generationId = carrier.generationId,
@@ -295,7 +302,8 @@ class TerminalSafDestinationAuthorityProductionWiringTest {
 
             // A request carrying a different provider selection for the same
             // Terminal is not the current owner and must not be adopted.
-            val newerCommand = TerminalProviderDestinationOption.render(otherProviderTreeUri) +
+            val newerCommand = TerminalCommandMetadata.renderCommandFormat() + " " +
+                TerminalProviderDestinationOption.render(otherProviderTreeUri) +
                 " https://example.com/video-g"
             assertFalse(
                 WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
@@ -434,7 +442,11 @@ class TerminalSafDestinationAuthorityProductionWiringTest {
         val terminalId = viewModel.insert(TerminalItem(command = pickedCommand))
         val durableCommand = requireNotNull(database.terminalDao.getTerminalById(terminalId)).command
 
-        assertEquals(pickedCommand, durableCommand)
+        assertEquals(
+            TerminalCommandMetadata.renderCommandFormat() + " " + pickedCommand,
+            durableCommand,
+        )
+        assertTrue(durableCommand.endsWith(pickedCommand))
         assertFalse(durableCommand.contains(providerTreeUri))
 
         // A later configured change still cannot redirect the Folder selection.
