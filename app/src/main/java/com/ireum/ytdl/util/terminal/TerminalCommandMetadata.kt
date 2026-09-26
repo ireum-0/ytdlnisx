@@ -26,6 +26,25 @@ object TerminalCommandMetadata {
     /** The only durable command format this implementation writes or trusts. */
     const val CURRENT_FORMAT = "1"
 
+    /**
+     * Dispatch format generation of a pre-materializer Terminal carrier.
+     *
+     * Rows and carriers written before the materializer exist carry this
+     * generation, and their command text was stored exactly as the user typed
+     * it.
+     */
+    const val LEGACY_FORMAT_GENERATION = 1L
+
+    /**
+     * Dispatch format generation written only by the current writer.
+     *
+     * This is the durable generation proof. It lives in the TERMINAL_DISPATCH
+     * carrier's own field, which the app writes, so historical command text
+     * cannot forge it: the same bytes were legal user input before the format
+     * marker had any meaning.
+     */
+    const val CURRENT_FORMAT_GENERATION = 2L
+
     private val PATTERN = Regex(
         "(?<!\\S)" + Regex.escape(COMMAND_FORMAT_OPTION) + "(?:=(?:\"([^\"]*)\"|'([^']*)'|([^\\s]+))|\\s+(?:\"([^\"]*)\"|'([^']*)'|(\\S+)))",
     )
@@ -98,8 +117,9 @@ object TerminalCommandMetadata {
     sealed interface DurableAuthority {
         /**
          * Written by this implementation. The destination was materialized into
-         * the command before the row and carrier were staged, so the durable
-         * identity is complete.
+         * the command before the row and carrier were staged, and the carrier
+         * independently proves the current dispatch format generation, so the
+         * durable identity is complete.
          */
         data object CurrentFormat : DurableAuthority
 
@@ -120,15 +140,32 @@ object TerminalCommandMetadata {
     }
 
     /**
-     * Classifies one durably stored Terminal command.
+     * Classifies one durably stored Terminal command against the independently
+     * durable [formatGeneration] proven by its carrier.
+     *
+     * The marker alone is never proof.  The command string is user-controlled
+     * text, and the exact marker bytes were legal input before the marker had any
+     * application meaning, so a current-format classification additionally
+     * requires a carrier written at [CURRENT_FORMAT_GENERATION].
+     *
+     * Generation is deliberately not a blanket consistency requirement: a
+     * pre-materializer command that carries its own exact authority stays
+     * self-bound whatever generation its carrier records, and marker text must
+     * neither upgrade it to current format nor destroy that authority.
      *
      * This is only meaningful for a command that is already durable. A command
      * being composed for the first time has no format marker yet and is
      * materialized before it is ever stored.
      */
-    fun classifyDurable(command: String): DurableAuthority {
+    fun classifyDurable(command: String, formatGeneration: Long): DurableAuthority {
         val stripped = strip(command)
-        if (stripped.currentFormat) return DurableAuthority.CurrentFormat
+        if (stripped.currentFormat &&
+            formatGeneration >= CURRENT_FORMAT_GENERATION
+        ) {
+            return DurableAuthority.CurrentFormat
+        }
+        // Otherwise the row predates this writer, and only its own command text
+        // can still carry authority.  Marker text never outranks that.
         if (stripped.providerTreeUri != null) return DurableAuthority.SelfBound
         // An authored native home destination is its own exact authority.
         if (declaresAuthoredNativeHome(stripped.command)) return DurableAuthority.SelfBound

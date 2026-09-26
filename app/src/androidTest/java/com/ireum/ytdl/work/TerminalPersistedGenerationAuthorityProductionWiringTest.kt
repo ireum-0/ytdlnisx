@@ -11,7 +11,9 @@ import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer
 import com.ireum.ytdl.util.terminal.TerminalCommandMetadata
+import com.ireum.ytdl.util.terminal.TerminalProviderDestinationOption
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -74,6 +76,10 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
 
     @After
     fun tearDown() {
+        // Reconciliation dispatches on a shared background scope.  Let that work
+        // drain while this class's database is still installed, so a late
+        // dispatch cannot resolve against the next test class's state.
+        runBlocking { delay(1_000L) }
         WorkManagerHandoffRecovery.clearForTesting()
         val editor = preferences.edit()
         if (hadCommandPath) editor.putString("command_path", previousCommandPath) else editor.remove("command_path")
@@ -105,17 +111,30 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
     }
 
     /**
-     * Seeds the exact pre-materializer representation: a Terminal row whose
-     * command carries no Terminal-owned metadata, plus the matching prior-format
-     * carrier and fingerprint.
+     * Seeds a persisted Terminal row plus its matching carrier directly, in the
+     * exact prior representation.
+     *
+     * [formatGeneration] is the carrier's dispatch format generation.  The
+     * default is the pre-materializer generation, because these cases model
+     * state that already existed before the current writer ran.
      */
     private suspend fun seedLegacyTerminal(
         command: String,
         withCarrier: Boolean = true,
+        formatGeneration: Long = TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
     ): Pair<Long, WorkManagerHandoffCarrier?> {
         val terminalId = database.terminalDao.insert(TerminalItem(command = command))
         terminals += terminalId
         if (!withCarrier) return terminalId to null
+        val carrier = seedCarrier(terminalId, command, formatGeneration)
+        return terminalId to carrier
+    }
+
+    private suspend fun seedCarrier(
+        terminalId: Long,
+        command: String,
+        formatGeneration: Long,
+    ): WorkManagerHandoffCarrier {
         val now = System.currentTimeMillis()
         val handoffId = UUID.randomUUID().toString()
         val carrier = WorkManagerHandoffCarrier(
@@ -128,14 +147,19 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
             confirmedUrl = command,
             decision = "EXECUTE",
             configFingerprint = WorkManagerHandoffRecovery.terminalCommandFingerprint(command),
-            sourceConfigurationGeneration = 1L,
+            sourceConfigurationGeneration = formatGeneration,
             boundary = terminalId.toString(),
             createdAt = now,
             updatedAt = now,
         )
         assertTrue(database.workManagerHandoffCarrierDao.insert(carrier) != -1L)
-        return terminalId to carrier
+        return carrier
     }
+
+    /** The literal marker bytes a pre-materializer user command could contain. */
+    private fun historicalMarker(vararg parts: String): String =
+        (listOf(TerminalCommandMetadata.renderCommandFormat()) + parts)
+            .joinToString(" ")
 
     private suspend fun isCurrentRequest(
         terminalId: Long,
@@ -334,7 +358,7 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
             confirmedUrl = durableCommand,
             decision = "EXECUTE",
             configFingerprint = WorkManagerHandoffRecovery.terminalCommandFingerprint(durableCommand),
-            sourceConfigurationGeneration = 1L,
+            sourceConfigurationGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
             boundary = terminalId.toString(),
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis(),
@@ -380,7 +404,7 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
             confirmedUrl = durableCommand,
             decision = "EXECUTE",
             configFingerprint = WorkManagerHandoffRecovery.terminalCommandFingerprint(durableCommand),
-            sourceConfigurationGeneration = 1L,
+            sourceConfigurationGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
             boundary = terminalId.toString(),
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis(),
@@ -437,19 +461,287 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
     fun durableClassificationDistinguishesPersistedGenerations() {
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.Ambiguous,
-            TerminalCommandMetadata.classifyDurable("https://example.com/video"),
+            TerminalCommandMetadata.classifyDurable(
+                "https://example.com/video",
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
         )
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.SelfBound,
             TerminalCommandMetadata.classifyDurable(
                 "--ytdlnisx-terminal-provider-destination=$providerC https://example.com/video",
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
             ),
         )
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.CurrentFormat,
             TerminalCommandMetadata.classifyDurable(
                 TerminalCommandMetadata.renderCommandFormat() + " https://example.com/video",
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
             ),
+        )
+    }
+
+    /**
+     * A. Historical exact-marker collision.
+     *
+     * A generation-1 row whose user command literally contains the marker bytes
+     * is not a current-format row.  Its identity fields all agree, so only the
+     * durable generation proof can refuse it, and it must never acquire the
+     * current provider B.
+     */
+    @Test
+    fun historicalExactMarkerRowIsNotMistakenForCurrentFormat(): Unit = runBlocking {
+        val command = historicalMarker("https://example.com/video-collision")
+        val (terminalId, carrier) = seedLegacyTerminal(command)
+        requireNotNull(carrier)
+        useConfiguredProvider(providerB)
+
+        // The command really does carry the marker bytes, and its generation-1
+        // carrier is exactly the durable proof that must be refused.
+        assertTrue(TerminalCommandMetadata.strip(command).currentFormat)
+        assertEquals(TerminalCommandMetadata.LEGACY_FORMAT_GENERATION, carrier.sourceConfigurationGeneration)
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.Ambiguous,
+            TerminalCommandMetadata.classifyDurable(
+                command,
+                carrier.sourceConfigurationGeneration,
+            ),
+        )
+        assertFalse(
+            "a historical exact-marker row must never be admitted",
+            isCurrentRequest(terminalId, carrier),
+        )
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        settleEnqueueWindow()
+        assertTrue("no request may be enqueued for the collision row", enqueued.isEmpty())
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                terminalId.toString(),
+            ),
+        )
+        // The user's own text is preserved, marker bytes included.
+        assertEquals(command, database.terminalDao.getTerminalById(terminalId)?.command)
+    }
+
+    /**
+     * B. Historical marker plus exact provider metadata stays self-bound.
+     */
+    @Test
+    fun historicalMarkerWithExactProviderMetadataStaysRunnable(): Unit = runBlocking {
+        val command = historicalMarker(
+            TerminalProviderDestinationOption.render(providerC),
+            "https://example.com/video-marker-provider",
+        )
+        val (terminalId, carrier) = seedLegacyTerminal(command)
+        requireNotNull(carrier)
+        useConfiguredProvider(providerB)
+
+        assertTrue(
+            "explicit provider metadata is independent self-bound authority",
+            isCurrentRequest(terminalId, carrier),
+        )
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+        assertTrue(
+            enqueued.any { it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == command },
+        )
+        // The later preference B does not redirect it.
+        assertEquals(
+            providerC,
+            TerminalCommandMetadata.strip(command).providerTreeUri,
+        )
+    }
+
+    /**
+     * C. Historical marker plus a valid authored native home stays self-bound.
+     */
+    @Test
+    fun historicalMarkerWithAuthoredNativeHomeStaysRunnable(): Unit = runBlocking {
+        val command = historicalMarker(
+            "-P /storage/emulated/0/LegacyCommand",
+            "https://example.com/video-marker-native",
+        )
+        val (terminalId, carrier) = seedLegacyTerminal(command)
+        requireNotNull(carrier)
+        useConfiguredProvider(providerB)
+
+        assertTrue(
+            "an authored native home is independent self-bound authority",
+            isCurrentRequest(terminalId, carrier),
+        )
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+        assertTrue(
+            enqueued.any { it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == command },
+        )
+        // The configured provider was never injected as competing authority.
+        assertEquals(null, TerminalCommandMetadata.strip(command).providerTreeUri)
+    }
+
+    /**
+     * F. Missing-carrier marker-only historical row.
+     *
+     * Without a current-generation carrier there is no independent generation
+     * proof, so marker text alone must not synthesize a runnable carrier.
+     */
+    @Test
+    fun markerOnlyRowWithoutCurrentGenerationCarrierIsNotReconstructed(): Unit = runBlocking {
+        val command = historicalMarker("https://example.com/video-no-carrier")
+        val (terminalId, _) = seedLegacyTerminal(command, withCarrier = false)
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        settleEnqueueWindow()
+
+        assertTrue(enqueued.isEmpty())
+        assertNull(
+            "no runnable carrier may be synthesized from marker text alone",
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                terminalId.toString(),
+            ),
+        )
+        assertNotNull(database.terminalDao.getTerminalById(terminalId))
+    }
+
+    /**
+     * G/H. A genuine current-format owner keeps its dispatch format generation
+     * and exact authority, and a generation-1 carrier can never be that owner.
+     */
+    @Test
+    fun currentGenerationOwnerIsExactAndLegacyGenerationNeverReachesIt(): Unit = runBlocking {
+        useConfiguredProvider(providerA)
+        val durableCommand = TerminalCommandIntentMaterializer.materialize(
+            "https://example.com/video-current-gen",
+            providerA,
+        )
+        val (terminalId, carrier) = seedLegacyTerminal(
+            command = durableCommand,
+            formatGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+        )
+        requireNotNull(carrier)
+        useConfiguredProvider(providerB)
+
+        // The command carries the marker bytes, but a generation-1 carrier
+        // cannot prove current format.  It keeps only the authority its own text
+        // carries: here the explicit provider A, so it stays self-bound to A and
+        // is never treated as a current-format row.
+        assertTrue(TerminalCommandMetadata.strip(durableCommand).currentFormat)
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                durableCommand,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.CurrentFormat,
+            TerminalCommandMetadata.classifyDurable(
+                durableCommand,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            ),
+        )
+        assertEquals(
+            TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            carrier.sourceConfigurationGeneration,
+        )
+        assertTrue(
+            "a genuine current-format owner is exact and runnable",
+            isCurrentRequest(terminalId, carrier),
+        )
+        assertTrue(durableCommand.contains(providerA))
+        assertFalse(durableCommand.contains(providerB))
+
+        // The same generation-1 command keeps only its own bound authority, so a
+        // stale generation never reaches current-format status and never adopts
+        // the later preference B.
+        val staleProviderTerminal = database.terminalDao.insert(
+            TerminalItem(command = durableCommand),
+        )
+        terminals += staleProviderTerminal
+        val staleProviderCarrier = seedCarrier(
+            staleProviderTerminal,
+            durableCommand,
+            TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+        )
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                durableCommand,
+                staleProviderCarrier.sourceConfigurationGeneration,
+            ),
+        )
+        assertTrue(
+            "a self-bound generation-1 row keeps running against its own provider A",
+            isCurrentRequest(staleProviderTerminal, staleProviderCarrier),
+        )
+
+        // A marker-only raw/default command is the case that depends entirely on
+        // the generation proof: without it there is no authority at all.
+        val rawCommand = TerminalCommandIntentMaterializer.materialize(
+            "https://example.com/video-stale-generation",
+            "/storage/emulated/0/YTDLnisX/Command",
+        )
+        val staleRawTerminal = database.terminalDao.insert(TerminalItem(command = rawCommand))
+        terminals += staleRawTerminal
+        val staleRawCarrier = seedCarrier(
+            staleRawTerminal,
+            rawCommand,
+            TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+        )
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.Ambiguous,
+            TerminalCommandMetadata.classifyDurable(
+                rawCommand,
+                staleRawCarrier.sourceConfigurationGeneration,
+            ),
+        )
+        assertFalse(
+            "a generation-1 marker-only row must never become authoritative",
+            isCurrentRequest(staleRawTerminal, staleRawCarrier),
+        )
+    }
+
+    /**
+     * I. An execution already owned by TerminalExecutionRecovery is skipped by
+     * reconciliation and is neither replanned nor corrupted.
+     */
+    @Test
+    fun existingExecutionWitnessIsNotReplannedByTheGenerationCheck(): Unit = runBlocking {
+        val command = TerminalCommandIntentMaterializer.materialize(
+            "https://example.com/video-witness",
+            providerA,
+        )
+        val (terminalId, _) = seedLegacyTerminal(
+            command = command,
+            formatGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+        )
+        useConfiguredProvider(providerB)
+        assertFalse(TerminalExecutionRecovery.hasRecordFile(context, terminalId))
+
+        // An admitted execution already owns this Terminal.
+        assertTrue(
+            TerminalExecutionRecovery.begin(
+                context = context,
+                subjectId = terminalId,
+                executionToken = "$terminalId-witness",
+                processId = "terminal:$terminalId",
+            ),
+        )
+        assertTrue(TerminalExecutionRecovery.hasRecordFile(context, terminalId))
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        settleEnqueueWindow()
+
+        // Reconciliation leaves an execution-owned Terminal alone, so the
+        // generation check never replans or re-dispatches it.
+        assertTrue("an execution-owned Terminal must not be re-dispatched", enqueued.isEmpty())
+        assertNotNull(
+            "the execution witness must survive",
+            TerminalExecutionRecovery.read(context, terminalId),
         )
     }
 }

@@ -225,11 +225,27 @@ internal object WorkManagerHandoffRecovery {
 
     private fun terminalWorkName(terminalId: Long): String = terminalId.toString()
 
+    /**
+     * Stages the current-format Terminal dispatch owner in the caller's Room
+     * transaction, recording the dispatch format generation this writer proves.
+     */
+    internal suspend fun stageTerminalDispatchWithinTransaction(
+        db: DBManager,
+        terminalId: Long,
+        command: String,
+    ): String = stageTerminalDispatchWithinTransaction(
+        db = db,
+        terminalId = terminalId,
+        command = command,
+        formatGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+    )
+
     /** Stages the exact Terminal dispatch owner in the caller's Room transaction. */
     internal suspend fun stageTerminalDispatchWithinTransaction(
         db: DBManager,
         terminalId: Long,
         command: String,
+        formatGeneration: Long,
     ): String {
         require(terminalId > 0L)
         val carrierDao = db.workManagerHandoffCarrierDao
@@ -256,7 +272,11 @@ internal object WorkManagerHandoffRecovery {
             confirmedUrl = command,
             decision = TERMINAL_DISPATCH_DECISION,
             configFingerprint = terminalCommandFingerprint(command),
-            sourceConfigurationGeneration = 1L,
+            // Dispatch format generation is the durable proof that this writer
+            // created the command.  It is recorded here, in the app-written
+            // carrier, because the command text itself is user-controlled and
+            // could already contain the format marker bytes.
+            sourceConfigurationGeneration = formatGeneration,
             boundary = boundary,
             createdAt = now,
             updatedAt = now,
@@ -403,14 +423,21 @@ internal object WorkManagerHandoffRecovery {
             generationId.isBlank() || boundary != terminalId.toString() ||
             commandFingerprint.isBlank() || requestId != workRequestId
         ) return false
+        val db = database(context)
+        val carrier = db.workManagerHandoffCarrierDao.get(handoffId) ?: return false
         // Final execution gate.  A command with no durable destination authority
         // is refused here even when every identity field matches, because
         // matching identities over an incomplete record prove nothing about the
-        // original provider.  The planner would otherwise resolve the current
-        // preference and publish this old Terminal to a newer archive.
-        if (!hasDurableTerminalOutputAuthority(command)) return false
-        val db = database(context)
-        val carrier = db.workManagerHandoffCarrierDao.get(handoffId) ?: return false
+        // original provider.  The carrier's own dispatch format generation is
+        // the durable proof, so it is read here rather than inferred from the
+        // command.  The planner would otherwise resolve the current preference
+        // and publish this old Terminal to a newer archive.
+        if (
+            !hasDurableTerminalOutputAuthority(
+                carrier.confirmedUrl,
+                carrier.sourceConfigurationGeneration,
+            )
+        ) return false
         if (
             carrier.kind != WorkManagerHandoffCarrier.TERMINAL_DISPATCH ||
             carrier.sourceId != terminalId ||
@@ -1172,10 +1199,16 @@ internal object WorkManagerHandoffRecovery {
                             )
                         // A persisted command with no durable destination
                         // authority is never given a runnable carrier, and any
-                        // outstanding owner is revoked instead. The row and its
-                        // command/log are preserved: this is a non-runnable
-                        // disposition, not a deletion.
-                        if (!hasDurableTerminalOutputAuthority(terminal.command)) {
+                        // outstanding owner is revoked instead.  With no
+                        // outstanding carrier there is no independent dispatch
+                        // format generation proof, so the row is judged as
+                        // pre-materializer state and marker text alone cannot
+                        // synthesize current authority.  The row, command and
+                        // log are preserved: a non-runnable disposition, not a
+                        // deletion.
+                        val provenGeneration = current?.sourceConfigurationGeneration
+                            ?: TerminalCommandMetadata.LEGACY_FORMAT_GENERATION
+                        if (!hasDurableTerminalOutputAuthority(terminal.command, provenGeneration)) {
                             current?.let {
                                 db.workManagerHandoffCarrierDao.markSuperseded(
                                     it.handoffId,
@@ -1192,7 +1225,6 @@ internal object WorkManagerHandoffRecovery {
                                 it.uniqueWorkName == terminalWorkName(terminal.id) &&
                                 it.boundary == boundary &&
                                 it.decision == TERMINAL_DISPATCH_DECISION &&
-                                it.sourceConfigurationGeneration == 1L &&
                                 it.confirmedUrl == terminal.command &&
                                 it.configFingerprint == terminalCommandFingerprint(terminal.command)
                         } == true
@@ -1211,6 +1243,11 @@ internal object WorkManagerHandoffRecovery {
                                     db,
                                     terminal.id,
                                     terminal.command,
+                                    // A reconstructed carrier cannot claim the
+                                    // current dispatch format generation: this
+                                    // writer did not create that command, and
+                                    // command text is not proof.
+                                    TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
                                 ),
                             )
                         }
@@ -1518,10 +1555,15 @@ internal object WorkManagerHandoffRecovery {
             carrier.uniqueWorkName == terminalWorkName(carrier.sourceId) &&
             carrier.generationId.isNotBlank() &&
             carrier.decision == TERMINAL_DISPATCH_DECISION &&
-            carrier.sourceConfigurationGeneration == 1L &&
             carrier.confirmedUrl == terminal.command &&
             carrier.configFingerprint == terminalCommandFingerprint(terminal.command) &&
-            hasDurableTerminalOutputAuthority(terminal.command)
+            // The carrier's own dispatch format generation is the durable
+            // generation proof.  A historical command carrying the marker bytes
+            // cannot reach current format through it.
+            hasDurableTerminalOutputAuthority(
+                terminal.command,
+                carrier.sourceConfigurationGeneration,
+            )
     }
 
     /**
@@ -1534,9 +1576,36 @@ internal object WorkManagerHandoffRecovery {
      * unrecoverable from the row and carrier. Such a command is internally
      * consistent and still incomplete, so it must never become runnable: the
      * current preference is not evidence of its original authority.
+     *
+     * Convergence ownership for a retained non-runnable Terminal:
+     *
+     * - durable carrier: the `terminalDownloads` row keeps the exact user
+     *   command and log, and the outstanding TERMINAL_DISPATCH carrier is
+     *   superseded rather than deleted;
+     * - discovery/wakeup owner: [reconcile] on application startup, through
+     *   `reconcileTerminalDispatches`;
+     * - finite convergence outcomes: an execution-owned Terminal converges
+     *   through [TerminalExecutionRecovery]; a self-bound legacy Terminal is
+     *   reconstructed at the legacy dispatch format generation and runs; an
+     *   ambiguous Terminal is never dispatched again;
+     * - process death: the disposition is re-derived on the next startup and is
+     *   stable, because no runnable carrier is ever created for it;
+     * - retry/reconfigure meaning: retry cannot help, and changing
+     *   `command_path` cannot help either, because the original provider is not
+     *   recoverable from durable state.
+     *
+     * The product contract is therefore explicit: this state is intentionally
+     * permanent and user-gated. The user's command and log are preserved, and
+     * the existing Terminal cancel/delete path is the only way to retire the
+     * row. This is a safety fence over unrecoverable authority, not a
+     * completion path, and it must not be presented as full closure of the
+     * underlying finding.
      */
-    private fun hasDurableTerminalOutputAuthority(command: String): Boolean =
-        when (TerminalCommandMetadata.classifyDurable(command)) {
+    private fun hasDurableTerminalOutputAuthority(
+        command: String,
+        formatGeneration: Long,
+    ): Boolean =
+        when (TerminalCommandMetadata.classifyDurable(command, formatGeneration)) {
             TerminalCommandMetadata.DurableAuthority.CurrentFormat -> true
             TerminalCommandMetadata.DurableAuthority.SelfBound -> true
             TerminalCommandMetadata.DurableAuthority.Ambiguous -> {

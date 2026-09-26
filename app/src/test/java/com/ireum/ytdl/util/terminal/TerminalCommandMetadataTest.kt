@@ -35,7 +35,10 @@ class TerminalCommandMetadataTest {
 
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.CurrentFormat,
-            TerminalCommandMetadata.classifyDurable(durable),
+            TerminalCommandMetadata.classifyDurable(
+                durable,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            ),
         )
     }
 
@@ -51,7 +54,10 @@ class TerminalCommandMetadataTest {
 
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.CurrentFormat,
-            TerminalCommandMetadata.classifyDurable(durable),
+            TerminalCommandMetadata.classifyDurable(
+                durable,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            ),
         )
     }
 
@@ -59,7 +65,92 @@ class TerminalCommandMetadataTest {
     fun preMaterializerCommandWithoutAnyAuthorityIsAmbiguous() {
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.Ambiguous,
-            TerminalCommandMetadata.classifyDurable(command),
+            TerminalCommandMetadata.classifyDurable(
+                command,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+    }
+
+    /**
+     * The marker lives in user-controlled command text, so on its own it is
+     * never proof that this writer created the row.
+     */
+    @Test
+    fun markerBytesOnALegacyGenerationAreNotProofOfTheCurrentFormat() {
+        val historicalMarker =
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}=${TerminalCommandMetadata.CURRENT_FORMAT} " +
+                command
+
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.Ambiguous,
+            TerminalCommandMetadata.classifyDurable(
+                historicalMarker,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+    }
+
+    @Test
+    fun markerTextNeitherUpgradesNorDestroysLegacySelfBoundAuthority() {
+        val historicalMarker =
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}=${TerminalCommandMetadata.CURRENT_FORMAT} "
+
+        // Marker text on a generation-1 carrier is not current format, so it can
+        // never be the generation proof by itself.
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.Ambiguous,
+            TerminalCommandMetadata.classifyDurable(
+                historicalMarker + command,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+        // The very same marker plus its own exact provider authority stays
+        // self-bound, so generation is not a blanket consistency requirement.
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                historicalMarker + TerminalProviderDestinationOption.render(providerC) + " $command",
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+        // And the current generation does make the same marker current format.
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.CurrentFormat,
+            TerminalCommandMetadata.classifyDurable(
+                historicalMarker + command,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            ),
+        )
+    }
+
+    @Test
+    fun legacyMarkerWithExactProviderMetadataStaysSelfBound() {
+        val historical =
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}=${TerminalCommandMetadata.CURRENT_FORMAT} " +
+                "${TerminalProviderDestinationOption.render(providerC)} $command"
+
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                historical,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+    }
+
+    @Test
+    fun legacyMarkerWithAuthoredNativeHomeStaysSelfBound() {
+        val historical =
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}=${TerminalCommandMetadata.CURRENT_FORMAT} " +
+                "-P /storage/emulated/0/Custom $command"
+
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                historical,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
         )
     }
 
@@ -69,7 +160,10 @@ class TerminalCommandMetadataTest {
 
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.SelfBound,
-            TerminalCommandMetadata.classifyDurable(legacy),
+            TerminalCommandMetadata.classifyDurable(
+                legacy,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
         )
         assertEquals(providerC, TerminalCommandMetadata.strip(legacy).providerTreeUri)
     }
@@ -80,7 +174,10 @@ class TerminalCommandMetadataTest {
 
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.SelfBound,
-            TerminalCommandMetadata.classifyDurable(legacy),
+            TerminalCommandMetadata.classifyDurable(
+                legacy,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
         )
     }
 
@@ -93,7 +190,10 @@ class TerminalCommandMetadataTest {
         assertFalse(TerminalCommandMetadata.strip(foreign).currentFormat)
         assertEquals(
             TerminalCommandMetadata.DurableAuthority.Ambiguous,
-            TerminalCommandMetadata.classifyDurable(foreign),
+            TerminalCommandMetadata.classifyDurable(
+                foreign,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            ),
         )
     }
 
