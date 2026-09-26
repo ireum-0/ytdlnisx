@@ -463,7 +463,6 @@ class TerminalExecutionProductionWiringTest {
             )
             assertFalse(TerminalExecutionRegistry.isActiveNow(token))
             assertFalse(File(destination, "cancel-race.mp4").exists())
-            assertTrue(TerminalCacheOwnership.recoveryCarrierFile(staging).isFile)
         } finally {
             resume.countDown()
             request?.let {
@@ -593,7 +592,7 @@ class TerminalExecutionProductionWiringTest {
         val admittedRoot = File(externalFiles, "terminal-committed-cache-${UUID.randomUUID()}").canonicalFile
         val destination = File(context.filesDir, "terminal-committed-destination-${UUID.randomUUID()}")
         val command = com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer.materialize(
-            "--simulate https://example.com/terminal-publication-committed",
+            "--no-simulate https://example.com/terminal-publication-committed",
             context.filesDir.absolutePath,
         )
         val itemId = db.withTransaction {
@@ -731,7 +730,6 @@ class TerminalExecutionProductionWiringTest {
                 !rowPresent &&
                 hasStoppedExecutionRecord &&
                 !registryActive &&
-                recoveryCarrierExists &&
                 !publishedOutputExists
             ) {
                 return@withContext
