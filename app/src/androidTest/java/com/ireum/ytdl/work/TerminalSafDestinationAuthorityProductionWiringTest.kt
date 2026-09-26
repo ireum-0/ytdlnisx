@@ -327,6 +327,184 @@ class TerminalSafDestinationAuthorityProductionWiringTest {
         }
 
     /**
+     * A. A configured provider is snapshotted into the exact durable Terminal
+     * command, so a later preference change cannot redirect it.
+     */
+    @Test
+    fun configuredProviderIsDurablyBoundAndSurvivesAChangeToB(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        val userCommand = "https://example.com/video-ab"
+        preferences.edit().putString("command_path", providerTreeUri).commit()
+
+        val terminalId = viewModel.insert(TerminalItem(command = userCommand))
+        val row = requireNotNull(database.terminalDao.getTerminalById(terminalId))
+        val carrier = requireNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                terminalId.toString(),
+            ),
+        )
+
+        // The configured provider became part of the exact durable identity.
+        val durableCommand = row.command
+        assertTrue(
+            "durable row must bind the configured provider: $durableCommand",
+            durableCommand.contains(providerTreeUri),
+        )
+        assertEquals(durableCommand, carrier.confirmedUrl)
+        assertTrue(carrier.confirmedUrl.contains(providerTreeUri))
+
+        // The user command is preserved; only the destination was materialized.
+        assertTrue(durableCommand.contains(userCommand))
+
+        // Later, the configured preference moves to a different provider tree.
+        preferences.edit().putString("command_path", otherProviderTreeUri).commit()
+
+        // Reconstructing T1 from its stored command after a restart still plans
+        // the original provider, stages, and publishes to it.
+        val plan = plan(durableCommand, taskId = "task-ab")
+        assertStagesToAppOwnedRoot(plan)
+        assertNoReconstructedProviderPath(plan)
+        assertEquals(providerTreeUri, plan.downloadLocation)
+    }
+
+    /**
+     * B. A Terminal created after the change binds the new provider, while the
+     * earlier one keeps its own.
+     */
+    @Test
+    fun laterTerminalBindsTheNewProviderWhileTheEarlierOneKeepsItsOwn(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        preferences.edit().putString("command_path", providerTreeUri).commit()
+        val firstId = viewModel.insert(TerminalItem(command = "https://example.com/video-first"))
+
+        preferences.edit().putString("command_path", otherProviderTreeUri).commit()
+        val secondId = viewModel.insert(TerminalItem(command = "https://example.com/video-second"))
+
+        val firstCommand = requireNotNull(database.terminalDao.getTerminalById(firstId)).command
+        val secondCommand = requireNotNull(database.terminalDao.getTerminalById(secondId)).command
+
+        assertTrue(firstCommand.contains(providerTreeUri))
+        assertFalse(firstCommand.contains(otherProviderTreeUri))
+        assertTrue(secondCommand.contains(otherProviderTreeUri))
+
+        // Each intent still publishes to its own bound authority.
+        assertEquals(providerTreeUri, plan(firstCommand, taskId = "task-b1").downloadLocation)
+        assertEquals(otherProviderTreeUri, plan(secondCommand, taskId = "task-b2").downloadLocation)
+    }
+
+    /**
+     * C. A manual authored native -P keeps governing output and never gains the
+     * configured provider as effective output intent.
+     */
+    @Test
+    fun authoredNativeDestinationIsNotOverriddenByTheConfiguredProvider(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        val rawCommand = "-P $rawDestination https://example.com/video-authored"
+        preferences.edit().putString("command_path", providerTreeUri).commit()
+
+        val terminalId = viewModel.insert(TerminalItem(command = rawCommand))
+        val durableCommand = requireNotNull(database.terminalDao.getTerminalById(terminalId)).command
+
+        // The configured provider is not injected as competing authority.
+        assertFalse(durableCommand.contains(providerTreeUri))
+        assertTrue(durableCommand.contains(rawDestination))
+
+        val expected = File(rawDestination).canonicalFile
+        val plan = plan(durableCommand, taskId = "task-c")
+        assertFalse(plan.usesAppCache)
+        assertTrue(plan.requestOptions.none { it.name == "-P" })
+        assertEquals(expected, File(plan.downloadLocation).canonicalFile)
+    }
+
+    /**
+     * D. A Folder-picked provider selection outranks the configured default and
+     * is never replaced by it.
+     */
+    @Test
+    fun folderSelectionIsNotReplacedByTheConfiguredProvider(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        val thirdProviderTreeUri =
+            "content://com.android.externalstorage.documents/tree/primary%3AFolderPicked"
+        val pickedCommand =
+            TerminalProviderDestinationOption.render(thirdProviderTreeUri) +
+                " https://example.com/video-folder"
+        preferences.edit().putString("command_path", providerTreeUri).commit()
+
+        val terminalId = viewModel.insert(TerminalItem(command = pickedCommand))
+        val durableCommand = requireNotNull(database.terminalDao.getTerminalById(terminalId)).command
+
+        assertEquals(pickedCommand, durableCommand)
+        assertFalse(durableCommand.contains(providerTreeUri))
+
+        // A later configured change still cannot redirect the Folder selection.
+        preferences.edit().putString("command_path", otherProviderTreeUri).commit()
+        assertEquals(thirdProviderTreeUri, plan(durableCommand, taskId = "task-d2").downloadLocation)
+    }
+
+    /**
+     * E. The same user command bound to different providers is a different exact
+     * durable identity, and a stale request is never accepted as the new owner.
+     */
+    @Test
+    fun providerBindingProducesDistinctDurableIdentitiesAndRefusesStaleOwnership(): Unit =
+        runBlocking {
+            val viewModel = TerminalViewModel(context, database, true)
+            val userCommand = "https://example.com/video-identity"
+
+            preferences.edit().putString("command_path", providerTreeUri).commit()
+            val firstId = viewModel.insert(TerminalItem(command = userCommand))
+            val firstCarrier = requireNotNull(
+                database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    firstId.toString(),
+                ),
+            )
+
+            preferences.edit().putString("command_path", otherProviderTreeUri).commit()
+            val secondId = viewModel.insert(TerminalItem(command = userCommand))
+            val secondCarrier = requireNotNull(
+                database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    secondId.toString(),
+                ),
+            )
+
+            // The same user command yields different durable identities.
+            assertTrue(firstCarrier.configFingerprint != secondCarrier.configFingerprint)
+            assertTrue(firstCarrier.confirmedUrl != secondCarrier.confirmedUrl)
+
+            // The old A-bound owner is still exact for its own Terminal...
+            assertTrue(
+                WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
+                    context = context,
+                    terminalId = firstId,
+                    command = firstCarrier.confirmedUrl,
+                    handoffId = firstCarrier.handoffId,
+                    requestId = firstCarrier.requestId,
+                    generationId = firstCarrier.generationId,
+                    boundary = firstCarrier.boundary,
+                    commandFingerprint = firstCarrier.configFingerprint,
+                    workRequestId = firstCarrier.requestId,
+                ),
+            )
+            // ...but it can never be accepted as the B-bound owner.
+            assertFalse(
+                WorkManagerHandoffRecovery.isCurrentTerminalDispatchRequest(
+                    context = context,
+                    terminalId = secondId,
+                    command = secondCarrier.confirmedUrl,
+                    handoffId = firstCarrier.handoffId,
+                    requestId = firstCarrier.requestId,
+                    generationId = firstCarrier.generationId,
+                    boundary = firstCarrier.boundary,
+                    commandFingerprint = firstCarrier.configFingerprint,
+                    workRequestId = firstCarrier.requestId,
+                ),
+            )
+        }
+
+    /**
      * H. Provider publication composition.
      *
      * A provider plan stages into the app-owned root and keeps the exact URI as

@@ -3,12 +3,15 @@
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.preference.PreferenceManager
 import androidx.room.withTransaction
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.dao.TerminalDao
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.util.NotificationUtil
+import com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.work.TerminalCancellationCoordinator
 import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import kotlinx.coroutines.Dispatchers
@@ -46,14 +49,27 @@ class TerminalViewModel private constructor(
     }
 
     suspend fun insert(item: TerminalItem) : Long = withContext(Dispatchers.IO) {
+        // Materialize the configured provider authority into the exact durable
+        // command BEFORE the row and its dispatch carrier are staged.  Planning
+        // resolves the destination much later, after durable admission, so a
+        // configured provider that was never part of the command would let a
+        // later command_path change redirect this already-durable Terminal.
+        val materialized = TerminalCommandIntentMaterializer.materialize(
+            command = item.command,
+            configuredCommandPath = TerminalCommandPlanFactory.configuredDestination(
+                PreferenceManager.getDefaultSharedPreferences(application),
+            ),
+        )
+        val durableItem =
+            if (materialized == item.command) item else item.copy(command = materialized)
         RestoreMutationAdmission.withOrdinaryMutation(application) {
             dbManager.withTransaction {
-                val terminalId = dao.insert(item)
+                val terminalId = dao.insert(durableItem)
                 check(terminalId > 0L) { "Terminal insert did not return a durable id" }
                 WorkManagerHandoffRecovery.stageTerminalDispatchWithinTransaction(
                     db = dbManager,
                     terminalId = terminalId,
-                    command = item.command,
+                    command = durableItem.command,
                 )
                 terminalId
             }

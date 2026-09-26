@@ -351,6 +351,17 @@ object TerminalCommandPlanner {
 }
 
 object TerminalCommandPlanFactory {
+    /**
+     * The exact persisted configured Terminal destination value.
+     *
+     * Both durable command materialization and planning read the configured
+     * destination through this one definition, so they can never disagree
+     * about which preference key or default the Terminal uses.
+     */
+    fun configuredDestination(preferences: SharedPreferences): String =
+        preferences.getString("command_path", FileUtil.getDefaultCommandPath())
+            ?: FileUtil.getDefaultCommandPath()
+
     fun create(
         context: Context,
         preferences: SharedPreferences,
@@ -359,10 +370,7 @@ object TerminalCommandPlanFactory {
         /** Optional execution-bound raw cache authority. */
         cacheRoot: File? = null,
     ): TerminalCommandPlan {
-        val downloadLocation = preferences.getString(
-            "command_path",
-            FileUtil.getDefaultCommandPath()
-        ) ?: FileUtil.getDefaultCommandPath()
+        val downloadLocation = configuredDestination(preferences)
         val useCookies = preferences.getBoolean("use_cookies", false)
         var cookiePath: String? = null
         if (useCookies) {
