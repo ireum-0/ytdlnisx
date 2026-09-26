@@ -1,34 +1,44 @@
 package com.ireum.ytdl.util.storage
 
 import android.content.Context
-import android.net.Uri
 import com.google.gson.Gson
 import java.io.File
 import java.security.MessageDigest
 
 /**
- * Durable evidence that a provider-backed archive promotion is unresolved.
+ * Durable evidence for one download-archive generation and the exact configured
+ * authority it is allowed to promote into.
  *
  * A SAF provider may partially truncate or rewrite the authoritative document
  * and then fail.  The document can remain readable while holding only part of
  * the intended contents, so a readable provider is not proof of a complete
- * archive.  This fence is written durably before any destructive provider
- * replacement and survives process death, which lets ordinary duplicate
- * admission fail closed until recovery verifies the provider again.
+ * archive.  A record with [promotionUnresolved] is written durably before any
+ * destructive provider replacement and survives process death, which lets
+ * ordinary duplicate admission fail closed until recovery verifies the provider
+ * again.
  *
- * Only provider authority is fenced.  Raw app-owned archives are replaced
- * atomically, so their existing durability boundary is unchanged.
+ * The same record binds the exact authority identity the generation was created
+ * under, and it is written when the generation takes responsibility, before its
+ * private archive can carry any promotion debt.  Recovery of a surviving
+ * generation therefore resolves its target from that durable identity rather
+ * than from the current preference, so a later `download_archive_path` change
+ * cannot redirect old debt onto a newly selected archive.
+ *
+ * Only provider authority is fenced.  A raw app-owned archive is replaced
+ * atomically, so its existing durability boundary is unchanged; a raw
+ * generation is still bound, because a raw path can be reconfigured too.
  */
 internal data class DownloadArchiveProviderFenceRecord(
     val version: Int = SCHEMA_VERSION,
-    val authorityKey: String = "",
+    val generationKey: String = "",
+    val authorityIdentity: String = "",
+    val promotionUnresolved: Boolean = false,
     val downloadId: Long = 0L,
     val executionId: String = "",
-    val generationKey: String = "",
     val createdAt: Long = 0L,
 ) {
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
     }
 }
 
@@ -39,70 +49,103 @@ internal object DownloadArchiveProviderFence {
     private val gson = Gson()
     private val lock = Any()
 
-    /** Stable identity for one provider promotion responsibility. */
-    fun authorityKey(treeUri: Uri): String = "saf:${treeUri}"
-
     /**
-     * True while any promotion against this configured authority is
-     * unresolved.  An unreadable or corrupt fence still counts: unknown fence
-     * state must never be read as a resolved provider.
+     * True while a recorded promotion against this exact configured authority
+     * is unresolved.
+     *
+     * A binding-only record carries no unresolved promotion, so it withholds
+     * nothing.  A record that cannot be read, or that does not describe its own
+     * generation, cannot be attributed to any authority at all, and unknown
+     * fence state must never be read as a resolved provider.
      */
     fun isUnresolved(context: Context, authority: ConfiguredDownloadArchive): Boolean {
-        val treeUri = authority.treeUriOrNull ?: return false
-        return fenceFile(context, treeUri).exists()
-    }
-
-    /** Best-effort fence evidence for recovery. Unreadable is not cleared. */
-    fun read(
-        context: Context,
-        authority: ConfiguredDownloadArchive,
-    ): DownloadArchiveProviderFenceRecord? {
-        val treeUri = authority.treeUriOrNull ?: return null
+        val identity = ConfiguredDownloadArchiveStore.identityKey(authority)
         return synchronized(lock) {
-            runCatching {
-                gson.fromJson(
-                    fenceFile(context, treeUri).readText(Charsets.UTF_8),
-                    DownloadArchiveProviderFenceRecord::class.java,
-                )
-            }.getOrNull()
+            recordFiles(context).any { file ->
+                val record = decode(file)
+                record == null || (record.promotionUnresolved && record.authorityIdentity == identity)
+            }
         }
     }
 
     /**
-     * Makes the unresolved promotion durable.  Callers must invoke this before
-     * the first destructive provider write.
+     * Durable evidence for one exact generation.  A present but unreadable or
+     * incomplete record is reported as corrupt so recovery fails closed rather
+     * than adopting the current preference.
      */
-    fun install(
+    fun readForGeneration(
         context: Context,
+        generationKey: String,
+    ): Result = synchronized(lock) {
+        val file = fenceFile(context, generationKey)
+        if (!file.exists()) return@synchronized Result.MISSING
+        val record = decode(file, generationKey)
+        if (record == null) Result.CORRUPT else Result.Recorded(record)
+    }
+
+    /**
+     * Binds a generation to the exact configured authority it was created
+     * under.  Callers must invoke this before the generation's private archive
+     * can carry promotion debt, so process death can never leave debt whose
+     * recovery authority is known only from a later preference.
+     *
+     * Binding alone withholds nothing; it only fixes the one authority this
+     * generation may ever promote into.
+     */
+    fun bind(
+        context: Context,
+        generationKey: String,
         authority: ConfiguredDownloadArchive,
         downloadId: Long,
         executionId: String,
-        generationKey: String,
     ) {
-        val treeUri = authority.treeUriOrNull ?: return
-        val record = DownloadArchiveProviderFenceRecord(
-            authorityKey = authorityKey(treeUri),
+        // A persisted value that is not a storage authority could never be
+        // honoured on recovery, so it is never bound in the first place.
+        if (authority is ConfiguredDownloadArchive.Unresolved) return
+        write(
+            context = context,
+            generationKey = generationKey,
+            authorityIdentity = ConfiguredDownloadArchiveStore.identityKey(authority),
             downloadId = downloadId,
             executionId = executionId,
-            generationKey = generationKey,
-            createdAt = System.currentTimeMillis(),
+            unresolved = false,
         )
-        synchronized(lock) {
-            DownloadArchiveAuthority.writeDurably(
-                fenceFile(context, treeUri),
-                gson.toJson(record),
-            )
-        }
     }
 
     /**
-     * Retires the fence.  Callers must invoke this only after the provider has
-     * been verified to contain the complete intended contents.
+     * Makes the unresolved promotion against the generation's bound authority
+     * durable.  Callers must invoke this before the first destructive provider
+     * write.
+     *
+     * Only provider authority is fenced; a raw archive is replaced atomically
+     * and keeps its existing durability boundary.
      */
-    fun clear(context: Context, authority: ConfiguredDownloadArchive) {
-        val treeUri = authority.treeUriOrNull ?: return
+    fun install(
+        context: Context,
+        generationKey: String,
+        authority: ConfiguredDownloadArchive,
+        downloadId: Long,
+        executionId: String,
+    ) {
+        if (authority !is ConfiguredDownloadArchive.SafTree) return
+        write(
+            context = context,
+            generationKey = generationKey,
+            authorityIdentity = ConfiguredDownloadArchiveStore.identityKey(authority),
+            downloadId = downloadId,
+            executionId = executionId,
+            unresolved = true,
+        )
+    }
+
+    /**
+     * Retires the record for one exact generation, releasing both the binding
+     * and the fence.  Callers must invoke this only after the provider has been
+     * verified to contain the complete intended contents.
+     */
+    fun clearForGeneration(context: Context, generationKey: String) {
         synchronized(lock) {
-            val file = fenceFile(context, treeUri)
+            val file = fenceFile(context, generationKey)
             if (file.exists()) {
                 check(file.delete() || !file.exists()) {
                     "Could not retire resolved provider archive promotion fence"
@@ -113,21 +156,95 @@ internal object DownloadArchiveProviderFence {
 
     internal fun clearAllForTesting(context: Context) {
         synchronized(lock) {
-            directory(context).listFiles()
-                .orEmpty()
-                .filter { it.name.startsWith(FILE_PREFIX) && it.name.endsWith(FILE_SUFFIX) }
-                .forEach { runCatching { it.delete() } }
+            recordFiles(context).forEach { runCatching { it.delete() } }
         }
     }
 
+    /**
+     * Persists one record durably.  Promotion debt may never be redirected onto
+     * another authority, so an existing unresolved record naming a different
+     * authority is a fail-closed conflict.  A binding-only record carries no
+     * debt, so a generation that never took responsibility may still follow the
+     * current preference.
+     */
+    private fun write(
+        context: Context,
+        generationKey: String,
+        authorityIdentity: String,
+        downloadId: Long,
+        executionId: String,
+        unresolved: Boolean,
+    ) {
+        val file = fenceFile(context, generationKey)
+        synchronized(lock) {
+            val existing = if (file.exists()) {
+                decode(file, generationKey) ?: throw IllegalStateException(
+                    "Refusing to overwrite an unreadable download archive generation record",
+                )
+            } else {
+                null
+            }
+            if (existing != null && existing.promotionUnresolved) {
+                check(existing.authorityIdentity == authorityIdentity) {
+                    "Refusing to rebind a download archive generation that still owes a promotion"
+                }
+            }
+            val record = DownloadArchiveProviderFenceRecord(
+                generationKey = generationKey,
+                authorityIdentity = authorityIdentity,
+                // A later bind never silently downgrades an active fence.
+                promotionUnresolved = unresolved || (existing?.promotionUnresolved ?: false),
+                downloadId = downloadId,
+                executionId = executionId,
+                createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+            )
+            DownloadArchiveAuthority.writeDurably(file, gson.toJson(record))
+        }
+    }
+
+    /**
+     * Reads one record, or `null` when it cannot be trusted.  A record must
+     * carry the current schema, a complete identity, and the very generation key
+     * its own file name is derived from, so a record can never be adopted on
+     * behalf of another generation.
+     */
+    private fun decode(
+        file: File,
+        expectedGenerationKey: String? = null,
+    ): DownloadArchiveProviderFenceRecord? {
+        val record = runCatching {
+            gson.fromJson(
+                file.readText(Charsets.UTF_8),
+                DownloadArchiveProviderFenceRecord::class.java,
+            )
+        }.getOrNull() ?: return null
+        if (record.version != DownloadArchiveProviderFenceRecord.SCHEMA_VERSION) return null
+        if (record.generationKey.isBlank() || record.authorityIdentity.isBlank()) return null
+        if (file.name != fileName(record.generationKey)) return null
+        if (expectedGenerationKey != null && record.generationKey != expectedGenerationKey) return null
+        return record
+    }
+
+    private fun recordFiles(context: Context): List<File> = directory(context).listFiles()
+        .orEmpty()
+        .filter { it.name.startsWith(FILE_PREFIX) && it.name.endsWith(FILE_SUFFIX) }
+
     private fun directory(context: Context): File = File(context.filesDir, DIRECTORY)
 
-    private fun fenceFile(context: Context, treeUri: Uri): File = File(
-        directory(context),
-        "$FILE_PREFIX${digest(authorityKey(treeUri))}$FILE_SUFFIX",
-    )
+    private fun fenceFile(context: Context, generationKey: String): File =
+        File(directory(context), fileName(generationKey))
+
+    private fun fileName(generationKey: String): String =
+        "$FILE_PREFIX${digest(generationKey)}$FILE_SUFFIX"
 
     private fun digest(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { byte -> "%02x".format(byte) }
+
+    /** Durable fence lookup outcome for one exact generation. */
+    internal sealed interface Result {
+        data object MISSING : Result
+        data object CORRUPT : Result
+        data class Recorded(val record: DownloadArchiveProviderFenceRecord) : Result
+    }
 }

@@ -18,6 +18,7 @@ import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchive
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveProvider
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
+import com.ireum.ytdl.util.storage.DownloadArchiveAuthority
 import com.ireum.ytdl.util.storage.DownloadArchiveProviderFence
 import com.ireum.ytdl.util.storage.DownloadArchiveUnavailableException
 import kotlinx.coroutines.runBlocking
@@ -140,10 +141,10 @@ class DownloadQueueArchivePreflightProductionWiringTest {
         assertTrue(authority is ConfiguredDownloadArchive.SafTree)
         DownloadArchiveProviderFence.install(
             context = context,
+            generationKey = DownloadArchiveAuthority.stableKey(90L, "exec-fence"),
             authority = authority,
             downloadId = 90L,
             executionId = "exec-fence",
-            generationKey = "fence-key",
         )
         try {
             val itemId = insertProcessingItem("https://www.youtube.com/watch?v=$MEMBER_ID")
@@ -160,7 +161,10 @@ class DownloadQueueArchivePreflightProductionWiringTest {
                 persisted.lastIssueCode,
             )
         } finally {
-            DownloadArchiveProviderFence.clear(context, authority)
+            DownloadArchiveProviderFence.clearForGeneration(
+                context,
+                DownloadArchiveAuthority.stableKey(90L, "exec-fence"),
+            )
         }
     }
 

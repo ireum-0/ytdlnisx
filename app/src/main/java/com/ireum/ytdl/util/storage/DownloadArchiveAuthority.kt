@@ -16,6 +16,11 @@ import java.security.MessageDigest
  * after the caller has durably committed the app-level primary result, and the
  * private generation is retired only after the configured authority is
  * verified to contain the promoted delta.
+ *
+ * A generation is bound to the exact configured authority it was created under,
+ * and that binding is durable before the private archive can carry any debt.
+ * Promotion therefore always targets the authority the generation was created
+ * against, never whatever `download_archive_path` happens to name later.
  */
 internal object DownloadArchiveAuthority {
     private const val GENERATION_DIRECTORY = "download-archive-generations"
@@ -41,11 +46,44 @@ internal object DownloadArchiveAuthority {
 
     fun prepare(context: Context, downloadId: Long, executionId: String): Generation {
         require(executionId.isNotBlank())
-        val configured = ConfiguredDownloadArchiveStore.resolve(context)
+        val generationKey = stableKey(downloadId, executionId)
         val root = File(context.filesDir, GENERATION_DIRECTORY).canonicalFile
         check(root.exists() || root.mkdirs()) { "Could not create Download archive generation directory" }
-        val privateArchive = File(root, "${stableKey(downloadId, executionId)}.txt").canonicalFile
-        if (!privateArchive.exists()) {
+        val privateArchive = File(root, "$generationKey.txt").canonicalFile
+        val survivingGeneration = privateArchive.exists()
+        check(!survivingGeneration || privateArchive.isFile) {
+            "Download archive generation is not a file"
+        }
+
+        // A generation that already carries debt is bound to the exact authority
+        // recorded when it took responsibility.  Recovery must never re-resolve
+        // the mutable preference here, or a later download_archive_path change
+        // would promote A-derived contents into a newly selected B.
+        val binding = DownloadArchiveProviderFence.readForGeneration(context, generationKey)
+        if (binding is DownloadArchiveProviderFence.Result.CORRUPT) {
+            // Unreadable durable state is unknown, not the current preference.
+            throw DownloadArchiveUnavailableException(
+                "Download archive generation authority identity is unreadable",
+            )
+        }
+        val record = (binding as? DownloadArchiveProviderFence.Result.Recorded)?.record
+        val carriesDebt = survivingGeneration || record?.promotionUnresolved == true
+        val configured = if (carriesDebt) {
+            val identity = record?.authorityIdentity
+                ?: throw DownloadArchiveUnavailableException(
+                    // A surviving generation with no durable identity cannot be
+                    // redirected to whatever the preference happens to name now.
+                    "Download archive generation authority identity is missing",
+                )
+            ConfiguredDownloadArchiveStore.authorityFromIdentity(identity)
+                ?: throw DownloadArchiveUnavailableException(
+                    "Download archive generation authority identity is not a usable location",
+                )
+        } else {
+            ConfiguredDownloadArchiveStore.resolve(context)
+        }
+
+        if (!survivingGeneration) {
             // An unreadable configured archive must never seed a private
             // generation that looks empty: yt-dlp would then run with a
             // duplicate authority that silently lost its existing entries.
@@ -54,9 +92,18 @@ internal object DownloadArchiveAuthority {
                 is ConfiguredDownloadArchiveRead.Unavailable ->
                     throw DownloadArchiveUnavailableException(read.reason)
             }
+            // Bound durably only once the source archive is known readable, and
+            // always before the private archive can carry promotion debt.  A
+            // crash here leaves a binding with no debt, which the next attempt
+            // may still re-point at the current preference.
+            DownloadArchiveProviderFence.bind(
+                context = context,
+                generationKey = generationKey,
+                authority = configured,
+                downloadId = downloadId,
+                executionId = executionId,
+            )
             atomicWrite(privateArchive, seeded)
-        } else {
-            check(privateArchive.isFile) { "Download archive generation is not a file" }
         }
         return Generation(downloadId, executionId, privateArchive, configured)
     }
@@ -101,10 +148,10 @@ internal object DownloadArchiveAuthority {
         if (context != null) {
             DownloadArchiveProviderFence.install(
                 context = context,
+                generationKey = stableKey(generation.downloadId, generation.executionId),
                 authority = configured,
                 downloadId = generation.downloadId,
                 executionId = generation.executionId,
-                generationKey = stableKey(generation.downloadId, generation.executionId),
             )
         }
         if (merged != existing) {
@@ -127,7 +174,10 @@ internal object DownloadArchiveAuthority {
         }
         if (complete && context != null) {
             // The provider is verified complete, so admission may trust it again.
-            DownloadArchiveProviderFence.clear(context, configured)
+            DownloadArchiveProviderFence.clearForGeneration(
+                context,
+                stableKey(generation.downloadId, generation.executionId),
+            )
         }
         complete
     }

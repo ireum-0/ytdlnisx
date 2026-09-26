@@ -49,23 +49,43 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
         /** Models a provider that mutates partially and then fails. */
         var partialWriteThenFailure: String? = null
 
+        /** Every authority this provider was actually asked to write. */
+        val writtenTreeUris = mutableListOf<String>()
+
+        /**
+         * Optional per-authority document contents.  When set, each tree keeps
+         * its own document instead of one shared document, so a test can prove
+         * that one authority received a write and another stayed untouched.
+         */
+        var contentsByTreeUri: MutableMap<String, String?>? = null
+
+        fun writeCountFor(treeUri: Uri): Int =
+            writtenTreeUris.count { it == treeUri.toString() }
+
+        private fun store(treeUri: Uri, text: String?) {
+            val perUri = contentsByTreeUri
+            if (perUri != null) perUri[treeUri.toString()] = text else contents = text
+        }
+
         override fun readText(context: Context, treeUri: Uri): String? {
             readCount++
             readFailure?.let { throw it }
-            return contents
+            val perUri = contentsByTreeUri
+            return if (perUri != null) perUri[treeUri.toString()] else contents
         }
 
         override fun replaceText(context: Context, treeUri: Uri, text: String) {
             writeCount++
+            writtenTreeUris += treeUri.toString()
             partialWriteThenFailure?.let { partial ->
                 // The provider truncated to a readable partial state and only
                 // then reported failure.
-                contents = partial
+                store(treeUri, partial)
                 partialWriteThenFailure = null
                 throw DownloadArchiveUnavailableException("provider write failed after partial mutation")
             }
             writeFailure?.let { throw it }
-            contents = text
+            store(treeUri, text)
         }
     }
 
@@ -98,6 +118,8 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
         provider.readFailure = null
         provider.writeFailure = null
         provider.partialWriteThenFailure = null
+        provider.writtenTreeUris.clear()
+        provider.contentsByTreeUri = null
         DownloadArchiveProviderFence.clearAllForTesting(context)
         ConfiguredDownloadArchiveStore.providerForTesting = provider
         preferences.edit()
@@ -407,7 +429,12 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
             // Generation evidence and the durable fence both survive.
             assertTrue(generation.privateArchive.exists())
             assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authority))
-            assertNotNull(DownloadArchiveProviderFence.read(context, authority))
+            assertTrue(
+                DownloadArchiveProviderFence.readForGeneration(
+                    context,
+                    DownloadArchiveAuthority.stableKey(51L, "exec-partial"),
+                ) is DownloadArchiveProviderFence.Result.Recorded,
+            )
 
             // Ordinary admission reads fail closed while the fence stands,
             // even though the provider document itself is readable.
@@ -453,10 +480,10 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
 
         DownloadArchiveProviderFence.install(
             context = context,
+            generationKey = DownloadArchiveAuthority.stableKey(52L, "exec-crash-before-write"),
             authority = authority,
             downloadId = 52L,
             executionId = "exec-crash-before-write",
-            generationKey = "fence-key",
         )
         try {
             val fenced = ConfiguredDownloadArchiveStore.read(context, authority)
@@ -474,7 +501,10 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
             )
             assertFalse(expectedPrivate.exists())
         } finally {
-            DownloadArchiveProviderFence.clear(context, authority)
+            DownloadArchiveProviderFence.clearForGeneration(
+                context,
+                DownloadArchiveAuthority.stableKey(52L, "exec-crash-before-write"),
+            )
         }
     }
 
@@ -490,10 +520,10 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
 
         DownloadArchiveProviderFence.install(
             context = context,
+            generationKey = DownloadArchiveAuthority.stableKey(53L, "exec-raw"),
             authority = authority,
             downloadId = 53L,
             executionId = "exec-raw",
-            generationKey = "raw-key",
         )
         try {
             assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authority))
@@ -522,6 +552,236 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
             assertEquals(ConfiguredDownloadArchiveStore.ARCHIVE_FILE_NAME, rawFile.name)
         } finally {
             folder.deleteRecursively()
+        }
+    }
+
+    /**
+     * A surviving generation keeps the exact configured authority identity it
+     * was created under.  After process death and a preference change A -> B,
+     * recovery still repairs A and never redirects A-derived contents into B.
+     */
+    @Test
+    fun recoveryRepairsOriginalAuthorityAndNeverRedirectsToANewSelection() {
+        // Authority A: a provider tree that already holds membership.
+        useSafTree()
+        provider.contents = "youtube A1\n"
+        val authorityA = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authorityA is ConfiguredDownloadArchive.SafTree)
+
+        val generation = DownloadArchiveAuthority.prepare(context, 61L, "exec-a-to-b")
+        val generationKey = DownloadArchiveAuthority.stableKey(61L, "exec-a-to-b")
+        try {
+            generation.privateArchive.writeText("youtube A1\nyoutube A2\n")
+            // An unresolved promotion leaves the fence and the private evidence.
+            provider.partialWriteThenFailure = "youtube A1\n"
+            assertTrue(
+                DownloadArchiveAuthority.promote(context, generation).not(),
+            )
+            assertTrue(generation.privateArchive.exists())
+            assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
+
+            // Simulate process death: reload the durable record, then change the
+            // selected archive from A to a different provider tree B.
+            val persisted = DownloadArchiveProviderFence.readForGeneration(context, generationKey)
+            assertTrue(persisted is DownloadArchiveProviderFence.Result.Recorded)
+            val boundIdentity =
+                (persisted as DownloadArchiveProviderFence.Result.Recorded).record.authorityIdentity
+            assertEquals(
+                ConfiguredDownloadArchiveStore.identityKey(authorityA),
+                boundIdentity,
+            )
+
+            val treeUriB = Uri.parse(
+                "content://com.android.externalstorage.documents/tree/primary%3AOtherFolder",
+            )
+            preferences.edit()
+                .putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, treeUriB.toString())
+                .commit()
+            val authorityB = ConfiguredDownloadArchiveStore.resolve(context)
+            assertTrue(authorityB is ConfiguredDownloadArchive.SafTree)
+            assertTrue(
+                "preference must now resolve a different authority",
+                (authorityB as ConfiguredDownloadArchive.SafTree).treeUri !=
+                    (authorityA as ConfiguredDownloadArchive.SafTree).treeUri,
+            )
+
+            // Ordinary admission for the new selection B is unaffected by A's
+            // unresolved debt, while A stays fail closed.
+            assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
+            assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authorityB))
+            val readA = ConfiguredDownloadArchiveStore.read(context, authorityA)
+            assertTrue(readA is ConfiguredDownloadArchiveRead.Unavailable)
+
+            // Exact recovery of the old generation repairs A, never B.
+            assertTrue(DownloadArchiveAuthority.promote(context, generation))
+            assertEquals(
+                listOf("youtube A1", "youtube A2"),
+                ConfiguredDownloadArchiveStore.parseLines(provider.contents.orEmpty()),
+            )
+            // A is verified and complete; the fence and evidence retire.
+            assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
+            assertFalse(generation.privateArchive.exists())
+            assertTrue(
+                DownloadArchiveProviderFence.readForGeneration(context, generationKey) is
+                    DownloadArchiveProviderFence.Result.MISSING,
+            )
+
+            // B was never written: the provider seam records which authority
+            // each write targeted.
+            assertEquals(0, provider.writeCountFor(treeUriB))
+            assertTrue(provider.writeCountFor(authorityA.treeUri) > 0)
+
+            // Admission reopens for the verified authority.
+            val recoveredA = ConfiguredDownloadArchiveStore.read(context, authorityA)
+            assertTrue(recoveredA is ConfiguredDownloadArchiveRead.Available)
+        } finally {
+            generation.privateArchive.delete()
+            DownloadArchiveProviderFence.clearAllForTesting(context)
+        }
+    }
+
+    /**
+     * A generation that took responsibility under authority A and then died
+     * before any promotion must still repair A after the preference moves to B.
+     * The binding therefore has to be durable before the private archive can
+     * carry debt, not only once promotion starts.
+     */
+    @Test
+    fun generationBoundBeforeDeathRepairsOriginalAuthorityNotTheNewSelection() {
+        useSafTree()
+        val treeUriB = Uri.parse(
+            "content://com.android.externalstorage.documents/tree/primary%3AOtherFolder",
+        )
+        provider.contentsByTreeUri = mutableMapOf(
+            treeUri.toString() to "youtube A1\n",
+            treeUriB.toString() to "youtube B1\n",
+        )
+        val authorityA = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authorityA is ConfiguredDownloadArchive.SafTree)
+        val generationKey = DownloadArchiveAuthority.stableKey(63L, "exec-prepare-then-die")
+
+        val generation = DownloadArchiveAuthority.prepare(context, 63L, "exec-prepare-then-die")
+        try {
+            // The generation seeded from A, so it now carries A-derived debt.
+            assertTrue(generation.privateArchive.exists())
+            assertEquals(
+                listOf("youtube A1"),
+                DownloadArchiveAuthority.readLines(generation.privateArchive),
+            )
+
+            // The binding is already durable, and it withholds nothing: no
+            // provider document has been mutated yet.
+            val binding = DownloadArchiveProviderFence.readForGeneration(context, generationKey)
+            assertTrue(binding is DownloadArchiveProviderFence.Result.Recorded)
+            val recorded = binding as DownloadArchiveProviderFence.Result.Recorded
+            assertEquals(
+                ConfiguredDownloadArchiveStore.identityKey(authorityA),
+                recorded.record.authorityIdentity,
+            )
+            assertFalse(recorded.record.promotionUnresolved)
+            assertFalse(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
+            assertTrue(
+                ConfiguredDownloadArchiveStore.read(context, authorityA)
+                    is ConfiguredDownloadArchiveRead.Available,
+            )
+
+            // yt-dlp extends the private generation, then the process dies.
+            generation.privateArchive.writeText("youtube A1\nyoutube A2\n")
+            preferences.edit()
+                .putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, treeUriB.toString())
+                .commit()
+            val authorityB = ConfiguredDownloadArchiveStore.resolve(context)
+            assertTrue(authorityB is ConfiguredDownloadArchive.SafTree)
+            assertTrue(
+                "preference must now resolve a different authority",
+                (authorityB as ConfiguredDownloadArchive.SafTree).treeUri !=
+                    (authorityA as ConfiguredDownloadArchive.SafTree).treeUri,
+            )
+
+            // Recovery re-derives its target from durable state and repairs A.
+            assertTrue(DownloadArchiveAuthority.promote(context, 63L, "exec-prepare-then-die"))
+            val documents = provider.contentsByTreeUri!!
+            assertEquals(
+                listOf("youtube A1", "youtube A2"),
+                ConfiguredDownloadArchiveStore.parseLines(documents[treeUri.toString()].orEmpty()),
+            )
+            // B was never written, so its own membership is untouched.
+            assertEquals(
+                listOf("youtube B1"),
+                ConfiguredDownloadArchiveStore.parseLines(documents[treeUriB.toString()].orEmpty()),
+            )
+            assertEquals(0, provider.writeCountFor(treeUriB))
+            assertTrue(provider.writeCountFor(treeUri) > 0)
+
+            // Binding and private evidence retire only once A verified complete.
+            assertTrue(
+                DownloadArchiveProviderFence.readForGeneration(context, generationKey) is
+                    DownloadArchiveProviderFence.Result.MISSING,
+            )
+            assertFalse(generation.privateArchive.exists())
+            assertTrue(
+                ConfiguredDownloadArchiveStore.read(context, authorityA)
+                    is ConfiguredDownloadArchiveRead.Available,
+            )
+        } finally {
+            generation.privateArchive.delete()
+        }
+    }
+
+    /** A corrupt durable identity must fail closed, never adopt the preference. */
+    @Test
+    fun corruptDurableAuthorityIdentityNeverFallsBackToCurrentPreference() {
+        useSafTree()
+        val treeUriB = Uri.parse(
+            "content://com.android.externalstorage.documents/tree/primary%3AOtherFolder",
+        )
+        provider.contentsByTreeUri = mutableMapOf(
+            treeUri.toString() to "youtube A1\n",
+            treeUriB.toString() to "youtube B1\n",
+        )
+        val authorityA = ConfiguredDownloadArchiveStore.resolve(context)
+        assertTrue(authorityA is ConfiguredDownloadArchive.SafTree)
+        val generationKey = DownloadArchiveAuthority.stableKey(62L, "exec-corrupt")
+        DownloadArchiveProviderFence.install(
+            context = context,
+            generationKey = generationKey,
+            authority = authorityA,
+            downloadId = 62L,
+            executionId = "exec-corrupt",
+        )
+        // Corrupt the durable record in place.
+        val fenceFile = File(context.filesDir, "download-archive-generations")
+            .listFiles()!!.first { it.name.startsWith("provider-promotion-fence-") }
+        fenceFile.writeText("{not json")
+
+        try {
+            assertTrue(
+                DownloadArchiveProviderFence.readForGeneration(context, generationKey) is
+                    DownloadArchiveProviderFence.Result.CORRUPT,
+            )
+            // An unreadable record cannot be attributed to any authority, so it
+            // must never be read as a resolved provider.
+            assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
+            // Even after the preference moves to another archive, recovery of
+            // this generation must not silently adopt it.
+            preferences.edit()
+                .putString(ConfiguredDownloadArchiveStore.PREFERENCE_KEY, treeUriB.toString())
+                .commit()
+            val failure = runCatching {
+                DownloadArchiveAuthority.prepare(context, 62L, "exec-corrupt")
+            }
+            assertTrue(failure.isFailure)
+            // No generation was seeded and neither authority was written.
+            assertFalse(
+                File(
+                    File(context.filesDir, "download-archive-generations"),
+                    "$generationKey.txt",
+                ).exists(),
+            )
+            assertEquals(0, provider.writeCountFor(treeUriB))
+            assertEquals(0, provider.writeCountFor(treeUri))
+        } finally {
+            DownloadArchiveProviderFence.clearAllForTesting(context)
         }
     }
 

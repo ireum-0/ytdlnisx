@@ -661,10 +661,11 @@ class ObserveSourceWorkerProductionWiringTest {
         val authority = ConfiguredDownloadArchiveStore.resolve(context)
         DownloadArchiveProviderFence.install(
             context = context,
+            generationKey = com.ireum.ytdl.util.storage.DownloadArchiveAuthority
+                .stableKey(91L, "exec-observe-fence"),
             authority = authority,
             downloadId = 91L,
             executionId = "exec-observe-fence",
-            generationKey = "fence-key",
         )
         try {
             val sourceId = insertSource(
@@ -686,7 +687,11 @@ class ObserveSourceWorkerProductionWiringTest {
                 database.downloadDao.getAllDownloadsList().none { it.url == memberUrl },
             )
         } finally {
-            DownloadArchiveProviderFence.clear(context, authority)
+            com.ireum.ytdl.util.storage.DownloadArchiveProviderFence.clearForGeneration(
+                context,
+                com.ireum.ytdl.util.storage.DownloadArchiveAuthority
+                    .stableKey(91L, "exec-observe-fence"),
+            )
             ConfiguredDownloadArchiveStore.providerForTesting = null
         }
     }

@@ -105,6 +105,40 @@ internal object ConfiguredDownloadArchiveStore {
     }
 
     /**
+     * Exact durable identity of one configured authority.  The authority kind
+     * and its exact identity are both encoded, so a provider tree can never be
+     * confused with a raw file location.
+     */
+    fun identityKey(authority: ConfiguredDownloadArchive): String = when (authority) {
+        is ConfiguredDownloadArchive.RawFile -> "raw:${authority.file.absolutePath}"
+        is ConfiguredDownloadArchive.SafTree -> "saf:${authority.treeUri}"
+        is ConfiguredDownloadArchive.Unresolved -> "unresolved:${authority.persistedValue}"
+    }
+
+    /**
+     * Reconstructs the exact authority from a durable identity.  A malformed
+     * or unknown identity returns `null` so callers fail closed instead of
+     * silently adopting the current preference.
+     */
+    fun authorityFromIdentity(identity: String): ConfiguredDownloadArchive? {
+        val separator = identity.indexOf(':')
+        if (separator <= 0) return null
+        val kind = identity.substring(0, separator)
+        val value = identity.substring(separator + 1)
+        if (value.isEmpty()) return null
+        return when (kind) {
+            "raw" -> File(value).takeIf { it.isAbsolute }?.let(ConfiguredDownloadArchive::RawFile)
+            "saf" -> Uri.parse(value)
+                .takeIf { ContentResolver.SCHEME_CONTENT.equals(it.scheme, ignoreCase = true) }
+                ?.takeIf { !it.authority.isNullOrBlank() }
+                ?.let(ConfiguredDownloadArchive::SafTree)
+            // An unresolved persisted value is not a storage authority.
+            "unresolved" -> null
+            else -> null
+        }
+    }
+
+    /**
      * Ordinary admission read.  While a provider promotion fence is
      * unresolved this authority is UNAVAILABLE even when the provider document
      * itself is readable, because a partially written document can be
