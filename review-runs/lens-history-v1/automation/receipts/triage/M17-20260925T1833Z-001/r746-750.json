@@ -1,0 +1,126 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "microsegment_rank_range": [
+    746,
+    750
+  ],
+  "data_head": "eab811c1a8b74677c97d77bb79fe5ba14eca5c35",
+  "complete_state_blob": "c7d3584643e61d12ad6c06a4b59df79f9df63a45",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r746-750.json",
+    "blob_sha": "0ac5f6e60474a8eb22d7ee05a33551b935e40b33"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [
+    {
+      "type": "TERMINAL_TAIL_PROTOCOL",
+      "protocol_path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+      "protocol_blob_sha": "84785a7a10e5810afe79982913ef6b827477733a",
+      "changes_rank_evidence": false,
+      "changes_semantic_values": false
+    }
+  ],
+  "exception_queue_blob": "352197d0d5af50fb26e5fa11116a476229c1b777",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M17-20260925T1833Z-001/r741-745.json",
+    "blob_sha": "5ca46ac46641407c995a9c1205aa087877d1e314"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 746,
+      "path": "review-runs/checkpoints/2026-09-07T163700Z__2207a870__checkpoint.md",
+      "source_blob": "f1935e102916ef00b3aed631d085546acea51260",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve final P0 0 / P1 0 / P2 1, zero new findings/status change, and historical-only execution evidence; the existing Terminal residual is not independently new."
+    },
+    {
+      "rank": 747,
+      "path": "review-runs/checkpoints/2026-09-07T163200Z__2207a870__checkpoint.md",
+      "source_blob": "35cfe8e5d1e6b5fe058be6e136dffaa461e5ea2e",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve generic checkpoint identity, provisional counts, and unresolved execution evidence without inferring finality or closure."
+    },
+    {
+      "rank": 748,
+      "path": "review-runs/checkpoints/2026-09-07T152610Z__2207a870__final-checkpoint.md",
+      "source_blob": "83812c13cec11007a2e58e5865d4728aa1757c3d",
+      "independent_exception_triggers": [
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve final no-material-change chronology and historical-only runtime evidence."
+    },
+    {
+      "rank": 749,
+      "path": "review-runs/checkpoints/2026-09-07T152430Z__2207a870__checkpoint.md",
+      "source_blob": "47067134e1ba9fa02eee80407419a47080b73fd7",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve provisional P0/P1/P2 and generic structural identity without inferring closure from unchanged implementation."
+    },
+    {
+      "rank": 750,
+      "path": "review-runs/checkpoints/2026-09-07T143800Z__2207a870__checkpoint.md",
+      "source_blob": "529ea46e36a7e6271967c8163e16556057d63a27",
+      "independent_exception_triggers": [
+        "MATERIAL_STATUS_TRANSITION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "CHECKLIST_REFINEMENT",
+        "COUNT_RECONCILIATION",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the explicit prior Download-cache P0 source-level FIXED transition, the same-root Terminal P2 remaining OPEN in changed failure form, and the quarantine/authority-revocation checklist refinement without splitting or normalizing historical finding identity."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 5,
+    "independent_exception_ranks": [
+      746,
+      747,
+      748,
+      749,
+      750
+    ],
+    "materializer_flagged_exception_ranks": [
+      746,
+      747,
+      748,
+      749,
+      750
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
