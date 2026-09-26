@@ -975,7 +975,8 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
 
             // One real reconciliation pass over the whole batch.
             WorkManagerHandoffRecovery.reconcile(context)
-            awaitEnqueue()
+            awaitEnqueue(count = siblingCommands.size)
+            settleEnqueueWindow()
 
             for ((index, entry) in malformedCarriers.withIndex()) {
                 val (malformedId, carrier) = entry
