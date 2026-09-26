@@ -65,22 +65,51 @@
       "path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r756-760.json",
       "blob_sha": "bde2597a7e50232683af1592a57bc5da6a5575c1",
       "corrections": []
+    },
+    {
+      "range": [
+        761,
+        764
+      ],
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r761-764.json",
+      "blob_sha": "296546547c0ef8e337238d8681f3df3b705f8dce",
+      "corrections": [],
+      "terminal_tail": true,
+      "remediations": [
+        {
+          "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+          "blob_sha": "84785a7a10e5810afe79982913ef6b827477733a"
+        }
+      ]
     }
   ],
   "rank_evidence_provenance": {
     "completed_rank_range": [
       741,
-      760
+      764
     ],
-    "receipt_count": 20,
+    "receipt_count": 24,
     "last_rank_receipt": {
-      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r760.json",
-      "blob_sha": "6387b719c8a975a043f30cc1db1a2ec629e2abc1"
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r764.json",
+      "blob_sha": "61aa65e4a009ad724d5456ff1bce49c26982dcfd"
     }
   },
   "corrections": [],
-  "materializer_remediations": [],
-  "next_rank": 761,
+  "materializer_remediations": [
+    {
+      "type": "TERMINAL_TAIL_PROTOCOL",
+      "protocol_path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+      "protocol_blob_sha": "84785a7a10e5810afe79982913ef6b827477733a",
+      "prior_state_blob_sha": "b3ffbd1222aa948ec2e0ee943be7b90a5b60652c",
+      "terminal_aggregate_path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r761-764.json",
+      "terminal_aggregate_blob_sha": "296546547c0ef8e337238d8681f3df3b705f8dce",
+      "frozen_history_count": 764,
+      "terminal_rank": 764,
+      "changes_rank_evidence": false,
+      "changes_semantic_values": false
+    }
+  ],
+  "next_rank": 765,
   "in_progress_exception_ranks": [
     741,
     742,
@@ -101,7 +130,11 @@
     757,
     758,
     759,
-    760
+    760,
+    761,
+    762,
+    763,
+    764
   ],
   "resume_safe": true,
   "materialization_outputs": {
@@ -115,7 +148,7 @@
     "consecutive_clean_40_materialization_batches": 3,
     "retryable_pause_occurred": false,
     "hold_or_anomaly_occurred": false,
-    "adaptive_size_streak_eligible": true
+    "adaptive_size_streak_eligible": false
   },
   "requires_triage": false,
   "requires_audit": false
