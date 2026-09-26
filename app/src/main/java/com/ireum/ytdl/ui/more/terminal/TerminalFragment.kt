@@ -40,7 +40,6 @@ import com.ireum.ytdl.database.viewmodel.TerminalViewModel
 import com.ireum.ytdl.util.AppPrivatePathRedactor
 import com.ireum.ytdl.util.Extensions.enableTextHighlight
 import com.ireum.ytdl.util.Extensions.setCustomTextSize
-import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.UiUtil
@@ -48,6 +47,7 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanner
 import com.ireum.ytdl.util.terminal.TerminalCommandPreviewFormatter
+import com.ireum.ytdl.util.terminal.TerminalProviderDestinationOption
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.bottomappbar.BottomAppBar
@@ -409,8 +409,15 @@ class TerminalFragment : Fragment() {
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or
                             Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                 )
+                // The provider grant is Terminal execution metadata, not a
+                // native pathname.  Reconstructing one here would invent a
+                // destination that does not exist and let the planner treat it
+                // as an authored native --paths target.
+                input.text.insert(
+                    input.selectionStart,
+                    TerminalProviderDestinationOption.render(it.toString()),
+                )
             }
-            input.text.insert(input.selectionStart, FileUtil.formatPath(result.data?.data.toString()))
         }
     }
 

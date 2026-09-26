@@ -30,11 +30,21 @@ data class TerminalCommandEnvironment(
     val cookiePath: String?,
     val userAgentHeader: String?,
     val downloadLocation: String,
-    val formattedDownloadLocation: String,
+    /**
+     * Typed output authority for [downloadLocation].  A provider destination
+     * keeps its exact URI here; display formatting is never promoted to
+     * authority, so there is deliberately no formatted-path field.
+     */
+    val destinationAuthority: TerminalDestinationAuthority,
     val appCacheOutputPath: String,
     val appCacheOutputMarkerPath: String,
     val cacheDownloads: Boolean,
-    val destinationWritable: Boolean
+    /**
+     * Native filesystem writability, established independently and only
+     * meaningful for a [TerminalDestinationAuthority.NativeRaw] destination.
+     * A provider grant must never be read as native writability.
+     */
+    val nativeDestinationWritable: Boolean,
 )
 
 data class TerminalCommandPlan(
@@ -67,7 +77,12 @@ object TerminalCommandPlanner {
     fun normalizeInput(input: String): String = input.replaceFirst("yt-dlp", "")
 
     fun create(command: String, environment: TerminalCommandEnvironment): TerminalCommandPlan {
-        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(command)
+        // A Folder-picked provider destination is Terminal-owned execution
+        // metadata, not yt-dlp input.  It is removed before any shared parser
+        // or the native process can observe it, so a provider selection can
+        // never be mistaken for an authored native --paths destination.
+        val extracted = TerminalProviderDestinationOption.extract(command)
+        val sanitized = YtdlpArgumentPolicy.stripExternalFfmpegLocationOptionsWithReport(extracted.command)
         val outputTemplate = YtdlpCommandOutputTemplateParser.resolve(
             command = sanitized.commandString,
             // Terminal's documented cookie option is a read-only credential
@@ -111,24 +126,57 @@ object TerminalCommandPlanner {
             ?.let { options += TerminalRequestOption("--add-header", "User-Agent:$it") }
 
         // Preserve the existing direct-write contract when the user disabled
-        // caching and the configured destination is writable (or when an
-        // authored -P explicitly selects its own destination).  Cached
-        // execution, which is the mutable/retryable path, is always routed
-        // through the UUID-scoped app staging root and published from the
-        // exact current-attempt carrier afterwards.
+        // caching and the configured destination is an independently writable
+        // raw path, or when an authored -P explicitly selects its own
+        // destination.  Cached execution, which is the mutable/retryable path,
+        // is always routed through the UUID-scoped app staging root and
+        // published from the exact current-attempt carrier afterwards.
+        //
+        // A provider destination is never written directly: a persisted grant
+        // proves app/provider writability, not native filesystem writability,
+        // so it must stage and publish instead of naming a reconstructed path.
         val authoredDestination = authoredPathMap?.home?.absolutePath
-        val finalDestination = authoredDestination ?: environment.downloadLocation
         val configDeclaresOutputPath = pathResolution is YtdlpCommandPathResolution.Explicit
-        val writesDirectly = configDeclaresOutputPath ||
-            (!environment.cacheDownloads && environment.destinationWritable)
+        // An authored --paths destination is the most specific authored intent
+        // and keeps the validated direct-native contract, so it outranks both a
+        // Folder-picked provider selection and the configured default.
+        val providerDestination = if (configDeclaresOutputPath) {
+            null
+        } else {
+            // Otherwise an explicit provider selection is the most specific
+            // destination intent for this exact command.  A malformed
+            // selection is never a raw path.
+            extracted.providerTreeUri?.let { selection ->
+                TerminalDestinationAuthority.providerTreeOrNull(
+                    TerminalDestinationAuthority.classify(selection),
+                ) ?: throw IllegalArgumentException(
+                    "Terminal provider destination is not a usable location",
+                )
+            } ?: TerminalDestinationAuthority.providerTreeOrNull(environment.destinationAuthority)
+        }
+        val nativeAuthority =
+            environment.destinationAuthority as? TerminalDestinationAuthority.NativeRaw
+        val writesDirectly = when {
+            configDeclaresOutputPath -> true
+            providerDestination != null -> false
+            !environment.cacheDownloads && environment.nativeDestinationWritable ->
+                nativeAuthority != null
+            else -> false
+        }
+        val finalDestination = authoredDestination
+            ?: providerDestination?.treeUri
+            ?: environment.downloadLocation
         if (configDeclaresOutputPath) {
             // Keep the authored -P as the native destination. The shared path
             // parser has already proved it is an absolute, supported path.
         } else {
             options += TerminalRequestOption(
                 "-P",
-                if (writesDirectly) environment.formattedDownloadLocation
-                else environment.appCacheOutputPath,
+                if (writesDirectly) {
+                    (nativeAuthority as TerminalDestinationAuthority.NativeRaw).path
+                } else {
+                    environment.appCacheOutputPath
+                },
             )
         }
 
@@ -337,19 +385,64 @@ object TerminalCommandPlanFactory {
             ".ytdlnisx-terminal-output.txt"
         ).absolutePath
 
+        // Classify the configured destination before any native planning.  A
+        // provider value keeps its exact original URI as the final publication
+        // destination and is never reformatted into a raw pathname; only a raw
+        // value is normalized, and only for its own native form.
+        val destinationAuthority = when (
+            val classified = TerminalDestinationAuthority.classify(downloadLocation)
+        ) {
+            is TerminalDestinationAuthority.ProviderTree -> classified
+            is TerminalDestinationAuthority.NativeRaw -> TerminalDestinationAuthority.NativeRaw(
+                // A legacy non-absolute value (for example `primary:Music`)
+                // still needs the historical normalization.  An already
+                // absolute filesystem path is kept verbatim, because
+                // reformatting it would invent a different destination.
+                if (classified.path.startsWith("/")) {
+                    classified.path
+                } else {
+                    FileUtil.formatPath(classified.path)
+                },
+            )
+            is TerminalDestinationAuthority.Unusable -> throw IllegalArgumentException(
+                "Configured Terminal command_path is not a usable location",
+            )
+        }
+        val providerDestination =
+            TerminalDestinationAuthority.providerTreeOrNull(destinationAuthority)
+
         return TerminalCommandPlanner.create(
             command = command,
             environment = TerminalCommandEnvironment(
                 cookiePath = cookiePath,
                 userAgentHeader = userAgentHeader,
                 downloadLocation = downloadLocation,
-                formattedDownloadLocation = FileUtil.formatPath(downloadLocation),
+                destinationAuthority = destinationAuthority,
                 appCacheOutputPath = appCacheOutputPath,
                 appCacheOutputMarkerPath = appCacheOutputMarkerPath,
                 cacheDownloads = preferences.getBoolean("cache_downloads", true),
-                destinationWritable = FileUtil.canWriteToDestination(downloadLocation, context)
+                // Native writability is established against the typed raw path
+                // itself.  A provider grant is not native writability and must
+                // never enable direct native output.
+                nativeDestinationWritable = providerDestination == null &&
+                    isNativelyWritable(destinationAuthority),
             )
         )
+    }
+
+    /**
+     * Native filesystem writability for a raw Terminal destination.
+     *
+     * This deliberately does not reuse the provider-aware destination check:
+     * that helper resolves persisted `content://` values, which proves
+     * app/provider writability rather than native filesystem writability.
+     */
+    private fun isNativelyWritable(authority: TerminalDestinationAuthority): Boolean {
+        val raw = (authority as? TerminalDestinationAuthority.NativeRaw)?.path ?: return false
+        val target = File(raw)
+        if (target.exists()) return target.canWrite()
+        val parent = target.parentFile ?: return false
+        return parent.exists() && parent.canWrite()
     }
 }
 
