@@ -1,0 +1,200 @@
+{
+  "schema_version": "lens-history-v1-triage-final-v1",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "data_head": "eab811c1a8b74677c97d77bb79fe5ba14eca5c35",
+  "complete_state_blob": "c7d3584643e61d12ad6c06a4b59df79f9df63a45",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipts": [
+    "8661ec739b1213be507cef8d99ad8fd9b50ea79d",
+    "0ac5f6e60474a8eb22d7ee05a33551b935e40b33",
+    "171b786de936b4d39466752c6e77e5947f955217",
+    "bde2597a7e50232683af1592a57bc5da6a5575c1",
+    "296546547c0ef8e337238d8681f3df3b705f8dce"
+  ],
+  "materializer_corrections": [],
+  "materializer_remediations": [
+    {
+      "type": "TERMINAL_TAIL_PROTOCOL",
+      "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+      "blob_sha": "84785a7a10e5810afe79982913ef6b827477733a",
+      "terminal_aggregate_blob_sha": "296546547c0ef8e337238d8681f3df3b705f8dce",
+      "changes_rank_evidence": false,
+      "changes_semantic_values": false
+    }
+  ],
+  "downstream_terminal_tail_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/downstream-terminal-tail-v1.md",
+    "blob_sha": "2e9d2279ee740ce08e81df098cbb77f17a1d77bc"
+  },
+  "materialization_validation": {
+    "path": "review-runs/lens-history-v1/automation/validations/M17-20260925T1833Z-001-materialization-741-764.json",
+    "blob_sha": "eeb34874698de48ccec14cd168d5eeaeefc3aeef",
+    "status": "PASS",
+    "history_order_mismatches": 0,
+    "file_enumeration_unclosed": 0,
+    "source_frozen_blob_mismatches": 0,
+    "source_frozen_blob_mismatch_ranks": [],
+    "schema_class_mismatches": 0,
+    "checkpoint_kind_mismatches": 0,
+    "effectiveness_eligibility_mismatches": 0,
+    "official_ledger_required_field_mismatches": 0,
+    "prohibited_inference_violations": 0
+  },
+  "triage_receipts": [
+    {
+      "range": [
+        741,
+        745
+      ],
+      "blob_sha": "5ca46ac46641407c995a9c1205aa087877d1e314"
+    },
+    {
+      "range": [
+        746,
+        750
+      ],
+      "blob_sha": "d6ea10d76fb24f39ce3d624935718b379ea63320"
+    },
+    {
+      "range": [
+        751,
+        755
+      ],
+      "blob_sha": "2ef4df085b50b6c242b0a8ae952dd3109ce3138f"
+    },
+    {
+      "range": [
+        756,
+        760
+      ],
+      "blob_sha": "250a4c5fd1efe21a6ec2ae15f8a271f974f1a2ca"
+    },
+    {
+      "range": [
+        761,
+        764
+      ],
+      "blob_sha": "36ecd1cc22909a8cf4c915f45b423218250afab8",
+      "terminal_tail": true
+    }
+  ],
+  "triage_corrections": [],
+  "exception_queue_blob": "352197d0d5af50fb26e5fa11116a476229c1b777",
+  "materializer_exception_rank_count": 24,
+  "independent_exception_ranks": [
+    741,
+    742,
+    743,
+    744,
+    745,
+    746,
+    747,
+    748,
+    749,
+    750,
+    751,
+    752,
+    753,
+    754,
+    755,
+    756,
+    757,
+    758,
+    759,
+    760,
+    761,
+    762,
+    763,
+    764
+  ],
+  "independent_exception_rank_count": 24,
+  "triage_discovered_missed_exception_ranks": [],
+  "missed_exception_count": 0,
+  "unsafe_materializer_correction_count": 0,
+  "unsafe_triage_correction_count": 0,
+  "preservation_packets": [
+    {
+      "topic": "historical_status_count_and_root_boundaries",
+      "rank_range": [
+        741,
+        764
+      ],
+      "requirement": "Preserve explicit final/provisional P0/P1/P2 recounts, NEW-vs-existing evidence, source-level FIXED transitions, same-root Terminal residuals, no-material-change statements, and historical finding names without backward normalization or duplicate-root creation."
+    },
+    {
+      "topic": "fail_closed_structural_and_execution_uncertainty",
+      "rank_range": [
+        741,
+        764
+      ],
+      "requirement": "Preserve generic/AMBIGUOUS kind, explicit INTERMEDIATE identity, provisional counts, NOT_VERIFIED candidates, and historical-only execution/status basis; never infer modern lens data or finality from filename, chronology, or absent metrics."
+    },
+    {
+      "topic": "ownership_bootstrap_status_chronology",
+      "rank_range": [
+        750,
+        764
+      ],
+      "requirement": "Preserve chronology across the Download-cache ownership-bootstrap P0: source-level FIXED statements at later 2207a870 checkpoints, older baf26583 checkpoints where P0 remains existing/open, rank 763's explicit new P0 at 2c0bf3a5, and rank 764's statement that the prior --rm-cache-dir P0 is source-level fixed. Do not collapse distinct historical review targets into one timeless status."
+    },
+    {
+      "topic": "terminal_partial_publication_residual",
+      "rank_range": [
+        741,
+        764
+      ],
+      "requirement": "Preserve the existing Terminal/BUG-OUTPUT publication-recovery obligation as same-root historical evidence, including changed failure form and recoverable staging cleanup semantics, without inventing a new canonical root unless source explicitly does so."
+    },
+    {
+      "topic": "implementation_transition_boundaries",
+      "rank_range": [
+        752,
+        764
+      ],
+      "requirement": "Preserve implementation transitions 2207a870→baf26583 at rank 752, baf26583→2c0bf3a5 at rank 763, and 2c0bf3a5→36ba1cac at rank 764; findings/status must remain scoped to their exact implementation checkpoints."
+    },
+    {
+      "topic": "checklist_evolution",
+      "rank_range": [
+        750,
+        764
+      ],
+      "requirement": "Preserve quarantine/authority-revocation, proof-bootstrap provenance, and rank 763 checklist-gap evidence as historical semantic evidence only; do not infer numeric modern checklist or lens-effectiveness metrics."
+    },
+    {
+      "topic": "terminal_tail_governance",
+      "rank_range": [
+        761,
+        764
+      ],
+      "requirement": "Treat 761-764 as the exact terminal bounded suffix only under the bound Materializer and downstream terminal-tail protocol blobs; do not generalize shortened segments or equate 764 history commits with 764 distinct frozen documents."
+    }
+  ],
+  "chain_validation": {
+    "base_receipts_contiguous_741_764": true,
+    "terminal_tail_receipt_applied": true,
+    "terminal_tail_receipt_range": [
+      761,
+      764
+    ],
+    "terminal_tail_protocol_blob_match": true,
+    "triage_correction_applied": false,
+    "unresolved_placeholders_remaining": false,
+    "materializer_remediation_effective_view_applied": true,
+    "all_triage_previous_receipt_bindings_match_actual_blobs": true
+  },
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "requires_independent_audit": true
+}
