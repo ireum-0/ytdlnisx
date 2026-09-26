@@ -20,7 +20,9 @@ The protocol must:
 - separate scope-specific closure from the overall remediation gate;
 - preserve uncertainty as `NOT_VERIFIED` rather than inventing evidence.
 
-Protocol version: `hourly-correctness-review-v2`.
+Protocol version: `hourly-correctness-review-v2.1`.
+
+Compatibility note: checkpoints written under `hourly-correctness-review-v2` remain valid historical evidence. A logical run frozen to an older protocol blob finishes under that blob; only NEW logical runs use v2.1.
 
 ## 2. Authority model
 
@@ -110,6 +112,17 @@ If `checkpoint/pre-baseline-review` advances while a logical run is in progress:
 
 A changing `review/remediation` HEAD used only as a write parent does **not** change the frozen semantic governance or implementation basis.
 
+### Logical-run termination semantics
+
+Checkpoint kind controls logical-run lifecycle independently of correctness verdict:
+
+- `FINAL` ALWAYS closes that `logical_run_id`. It is never resumed, even when `scope_verdict=NOT_CLEAN`, `overall_remediation_gate=NOT_CLEAN`, verification gaps remain, or `exact_next_action` names future work.
+- `INTERMEDIATE` is resumable only when it explicitly records `resume_safe=true` and intact frozen pins.
+- `BLOCKED` is resumable only when it explicitly records `resume_safe=true` and the recorded blocker has been proven resolved without invalidating the frozen pins.
+- `remaining_review_scope` in a FINAL checkpoint describes future review work for a NEW logical run; it does not make the closed run incomplete.
+
+When the newest valid checkpoint for a logical run is FINAL, the next eligible scheduler invocation must create a NEW logical run if work remains.
+
 ## 4. Scheduler invocation, resume, and single-writer behavior
 
 Before starting new review work, inspect v2 checkpoints for an incomplete logical run.
@@ -130,6 +143,112 @@ Start a new logical run only when:
 - the intended review target is not already being processed by another active writer.
 
 Never use force-push, amend, history rewrite, destructive rebase, or overwrite as a recovery mechanism.
+
+### Scheduled-invocation minimum-progress contract
+
+After the diagnostic sequence below has completed, every scheduled invocation that passes the minimal bootstrap gate MUST do one of the following before it ends:
+
+1. complete one non-duplicative review unit and append a FINAL checkpoint; or
+2. append an INTERMEDIATE checkpoint with `resume_safe=true` after establishing durable review progress; or
+3. append a BLOCKED checkpoint naming the concrete blocker and exact stage.
+
+A passing bootstrap gate followed by a silent no-op is forbidden. "No material change" is still a valid completed logical run and therefore still gets a compact FINAL checkpoint.
+
+Do not wait to read the full historical registry before establishing durable progress. At startup, fetch only:
+- the four branch HEADs;
+- the current protocol path/blob;
+- the latest v2 FINAL/INTERMEDIATE/BLOCKED checkpoint metadata needed to resolve lifecycle;
+- the latest diagnostic receipt, if any.
+
+Large governance bodies and broad registry history are fetched only after this minimum bootstrap has been durably observed or when the selected review unit actually requires them.
+
+### Temporary diagnostic probe sequence — STARTUP_OBSERVABILITY_V1
+
+This sequence exists to diagnose scheduled-run behavior. Execute exactly ONE not-yet-passed probe per scheduler invocation, in order. Each probe writes exactly one NEW append-only UTF-8 markdown diagnostic receipt under:
+
+`review/remediation:review-runs/checkpoints/hourly-v2/diagnostics/`
+
+Diagnostic receipts are orchestration evidence, not semantic review checkpoints, and do not alter finding status or lens effectiveness. They bind the observed implementation/plan/review/ledger HEADs, protocol blob, previous diagnostic receipt path/blob when present, probe result, and exact next probe.
+
+A probe receipt filename must include UTC timestamp, implementation short SHA, and probe id. After writing, re-fetch the file and commit and verify ancestry exactly like a normal checkpoint.
+
+#### PROBE-1 — BOOTSTRAP_WRITE
+
+Purpose: test whether the scheduled environment can reach GitHub read/write before large-document preflight.
+
+Read only:
+- current four branch HEADs;
+- current protocol blob;
+- latest v2 checkpoint metadata sufficient to identify the latest FINAL/INTERMEDIATE/BLOCKED item;
+- latest diagnostic receipt, if any.
+
+Do NOT read Master Plan, full v6, TASKS, TASKS_DELTA, CURRENT_STATUS, or production source for this probe.
+
+Append one diagnostic receipt with:
+- `diagnostic_sequence=STARTUP_OBSERVABILITY_V1`;
+- `probe_id=PROBE-1-BOOTSTRAP-WRITE`;
+- observed HEADs/protocol blob;
+- latest v2 checkpoint path/blob/kind if available;
+- `result=PASS`;
+- `exact_next_probe=PROBE-2-FINAL-TERMINATION`.
+
+Then STOP the invocation. If this receipt appears, basic scheduled GitHub write capability and minimal execution budget are proven.
+
+#### PROBE-2 — FINAL_TERMINATION
+
+Purpose: test whether FINAL/NOT_CLEAN ambiguity was preventing new logical runs.
+
+Read the latest valid v2 checkpoint and its run binding. Apply the lifecycle rules above.
+
+Append one diagnostic receipt recording:
+- the latest checkpoint path/blob;
+- its `logical_run_id`, `checkpoint_kind`, `scope_verdict`, and `overall_remediation_gate`;
+- `resolved_run_closed=true` iff checkpoint_kind is FINAL;
+- whether a new logical run is eligible;
+- the deterministic next DEEP lens if same-SHA progression applies;
+- `result=PASS`;
+- `exact_next_probe=PROBE-3-GOVERNANCE-PIN`.
+
+Then STOP the invocation.
+
+#### PROBE-3 — GOVERNANCE_PIN
+
+Purpose: test whether governance preflight can complete within the scheduled environment.
+
+Freeze the current implementation/plan/review/ledger heads. Then:
+- read `SOURCE_ARTIFACTS.md`;
+- read the Master Plan from the same frozen plan commit and verify its registered SHA-256;
+- read the governing v6 checklist identity/body needed for review;
+- resolve TASKS/TASKS_DELTA/CURRENT_STATUS blob identities, but do not read their full bodies unless necessary for identity verification.
+
+Append one diagnostic receipt with:
+- frozen heads;
+- Master Plan blob and hash verification;
+- checklist blob/adoption identity;
+- registry/status blob identities;
+- `result=PASS`;
+- `exact_next_probe=PROBE-4-MINIMUM-REVIEW-UNIT`.
+
+Then STOP the invocation.
+
+#### PROBE-4 — MINIMUM_REVIEW_UNIT
+
+Purpose: test whether the scheduled environment can perform real source review and persist semantic progress.
+
+Using the frozen pins and prior v2 lens matrix:
+- select the deterministic next DEEP lens;
+- review one concrete, bounded, non-duplicative production scope relevant to that lens;
+- do not attempt a repository-wide sweep;
+- append a normal v2 FINAL or INTERMEDIATE checkpoint satisfying the normal schema.
+
+The normal checkpoint must additionally record:
+- `diagnostic_sequence=STARTUP_OBSERVABILITY_V1`;
+- `probe_id=PROBE-4-MINIMUM-REVIEW-UNIT`;
+- `probe_result=PASS`.
+
+After a verified PROBE-4 normal checkpoint exists, the diagnostic sequence is COMPLETE. Future invocations follow the normal minimum-progress contract and MUST NOT create more diagnostic receipts for this sequence.
+
+If any probe cannot complete due to transport/auth/read/write failure, return a user-facing diagnostic naming the exact probe and stage. If enough state exists to write safely, append a BLOCKED diagnostic receipt; otherwise make no repository claim.
 
 ## 5. Review strategy
 
@@ -304,6 +423,8 @@ The ONLY repository writes permitted to this scheduled reviewer are NEW append-o
 
 `review/remediation:review-runs/checkpoints/hourly-v2/`
 
+This includes the temporary diagnostic subdirectory `review-runs/checkpoints/hourly-v2/diagnostics/` defined by `STARTUP_OBSERVABILITY_V1`.
+
 Everything else is read-only, including:
 - `checkpoint/pre-baseline-review`;
 - `plan/remediation`;
@@ -330,7 +451,7 @@ Write a v2 checkpoint when at least one of these is true:
 
 A short logical run may therefore have only one final checkpoint.
 
-If interrupted before any material state has been established, it is acceptable to make no repository write and report the concrete blocker.
+After `STARTUP_OBSERVABILITY_V1` completes, a scheduled invocation that passed minimal bootstrap may not end silently. If interrupted before semantic material state is established, append a compact BLOCKED checkpoint identifying the exact stop stage and whether the cause is `BUDGET_OR_TIMEOUT_SUSPECTED`, transport/auth failure, lifecycle ambiguity, or another concrete blocker. The only exception is failure before repository write capability itself can be established.
 
 ## 12. Required checkpoint schema
 
@@ -434,4 +555,6 @@ Clearly distinguish:
 - exact next action.
 
 If a completed logical run has no material change from the prior valid run, keep the user-facing report concise while still recording the required final v2 checkpoint.
+
+Every scheduled invocation MUST emit a concise user-facing execution result, including diagnostic-probe invocations and blocked/no-material-change runs. Do not intentionally suppress the response merely because there is no new finding.
 
