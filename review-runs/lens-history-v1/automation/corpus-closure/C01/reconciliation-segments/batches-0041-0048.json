@@ -1,0 +1,1444 @@
+{
+  "schema_version": "lens-history-v1-corpus-closure-segment-v1",
+  "closure_run_id": "C01",
+  "protocol": {
+    "path": "review-runs/lens-history-v1/automation/corpus-closure/C01/protocol-v1.md",
+    "blob_sha": "579d95995f9172aea0502ae962dec9cf7342f15e"
+  },
+  "parent_head": "7a0da3bfd96ffed8e48833a953d2abc0ae02e569",
+  "batch_range": [
+    41,
+    48
+  ],
+  "rank_range": [
+    371,
+    450
+  ],
+  "inventory_row_count": 80,
+  "ledger_row_count": 80,
+  "bindings": [
+    {
+      "batch": "0041",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0041-newest-371-380.jsonl",
+        "blob_sha": "acacf3452736e705ceb1b5442d278f6a9927987b"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0041-newest-371-380.jsonl",
+        "blob_sha": "ed35e025626815bbfc27cab8323e0aeab0930cf9"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0041-newest-371-380.jsonl",
+        "blob_sha": "ed35e025626815bbfc27cab8323e0aeab0930cf9",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0042",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0042-newest-381-390.jsonl",
+        "blob_sha": "0f972f995248786fd0ac09651039b9b9bfe2fe15"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0042-newest-381-390.jsonl",
+        "blob_sha": "71af8e5098c1879507beab4598a8cd6653ab9162"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0042-newest-381-390.jsonl",
+        "blob_sha": "71af8e5098c1879507beab4598a8cd6653ab9162",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0043",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0043-newest-391-400.jsonl",
+        "blob_sha": "5e2fa973a733b6157daaf08b762c3aa1af5fcaf9"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0043-newest-391-400.jsonl",
+        "blob_sha": "b0d2cb150cb6fa2a8f09da9da912ba49ea6f80a0"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0043-newest-391-400.jsonl",
+        "blob_sha": "b0d2cb150cb6fa2a8f09da9da912ba49ea6f80a0",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0044",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0044-newest-401-410.jsonl",
+        "blob_sha": "ce8ee2f6f2b8c18660215002c748a5d773b39fb2"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0044-newest-401-410.jsonl",
+        "blob_sha": "fe5d2a035384f650b93fef0e474901d0155bee86"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0044-newest-401-410.jsonl",
+        "blob_sha": "fe5d2a035384f650b93fef0e474901d0155bee86",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0045",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0045-newest-411-420.jsonl",
+        "blob_sha": "fd18b74edd78b8c97d60a9134bc50f0e9b815337"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0045-newest-411-420.jsonl",
+        "blob_sha": "5e0ff8704a3d3d2d1db61b8377303aa84fbc6581"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0045-newest-411-420.jsonl",
+        "blob_sha": "5e0ff8704a3d3d2d1db61b8377303aa84fbc6581",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0046",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0046-newest-421-430.jsonl",
+        "blob_sha": "98aaaa355b932063c59b1e50c8b000a5e89bfad7"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0046-newest-421-430.jsonl",
+        "blob_sha": "c5a4a709deedce270a62ae7dc22b61881ed11cbe"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0046-newest-421-430.jsonl",
+        "blob_sha": "c5a4a709deedce270a62ae7dc22b61881ed11cbe",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0047",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0047-newest-431-440.jsonl",
+        "blob_sha": "836934a333d52115ab97c95b5185fc9b9f543d98"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0047-newest-431-440.jsonl",
+        "blob_sha": "0181f00251ab21a2a4361b3afc80568dc01bc793"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0047-newest-431-440.jsonl",
+        "blob_sha": "0181f00251ab21a2a4361b3afc80568dc01bc793",
+        "source": "official"
+      }
+    },
+    {
+      "batch": "0048",
+      "inventory": {
+        "path": "review-runs/lens-history-v1/inventory-batches/0048-newest-441-450.jsonl",
+        "blob_sha": "0ce5714482262ac7424d68fac90f32167e5a38af"
+      },
+      "official_ledger": {
+        "path": "review-runs/lens-history-v1/ledger-batches/0048-newest-441-450.jsonl",
+        "blob_sha": "0a9ce1cf4d94e7d57e6a24b8134619e4de81c521"
+      },
+      "effective_ledger": {
+        "path": "review-runs/lens-history-v1/automation/remediation/materializer/M11-20260922T0646Z-001/official-ledger-schema/0048-replacement-001.jsonl",
+        "blob_sha": "9eea7b7c87ff2769b1f3f9663cbea8b5ba3d0de7",
+        "source": "authorized_replacement"
+      },
+      "remediation_manifest_blob_sha": "aa381d5ff692c50bb577bbcf336aaf68ecbec7b6"
+    }
+  ],
+  "required_field_missing": [],
+  "provenance_row_mismatches": [],
+  "cumulative_eligible_rows": 0,
+  "observed_measured_effectiveness_contribution": {
+    "new_confirmed_findings": 0,
+    "existing_finding_status_changes": 0,
+    "confirmed_residuals_or_subcases": 0,
+    "rejected_candidates_with_proof": 0,
+    "not_verified_candidates": 0,
+    "checklist_gaps_triggered": 0,
+    "cross_feature_propagation_hits": 0
+  },
+  "records": [
+    {
+      "rank": 371,
+      "path": "review-runs/checkpoints/2026-09-11T214200Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a27f13487f1b22e6e8daab3e4d99a1044e4f4230",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a27f13487f1b22e6e8daab3e4d99a1044e4f4230"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T214200Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "5c6389522cf56a141397882d87333236810f735b"
+    },
+    {
+      "rank": 372,
+      "path": "review-runs/checkpoints/2026-09-11T212500Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "b73b4dfd5d820948ce335ef6a359e331548a275c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "b73b4dfd5d820948ce335ef6a359e331548a275c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T212500Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "6cc906c1585ef6bc0682935381fe0ac4d391f32a"
+    },
+    {
+      "rank": 373,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__format-notification-stale-authority-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "fabd1c2b0b722e20f48ae35ce6e7b7cf83f5b5e7",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "fabd1c2b0b722e20f48ae35ce6e7b7cf83f5b5e7"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__format-notification-stale-authority-broader-promotion.md",
+      "ledger_commit": "f0761356bba55e32cfddfb60e5c1407f7510ec9a"
+    },
+    {
+      "rank": 374,
+      "path": "review-runs/checkpoints/2026-09-11T204200Z__9edd3e23__final-checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "57592d2f0af7b653539a12e0872e7aa0d2df10a2",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "57592d2f0af7b653539a12e0872e7aa0d2df10a2"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T204200Z__9edd3e23__final-checkpoint.md",
+      "ledger_commit": "4f67e863a39c82e7305520e36e891415329b00e1"
+    },
+    {
+      "rank": 375,
+      "path": "review-runs/checkpoints/2026-09-11T203400Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "7757c2c54878e04e56947d179050b12a9117e1d0",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "7757c2c54878e04e56947d179050b12a9117e1d0"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T203400Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "d299b1ddf96b88320a40963b79fa088ab2222eee"
+    },
+    {
+      "rank": 376,
+      "path": "review-runs/checkpoints/2026-09-11T202300Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "d07ae757c1a8a17b2df6e9fd60711d49ea406ad4"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T202300Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "6f99260445ddd74253487591aa52ab2ace73292c"
+    },
+    {
+      "rank": 377,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__bulk-format-partial-success-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "e6cfa2642a158008696e8b41d846c054337ac7c5",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "e6cfa2642a158008696e8b41d846c054337ac7c5"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__bulk-format-partial-success-broader-promotion.md",
+      "ledger_commit": "7cc586926628b613985a3109af638c9c2789a3dc"
+    },
+    {
+      "rank": 378,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-enqueue-loss-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "5a0f6b25de7dfc985576cd0d01d8a0708980a7f1",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "5a0f6b25de7dfc985576cd0d01d8a0708980a7f1"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-enqueue-loss-broader-promotion.md",
+      "ledger_commit": "7c5fc85e561a764bb46d4e07f09f5ce7db73de15"
+    },
+    {
+      "rank": 379,
+      "path": "review-runs/checkpoints/2026-09-11T193900Z__9edd3e23__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "d396450c6bcfb96cb684cf7124b5c5b9d0e249ad",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "d396450c6bcfb96cb684cf7124b5c5b9d0e249ad"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T193900Z__9edd3e23__final_checkpoint.md",
+      "ledger_commit": "22888c36b39d5fec4a038565c2498e96ad7ccf6a"
+    },
+    {
+      "rank": 380,
+      "path": "review-runs/checkpoints/2026-09-11T193400Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ca4a9a44d352adf2a337dd08a1797c0ba88ffd2c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ca4a9a44d352adf2a337dd08a1797c0ba88ffd2c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T193400Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "0f66ed0b099241d7a8f69329ffa58e4b0936ce7b"
+    },
+    {
+      "rank": 381,
+      "path": "review-runs/checkpoints/2026-09-11T192800Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "901333a93b9eab74c9ac42a2ae1538153acf3cc8",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "901333a93b9eab74c9ac42a2ae1538153acf3cc8"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T192800Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "d817863eccf30ea7a330278b604fd985c9ff3372"
+    },
+    {
+      "rank": 382,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-partial-publication-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "b2f429445edada1e7a7d0affbcbccd5341ab8e03",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "b2f429445edada1e7a7d0affbcbccd5341ab8e03"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-partial-publication-revalidation.md",
+      "ledger_commit": "1c6b17e90ea577c9086ace0a746a72466205582d"
+    },
+    {
+      "rank": 383,
+      "path": "review-runs/checkpoints/2026-09-11T183420Z__9edd3e23__final-checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a2f3e2ff29da41ff2614a77d85f309bd1294ce2e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T183420Z__9edd3e23__final-checkpoint.md",
+      "ledger_commit": "8ac01cfad6e43781ec3639f225d72b8d562b47f0"
+    },
+    {
+      "rank": 384,
+      "path": "review-runs/checkpoints/2026-09-11T183050Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a17078c4408baa5bbeac3a8204bb1e1e27f38a17",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a17078c4408baa5bbeac3a8204bb1e1e27f38a17"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T183050Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "af79c1eacdf7e843e6b3970e3ef26c9b32cd1c3d"
+    },
+    {
+      "rank": 385,
+      "path": "review-runs/checkpoints/2026-09-11T182350Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "cb73401ddd16e2006a31af2e8277a142b4384c82",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "cb73401ddd16e2006a31af2e8277a142b4384c82"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T182350Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "6142221dd32467b4f0be2be2891d076c1c506d52"
+    },
+    {
+      "rank": 386,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-saf-authority-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "83b034a779605a62c78ad394135299cfb4eefb7f",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "83b034a779605a62c78ad394135299cfb4eefb7f"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__terminal-saf-authority-promotion.md",
+      "ledger_commit": "6a229a02545f38cbfc16c31ad29491070c95008f"
+    },
+    {
+      "rank": 387,
+      "path": "review-runs/checkpoints/2026-09-11T174700Z__9edd3e23__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "618d23298d3737101e1090630b9124e579828753",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "618d23298d3737101e1090630b9124e579828753"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T174700Z__9edd3e23__final_checkpoint.md",
+      "ledger_commit": "b5efa8b617a88f0b071d0e765643439126ee4026"
+    },
+    {
+      "rank": 388,
+      "path": "review-runs/checkpoints/2026-09-11T174100Z__9edd3e23__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "d2fe969b72cc97342670a6b2f6010a550a67192e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "d2fe969b72cc97342670a6b2f6010a550a67192e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T174100Z__9edd3e23__final_checkpoint.md",
+      "ledger_commit": "7dda47b7e39a548537b0b3b77750b6befa912d17"
+    },
+    {
+      "rank": 389,
+      "path": "review-runs/checkpoints/2026-09-11T173600Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "f6f8cdc7d7ea8323e027ccd49249990f4f3e8cf1"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T173600Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "e2c9fff158faf3cf070282f0bc1b8465ceae3fbf"
+    },
+    {
+      "rank": 390,
+      "path": "review-runs/checkpoints/2026-09-11T172500Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "0456702ec05c716483e5c176a28d6b4e6cf7d4bb"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T172500Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "98c9ae95e722a55ca697f06e9413005eb46280cc"
+    },
+    {
+      "rank": 391,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__download-archive-saf-authority-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "6a1e55d644a35a461ee82b9a3d0bd1747c31defd"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__download-archive-saf-authority-promotion.md",
+      "ledger_commit": "4652df32468e0981e3474d8c10125dcea2e40f49"
+    },
+    {
+      "rank": 392,
+      "path": "review-runs/checkpoints/2026-09-12__9edd3e23__metadata-f14-closure.md",
+      "file_change_status": "added",
+      "source_blob_sha": "abfd56f2e3fc869cad5365ad15f8e2403064d20e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "abfd56f2e3fc869cad5365ad15f8e2403064d20e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__9edd3e23__metadata-f14-closure.md",
+      "ledger_commit": "1bf5bb8fc9a4ced1a26cd22a29c8a142e35f310f"
+    },
+    {
+      "rank": 393,
+      "path": "review-runs/checkpoints/2026-09-11T163500Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "e8d2f9aff0d39f059e8b9a7bf36f6de1d39cb951",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "e8d2f9aff0d39f059e8b9a7bf36f6de1d39cb951"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T163500Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "231797392e15ed36f4ff69382ea9751236c25090"
+    },
+    {
+      "rank": 394,
+      "path": "review-runs/checkpoints/2026-09-11T164000Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "17af5c7e616a8533c6bb572dfed7fc54091999fd",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "17af5c7e616a8533c6bb572dfed7fc54091999fd"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T164000Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "6bf5da37141f5186b829665dedd794fc2a416fd8"
+    },
+    {
+      "rank": 395,
+      "path": "review-runs/checkpoints/2026-09-11T162700Z__9edd3e23__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "c97faeb3fd477652548344e2d96ca0a39737787e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "c97faeb3fd477652548344e2d96ca0a39737787e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T162700Z__9edd3e23__checkpoint.md",
+      "ledger_commit": "ba8346e4dc67660ccfb5377d48b3ea7784c9afd5"
+    },
+    {
+      "rank": 396,
+      "path": "review-runs/checkpoints/2026-09-12__36b43464__observe-stale-worker-alias-reconciliation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ab09011f54639084724cad5f8ccf6326c3065b18",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ab09011f54639084724cad5f8ccf6326c3065b18"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__36b43464__observe-stale-worker-alias-reconciliation.md",
+      "ledger_commit": "e9661d837c3dfcb29c266d8e7f49e627937da6ab"
+    },
+    {
+      "rank": 397,
+      "path": "review-runs/checkpoints/2026-09-12__36b43464__observe-enqueue-loss-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "7d03d8b4f65afd3e81f1a4ce315ea08f46dff429",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "7d03d8b4f65afd3e81f1a4ce315ea08f46dff429"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-12__36b43464__observe-enqueue-loss-broader-promotion.md",
+      "ledger_commit": "52f4a4d76a0f75dbab7268ce2bb548b91dbda234"
+    },
+    {
+      "rank": 398,
+      "path": "review-runs/checkpoints/2026-09-11T152500Z__36b43464__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "dae93a5fda0c25fb1ad75a8c8bd3b218368a32c0",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "dae93a5fda0c25fb1ad75a8c8bd3b218368a32c0"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T152500Z__36b43464__checkpoint.md",
+      "ledger_commit": "4796fdf997fa1136b1cea5aef54c85b9f3c06050"
+    },
+    {
+      "rank": 399,
+      "path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-stale-write-unblocked-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "cc5a44c447227b114833ebf2ac07bddac0fe396c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "cc5a44c447227b114833ebf2ac07bddac0fe396c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-stale-write-unblocked-revalidation.md",
+      "ledger_commit": "cf3787933f046498aca3c949bc705b21ac78a2dd"
+    },
+    {
+      "rank": 400,
+      "path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-source-identity-closure.md",
+      "file_change_status": "added",
+      "source_blob_sha": "3335d055c7fde8c028850dbb3dbf6b65e277cb60",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "3335d055c7fde8c028850dbb3dbf6b65e277cb60"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__36b43464__metadata-source-identity-closure.md",
+      "ledger_commit": "e9419ed444a16c593440157f323a0eac72bdac5c"
+    },
+    {
+      "rank": 401,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__observe-runtime-edit-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "7f6ae15da73c1ceac328fa82dd403e6cebe3348e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__observe-runtime-edit-broader-promotion.md",
+      "ledger_commit": "4c27b0588b632086085165882325e7961f675cd2"
+    },
+    {
+      "rank": 402,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__backup-history-marker-remap-broader-p0-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "613b5f1038047435e52edde9fd6cef453b9150ac",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "613b5f1038047435e52edde9fd6cef453b9150ac"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__backup-history-marker-remap-broader-p0-revalidation.md",
+      "ledger_commit": "527e7faf07b9ace09f35dd09745f36d774a4985e"
+    },
+    {
+      "rank": 403,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__output-provenance-broader-p0-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "58732bc4f9543977102d07bbc03e347c04ffcf50",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "58732bc4f9543977102d07bbc03e347c04ffcf50"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__output-provenance-broader-p0-revalidation.md",
+      "ledger_commit": "803eb9561199037da88750f3a97f3ace77ddbabb"
+    },
+    {
+      "rank": 404,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__history-retained-reference-toctou-broader-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a32f397d45cc403ee62aee9fab98bd8a38a378f8",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a32f397d45cc403ee62aee9fab98bd8a38a378f8"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__history-retained-reference-toctou-broader-revalidation.md",
+      "ledger_commit": "fd9b9575d2d07d1447876cd5f8ddad6932642650"
+    },
+    {
+      "rank": 405,
+      "path": "review-runs/checkpoints/2026-09-11T143200Z__36b43464__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "d4740b8b4ce017d74646e43a8f357f3ff5d90e60"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T143200Z__36b43464__final_checkpoint.md",
+      "ledger_commit": "57f6c390b360a60b7fa048418c1916cb879d8049"
+    },
+    {
+      "rank": 406,
+      "path": "review-runs/checkpoints/2026-09-11T143900Z__36b43464__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ac48368ce67e275441f728ba8caf69d9b7f714ae",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ac48368ce67e275441f728ba8caf69d9b7f714ae"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T143900Z__36b43464__checkpoint.md",
+      "ledger_commit": "8a4d3d5a741ea6887605de745b2d8daa31227a93"
+    },
+    {
+      "rank": 407,
+      "path": "review-runs/checkpoints/2026-09-11T142600Z__36b43464__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "29be8d442bfcb3e82a2f4895cddd70fa65e9f5a6",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "29be8d442bfcb3e82a2f4895cddd70fa65e9f5a6"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T142600Z__36b43464__checkpoint.md",
+      "ledger_commit": "4aed8a10dd352d2e46702525638598e8424a84ec"
+    },
+    {
+      "rank": 408,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__move-partial-saf-broader-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "b1916a941780628d7fa587ee03b358ddba66650c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "b1916a941780628d7fa587ee03b358ddba66650c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__move-partial-saf-broader-revalidation.md",
+      "ledger_commit": "d3d8cd5efcface95238aead9055eaf5f3d44d48c"
+    },
+    {
+      "rank": 409,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__cache-saf-authority-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "bbc77bd70ed3d783525d15a478a5a4a8765374a4",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "bbc77bd70ed3d783525d15a478a5a4a8765374a4"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__cache-saf-authority-broader-promotion.md",
+      "ledger_commit": "6cb74ff40b754f780422f114ffff1e6cdfd5bc24"
+    },
+    {
+      "rank": 410,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__cache-maintenance-live-owner-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "158ead753a859c638353eae3410dd14f1a973677",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "158ead753a859c638353eae3410dd14f1a973677"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__cache-maintenance-live-owner-broader-promotion.md",
+      "ledger_commit": "cbb91dc8ae8e01642807ca0316567197245afd63"
+    },
+    {
+      "rank": 411,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__keyword-history-source-identity-broader-promotion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "51a87c9d45605fad1cb65ea8889ef4d5ed685573",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "51a87c9d45605fad1cb65ea8889ef4d5ed685573"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__keyword-history-source-identity-broader-promotion.md",
+      "ledger_commit": "6fb5601b3e716aeb3b99957feda19a9519a4b9c7"
+    },
+    {
+      "rank": 412,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__terminal-task-identity-broader-registry-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a26825f38047bdd2e8c7d4bee19e685bd5c954ab",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a26825f38047bdd2e8c7d4bee19e685bd5c954ab"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__terminal-task-identity-broader-registry-revalidation.md",
+      "ledger_commit": "44b9b420abdf0b83b0ba63434b173b5758eb9e0a"
+    },
+    {
+      "rank": 413,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__queue-waiting-reorder-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "4519f609b8ba84e981d112df9102cb236ecaeb65",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "4519f609b8ba84e981d112df9102cb236ecaeb65"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__queue-waiting-reorder-current-basis-revalidation.md",
+      "ledger_commit": "0802ab4128326eafb795fbc6c867eb792da13084"
+    },
+    {
+      "rank": 414,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__cleanup-recurrence-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "4322a0934dc87fbf21270f280ce33bb69638bbc1",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "4322a0934dc87fbf21270f280ce33bb69638bbc1"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__cleanup-recurrence-current-basis-revalidation.md",
+      "ledger_commit": "a95189a1bacc7349c6a6354094d1d1b8c325bbd6"
+    },
+    {
+      "rank": 415,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__player-position-ordering-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ece9f3ecae7c0cb3013ab1c01ff3ff83c64b1f98",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ece9f3ecae7c0cb3013ab1c01ff3ff83c64b1f98"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__player-position-ordering-current-basis-revalidation.md",
+      "ledger_commit": "07f198cb78945eb683d08ae63b616ed58043a9c9"
+    },
+    {
+      "rank": 416,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__localadd-identity-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "fa9dbfaceec61d5704739bec67e217e40317f010",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "fa9dbfaceec61d5704739bec67e217e40317f010"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__localadd-identity-current-basis-revalidation.md",
+      "ledger_commit": "23898ab6a38ba88a922ba8acc0e54434c6c0aa3a"
+    },
+    {
+      "rank": 417,
+      "path": "review-runs/checkpoints/2026-09-11__4ef990e0__automatic-keyword-authority-closure.md",
+      "file_change_status": "added",
+      "source_blob_sha": "51904bc2db489a0fc8f9de4e8a743ba502923edb",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "51904bc2db489a0fc8f9de4e8a743ba502923edb"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__4ef990e0__automatic-keyword-authority-closure.md",
+      "ledger_commit": "fb46de83c2e124a0e599c9fd09ba8599081b593c"
+    },
+    {
+      "rank": 418,
+      "path": "review-runs/checkpoints/2026-09-11T134200Z__4ef990e0__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "513f631e1bdffdb1f1f9149390f5ee4b62e18764",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "513f631e1bdffdb1f1f9149390f5ee4b62e18764"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T134200Z__4ef990e0__final_checkpoint.md",
+      "ledger_commit": "22d0261aa966b72387fe22d031374372c7a7f0ec"
+    },
+    {
+      "rank": 419,
+      "path": "review-runs/checkpoints/2026-09-11T133500Z__4ef990e0__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "3ee38d86615108179fed7d54da0b68155291f084",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "3ee38d86615108179fed7d54da0b68155291f084"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T133500Z__4ef990e0__checkpoint.md",
+      "ledger_commit": "bc63c7e25cc6abe1300b7be86217c3046844f732"
+    },
+    {
+      "rank": 420,
+      "path": "review-runs/checkpoints/2026-09-11T132500Z__4ef990e0__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ddc6287913544ab614a277c856dbf2e7d89382f7",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ddc6287913544ab614a277c856dbf2e7d89382f7"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T132500Z__4ef990e0__checkpoint.md",
+      "ledger_commit": "fb6cbbf0754cc5ec47bb6169d9bb256b19f8eb77"
+    },
+    {
+      "rank": 421,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__group-transaction-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "7e6f4749319e7ec35af9612f8479067696b307c1",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "7e6f4749319e7ec35af9612f8479067696b307c1"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__group-transaction-current-basis-revalidation.md",
+      "ledger_commit": "623361ad5f6c1b909873d1eac83f3a93af38a758"
+    },
+    {
+      "rank": 422,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__playlist-transaction-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "d684b48b3fbdbd16524fb330323208fd3d2a7c93",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "d684b48b3fbdbd16524fb330323208fd3d2a7c93"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__playlist-transaction-current-basis-revalidation.md",
+      "ledger_commit": "a9c855b781bcae57f1b4c7676511eadc1f7061ab"
+    },
+    {
+      "rank": 423,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__localadd-handoff-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "f5c18d065f1c725a2787eeea06d611058c2e8768",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "f5c18d065f1c725a2787eeea06d611058c2e8768"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__localadd-handoff-current-basis-revalidation.md",
+      "ledger_commit": "8c337d84d2da2e51f8de11b4a5cd0d67ec835dd2"
+    },
+    {
+      "rank": 424,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__terminal-handoff-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "74462a8daa5a11f740be12881e23465101aef51b",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "74462a8daa5a11f740be12881e23465101aef51b"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__terminal-handoff-current-basis-revalidation.md",
+      "ledger_commit": "9606d127848f30b073bebce0ebc7b1e374c08d31"
+    },
+    {
+      "rank": 425,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__download-delete-snapshot-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "39877320c8a4388a362acdc4ecdd31ad659d9809",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "39877320c8a4388a362acdc4ecdd31ad659d9809"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__download-delete-snapshot-current-basis-revalidation.md",
+      "ledger_commit": "ac440cf403905fba0fb00ad179357a22cb087ad1"
+    },
+    {
+      "rank": 426,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-thumbnail-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "26ae4832f28b75a77694aef15f1cdf41c7fbe3f0",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "26ae4832f28b75a77694aef15f1cdf41c7fbe3f0"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-thumbnail-current-basis-revalidation.md",
+      "ledger_commit": "2694ce669a15267ce9075d0b445f45c18dff733e"
+    },
+    {
+      "rank": 427,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-portable-id-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "b33b6be5d0c6faf4af8f93c68b709b416aad9dff",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "b33b6be5d0c6faf4af8f93c68b709b416aad9dff"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-portable-id-current-basis-revalidation.md",
+      "ledger_commit": "5561ad0bf1d17a509f978d19f8a9265bbf52348a"
+    },
+    {
+      "rank": 428,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "5fd78d81e218cf7f463348f3d177f85c135978e9",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "5fd78d81e218cf7f463348f3d177f85c135978e9"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-revalidation.md",
+      "ledger_commit": "9b225fdf477bff596a5df64e88924ac908d8882d"
+    },
+    {
+      "rank": 429,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__history-mutation-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "964b5926c549b1812faabafdbcdbf3adaa08d70e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "964b5926c549b1812faabafdbcdbf3adaa08d70e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__history-mutation-current-basis-revalidation.md",
+      "ledger_commit": "c90e0e95398806771d7a33c221ebed7cd441b3b9"
+    },
+    {
+      "rank": 430,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-carry-forward.md",
+      "file_change_status": "added",
+      "source_blob_sha": "57557895b41a52dcc1d1b7fb3fd65eacc67cbe4e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "57557895b41a52dcc1d1b7fb3fd65eacc67cbe4e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__backup-capture-current-basis-carry-forward.md",
+      "ledger_commit": "dd2da72bf8b76b7dd7fe2ac3971f6d97095445e7"
+    },
+    {
+      "rank": 431,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__history-date-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "9d481a5c4f9d818f9bfd5517910ad2c726af2862",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "9d481a5c4f9d818f9bfd5517910ad2c726af2862"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__history-date-current-basis-revalidation.md",
+      "ledger_commit": "5c9274b8d691eade32fe345f40fc4e6eda171cb8"
+    },
+    {
+      "rank": 432,
+      "path": "review-runs/checkpoints/2026-09-11T122700Z__5da8bc33__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "6cc2c45b2c10538c0ab94e47e407cd034a8ae05e",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "6cc2c45b2c10538c0ab94e47e407cd034a8ae05e"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T122700Z__5da8bc33__final_checkpoint.md",
+      "ledger_commit": "ccd9124114147d0c4dd6191d2c0c5be1d1cd55f3"
+    },
+    {
+      "rank": 433,
+      "path": "review-runs/checkpoints/2026-09-11T122200Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "9cb147c1cfd3411add16e0d67089a18fdf9fc3ba",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "9cb147c1cfd3411add16e0d67089a18fdf9fc3ba"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T122200Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "b0750a205eae2b2c6fd9a6f1f1082044326694e8"
+    },
+    {
+      "rank": 434,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__schedule-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "732e558f2dea413804e521a901e83a3fa1a883b0",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "732e558f2dea413804e521a901e83a3fa1a883b0"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__schedule-current-basis-revalidation.md",
+      "ledger_commit": "4c67d7012a5d37652529ec1e281b92a53eab627f"
+    },
+    {
+      "rank": 435,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__cache-root-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "7c9ca4f0bea5efea31394c42ce5fd60940261dcf",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "7c9ca4f0bea5efea31394c42ce5fd60940261dcf"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__cache-root-current-basis-revalidation.md",
+      "ledger_commit": "6c682c82dc1a67587acb944300de095327184801"
+    },
+    {
+      "rank": 436,
+      "path": "review-runs/checkpoints/2026-09-11T112200Z__5da8bc33__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "4722bee21697c72e52d427db0e7095989bdb96a3",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "4722bee21697c72e52d427db0e7095989bdb96a3"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T112200Z__5da8bc33__final_checkpoint.md",
+      "ledger_commit": "1a37d56bcc4dc278a364c853da2f1fc7a28aa730"
+    },
+    {
+      "rank": 437,
+      "path": "review-runs/checkpoints/2026-09-11T112032Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "695775e4719140f93075e25d574fd85d02298e22",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "695775e4719140f93075e25d574fd85d02298e22"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T112032Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "99c4323abd09d61bac4d8b6dc1e1501102421a6e"
+    },
+    {
+      "rank": 438,
+      "path": "review-runs/checkpoints/2026-09-11T103101Z__5da8bc33__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "ea501a7a8f19e580f2b0f72fcdc81e041e09e314",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "ea501a7a8f19e580f2b0f72fcdc81e041e09e314"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T103101Z__5da8bc33__final_checkpoint.md",
+      "ledger_commit": "512899ffc97dfa7349b69f2d4ffb8224e64bb7c3"
+    },
+    {
+      "rank": 439,
+      "path": "review-runs/checkpoints/2026-09-11T103032Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "9130492c300af02fca7e4be28f42daadc8250532",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "9130492c300af02fca7e4be28f42daadc8250532"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T103032Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "d77cd02b54eae3590fa2b1924f261eb5fb9ec19e"
+    },
+    {
+      "rank": 440,
+      "path": "review-runs/checkpoints/2026-09-11T102621Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "a87cc9865962194a1a2c348c028755c1b45dffc2",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "a87cc9865962194a1a2c348c028755c1b45dffc2"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T102621Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "1f4fd43b8723ef53f06df122d057c791ffc67958"
+    },
+    {
+      "rank": 441,
+      "path": "review-runs/checkpoints/2026-09-11T093600Z__5da8bc33__final_checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "11e964eb5a2f97add1cf77c42bfc66620fc6e134",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "11e964eb5a2f97add1cf77c42bfc66620fc6e134"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T093600Z__5da8bc33__final_checkpoint.md",
+      "ledger_commit": "b293dfdcf16cfd6b59e538f17f017ebd8fe89d4a"
+    },
+    {
+      "rank": 442,
+      "path": "review-runs/checkpoints/2026-09-11T093300Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "76360d70f150aba41bb8043e6b02b3daef808d9c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "76360d70f150aba41bb8043e6b02b3daef808d9c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T093300Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "87f68d33aa6eaf3381989bd9552dccef5b97e400"
+    },
+    {
+      "rank": 443,
+      "path": "review-runs/checkpoints/2026-09-11T092248Z__5da8bc33__checkpoint.md",
+      "file_change_status": "added",
+      "source_blob_sha": "5c07cced67c89afa9071036defb48768589284db",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "5c07cced67c89afa9071036defb48768589284db"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11T092248Z__5da8bc33__checkpoint.md",
+      "ledger_commit": "c8274e375fe190977c02dae2fc20fc4d46b0cc92"
+    },
+    {
+      "rank": 444,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__hardsub-generation-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "e4c8b1bf19ce291df5daa78583c576b000e08d25",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "e4c8b1bf19ce291df5daa78583c576b000e08d25"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__hardsub-generation-current-basis-revalidation.md",
+      "ledger_commit": "738bb1ed532a977d018ee2826f3538d8d36cefe7"
+    },
+    {
+      "rank": 445,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__link-input-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "5c9e54d41c3b11ade9dd761cb87ae9b3b5eea09c",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "5c9e54d41c3b11ade9dd761cb87ae9b3b5eea09c"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__link-input-current-basis-revalidation.md",
+      "ledger_commit": "bdc88132d9509e42c158db739837b84cff580405"
+    },
+    {
+      "rank": 446,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__ordinary-download-handoff-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "210512404dd5a96fdd25577a4cf610944a4bc653",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "210512404dd5a96fdd25577a4cf610944a4bc653"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__ordinary-download-handoff-current-basis-revalidation.md",
+      "ledger_commit": "ba4328e6ee61849c5268c2664920cae71ef662f8"
+    },
+    {
+      "rank": 447,
+      "path": "review-runs/checkpoints/2026-09-11__5da8bc33__automatic-keyword-authority-review-fix-completion.md",
+      "file_change_status": "added",
+      "source_blob_sha": "1926a0b9c2726387a56527be0d59ea8e0a3df516",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "1926a0b9c2726387a56527be0d59ea8e0a3df516"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__5da8bc33__automatic-keyword-authority-review-fix-completion.md",
+      "ledger_commit": "e5561b82845feed7d297e0cffada08cad4073800"
+    },
+    {
+      "rank": 448,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__keyword-sync-handoff-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "85a0abf3d850f835f872748d3d42e3ae8d19484b",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "85a0abf3d850f835f872748d3d42e3ae8d19484b"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__keyword-sync-handoff-current-basis-revalidation.md",
+      "ledger_commit": "67ed894057e7be9ef61c5fa898af0d28144c3d78"
+    },
+    {
+      "rank": 449,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__metadata-source-identity-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "f515462b159c9417f3c055e2466d12b9091a3c56",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "f515462b159c9417f3c055e2466d12b9091a3c56"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__metadata-source-identity-current-basis-revalidation.md",
+      "ledger_commit": "431c97dd1e8f7d75f73990e47f858d4f3251bc0f"
+    },
+    {
+      "rank": 450,
+      "path": "review-runs/checkpoints/2026-09-11__9c5191c3__observe-source-identity-current-basis-revalidation.md",
+      "file_change_status": "added",
+      "source_blob_sha": "9f4f649fbbf5aa1ff7b6f48afd8e32babe2279b2",
+      "present_in_frozen_tree": {
+        "state": "DIRECT",
+        "value": true
+      },
+      "frozen_blob_sha": {
+        "state": "DIRECT",
+        "value": "9f4f649fbbf5aa1ff7b6f48afd8e32babe2279b2"
+      },
+      "ledger_path": "review-runs/checkpoints/2026-09-11__9c5191c3__observe-source-identity-current-basis-revalidation.md",
+      "ledger_commit": "27975f3821dacc71f7072b06ee8fa5b547ede6a4"
+    }
+  ]
+}
