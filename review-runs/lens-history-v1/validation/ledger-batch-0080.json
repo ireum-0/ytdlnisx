@@ -1,0 +1,111 @@
+{
+  "schema_version": "lens-history-v1",
+  "validation_kind": "ledger_batch_validation",
+  "source_snapshot": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+  "terminal_tail_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+    "blob_sha": "84785a7a10e5810afe79982913ef6b827477733a"
+  },
+  "batch": {
+    "inventory": "review-runs/lens-history-v1/inventory-batches/0080-newest-761-764.jsonl",
+    "ledger": "review-runs/lens-history-v1/ledger-batches/0080-newest-761-764.jsonl",
+    "history_rank_from_newest": {
+      "first": 761,
+      "last": 764
+    },
+    "records": 4,
+    "terminal_partial_batch": true,
+    "internal_partitions": [
+      {
+        "first": 761,
+        "last": 764,
+        "records": 4,
+        "schema_status": "PASS",
+        "source_to_frozen_blob_identity": "4/4 MATCH",
+        "terminal_tail": true
+      }
+    ]
+  },
+  "byte_identity": {
+    "inventory_git_blob_sha": {
+      "expected": "6bcd30b32a3db787eda473bd8b77c9047bdc1b05",
+      "stored": "6bcd30b32a3db787eda473bd8b77c9047bdc1b05",
+      "status": "MATCH"
+    },
+    "ledger_git_blob_sha": {
+      "expected": "ae736261e1aff47adf6bd68c003a8f8ff9d6aa63",
+      "stored": "ae736261e1aff47adf6bd68c003a8f8ff9d6aa63",
+      "status": "MATCH"
+    }
+  },
+  "source_provenance": {
+    "commit_detail_file_binding": "4/4 COMPLETE",
+    "frozen_tree_presence": "4/4 COMPLETE",
+    "source_to_frozen_blob_identity": "4/4 MATCH"
+  },
+  "schema_validation": {
+    "schema": "review-runs/lens-history-v1/lens-history-v1.schema.json",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "validator": "Draft 2020-12",
+    "records_checked": 4,
+    "valid_records": 4,
+    "invalid_records": 0,
+    "status": "PASS"
+  },
+  "classification_summary": {
+    "UNINSTRUMENTED": 4,
+    "LEGACY_AUDIT_LENS": 0,
+    "STRUCTURED_PROVISIONAL": 0,
+    "STRUCTURED_FINAL": 0,
+    "explicit_final_records": 0,
+    "explicit_intermediate_records": 0,
+    "verified_bootstrap_records": 0,
+    "substantive_non_final_records": 0,
+    "kind_not_verified_records": 4
+  },
+  "implementation_sha_summary": {
+    "baf26583074601516d4c283deb27bfb65fb7c4ad": 2,
+    "2c0bf3a5b4489c4294df0aabb91a3ec900f5604d": 1,
+    "36ba1cac40b961ae876399fc5a9afe01749c5fe3": 1
+  },
+  "semantic_preservation": {
+    "material_status_transitions_preserved": true,
+    "same_root_residuals_preserved": true,
+    "ambiguous_kind_ranks": [
+      761,
+      762,
+      763,
+      764
+    ],
+    "provisional_and_historical_only_states_preserved": true,
+    "converted_to_numeric_effectiveness": false,
+    "terminal_tail_preserved": true,
+    "reason": "exact M17 terminal historical classification, explicit new P0, implementation transitions, prior-candidate uncertainty, status/root residuals and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+  },
+  "aggregate_reconciliation": {
+    "cumulative_eligible_structured_finals_in_batch": 0,
+    "aggregate_delta": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 0,
+      "rejected_candidates_with_proof": 0,
+      "not_verified_candidates": 0,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 0
+    },
+    "observed_measured_effectiveness_after_batch": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "status": "UNCHANGED_PASS"
+  },
+  "historical_total_effectiveness": {
+    "state": "NOT_VERIFIED",
+    "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+  }
+}
