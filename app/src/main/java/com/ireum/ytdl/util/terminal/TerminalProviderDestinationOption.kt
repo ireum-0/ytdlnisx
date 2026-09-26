@@ -30,7 +30,11 @@ object TerminalProviderDestinationOption {
     /** Renders the structured option for one exact provider tree grant. */
     fun render(treeUri: String): String {
         val trimmed = treeUri.trim()
-        require(trimmed.isNotEmpty()) { "Terminal provider destination requires a tree URI" }
+        if (trimmed.isEmpty()) {
+            throw TerminalCommandMetadataException(
+                "Terminal provider destination requires a tree URI",
+            )
+        }
         return "$OPTION=$trimmed"
     }
 
@@ -50,11 +54,13 @@ object TerminalProviderDestinationOption {
     fun extract(command: String): Extracted {
         val matches = PATTERN.findAll(command).toList()
         if (matches.isEmpty()) return Extracted(command, null)
-        require(matches.size == 1) {
-            "Terminal command declares more than one provider destination"
+        if (matches.size > 1) {
+            throw TerminalCommandMetadataException(
+                "Terminal command declares more than one provider destination",
+            )
         }
         val value = matches.single().groupValues.drop(1).firstOrNull { it.isNotEmpty() }
-            ?: throw IllegalArgumentException(
+            ?: throw TerminalCommandMetadataException(
                 "Terminal provider destination is not a usable location",
             )
         val remaining = command

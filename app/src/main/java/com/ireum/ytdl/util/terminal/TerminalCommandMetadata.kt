@@ -20,6 +20,17 @@ import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandPathResolution
  * process can observe it, and is part of the command fingerprint, so it
  * inherits the exact durable dispatch ownership contract.
  */
+/**
+ * The exact failure surface of Terminal-owned command metadata parsing.
+ *
+ * Malformed or repeated Terminal-owned metadata is refused rather than
+ * repaired.  Command composition stays strict and throws this, while durable
+ * recovery classifies it into an explicit non-authoritative disposition.  It is
+ * a distinct type so recovery can catch precisely this surface and never hide an
+ * unrelated database, transaction, admission, cancellation or scheduler failure.
+ */
+class TerminalCommandMetadataException(message: String) : IllegalArgumentException(message)
+
 object TerminalCommandMetadata {
     const val COMMAND_FORMAT_OPTION = "--ytdlnisx-terminal-command-format"
 
@@ -76,24 +87,33 @@ object TerminalCommandMetadata {
         // A bare occurrence carries no value and must not be read as an
         // absent option, so it is refused instead of guessed.
         if (BARE_TOKEN.findAll(command).count() != formatMatches.size) {
-            throw IllegalArgumentException(
+            throw TerminalCommandMetadataException(
                 "Terminal command format is not a usable value",
             )
         }
         val format = when {
             formatMatches.isEmpty() -> null
             // More than one format marker is ambiguous and refused.
-            formatMatches.size > 1 -> throw IllegalArgumentException(
+            formatMatches.size > 1 -> throw TerminalCommandMetadataException(
                 "Terminal command declares more than one command format",
             )
             else -> formatMatches.single().groupValues.drop(1).firstOrNull { it.isNotEmpty() }
-                ?: throw IllegalArgumentException(
+                ?: throw TerminalCommandMetadataException(
                     "Terminal command format is not a usable value",
                 )
         }
         // Remove the format marker first, then the provider destination, so
         // each removal operates on the result of the previous one and neither
         // Terminal-owned option survives.
+        // An unrecognized format value is refused rather than treated as absent.
+        // This app only ever writes CURRENT_FORMAT, so any other value is not
+        // app-authored, and silently dropping it would strip unusable metadata
+        // and let the remainder execute.
+        if (format != null && format != CURRENT_FORMAT) {
+            throw TerminalCommandMetadataException(
+                "Terminal command declares an unsupported command format",
+            )
+        }
         val withoutFormat = if (formatMatches.isEmpty()) {
             command
         } else {
@@ -137,6 +157,48 @@ object TerminalCommandMetadata {
          * never inherit authority from the current preference.
          */
         data object Ambiguous : DurableAuthority
+    }
+
+    /**
+     * A durable classification that never throws.
+     *
+     * Already-durable state may legitimately contain Terminal-owned metadata
+     * that this implementation would refuse to compose, because those bytes were
+     * legal user input before they had any application meaning.  Recovery must
+     * still reach a decision for such a row instead of aborting the batch it is
+     * reconciling, so malformed metadata becomes an explicit non-authoritative
+     * disposition rather than an exception.
+     */
+    sealed interface DurableClassification {
+        /** The command could be parsed; [authority] carries the decision. */
+        data class Parsed(val authority: DurableAuthority) : DurableClassification
+
+        /**
+         * Terminal-owned metadata in this durable command is malformed,
+         * repeated, or unusable.  It is never current format, never self-bound
+         * by guessing around the defect, and never resolved from the current
+         * preference.
+         */
+        data class Malformed(val reason: String) : DurableClassification
+    }
+
+    /**
+     * Classifies an already-durable command without propagating a metadata parse
+     * failure.
+     *
+     * Only [TerminalCommandMetadataException] is caught.  Any other failure is a
+     * genuine infrastructure or programming fault and is deliberately allowed to
+     * propagate rather than being reported as malformed Terminal metadata.
+     */
+    fun classifyDurableResult(
+        command: String,
+        formatGeneration: Long,
+    ): DurableClassification = try {
+        DurableClassification.Parsed(classifyDurable(command, formatGeneration))
+    } catch (malformed: TerminalCommandMetadataException) {
+        DurableClassification.Malformed(
+            malformed.message ?: "Terminal-owned command metadata is malformed",
+        )
     }
 
     /**

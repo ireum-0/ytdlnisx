@@ -11,9 +11,11 @@ import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.models.TerminalItem
 import com.ireum.ytdl.database.models.WorkManagerHandoffCarrier
+import com.ireum.ytdl.database.viewmodel.TerminalViewModel
 import com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer
 import com.ireum.ytdl.util.terminal.TerminalCommandMetadata
 import com.ireum.ytdl.util.terminal.TerminalProviderDestinationOption
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -56,6 +58,7 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        File(context.filesDir, "terminal-execution-recovery").deleteRecursively()
         database = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
             .addTypeConverter(Converters())
             .allowMainThreadQueries()
@@ -76,6 +79,10 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
 
     @After
     fun tearDown() {
+        // Execution witnesses live in the real app files directory rather than
+        // the in-memory database, so they must be removed explicitly or a later
+        // test would inherit a witness for a recycled terminal id.
+        File(context.filesDir, "terminal-execution-recovery").deleteRecursively()
         // Reconciliation dispatches on a shared background scope.  Let that work
         // drain while this class's database is still installed, so a late
         // dispatch cannot resolve against the next test class's state.
@@ -455,6 +462,315 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
         )
         // Nor can it claim its own boundary.
         assertFalse(isCurrentRequest(legacyId, legacyCarrier))
+    }
+
+    /**
+     * A. Bare-format T1 must not abort a valid legacy SelfBound T2.
+     *
+     * T1 is encountered first, so if its classification propagated out of the
+     * row loop the whole transaction would abort and T2 would be stranded.
+     */
+    @Test
+    fun bareFormatRowDoesNotStrandAValidLegacySibling(): Unit = runBlocking {
+        val malformedCommand = "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION} " +
+            "https://example.com/video-malformed-bare"
+        val malformedId = database.terminalDao.insert(TerminalItem(command = malformedCommand))
+        terminals += malformedId
+        // T2 has its own exact authority and no carrier, so it must be
+        // reconstructed at generation 1 and dispatched.
+        val siblingCommand = "-P /storage/emulated/0/SiblingCommand " +
+            "https://example.com/video-valid-sibling"
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+
+        // T2 converged.
+        assertTrue(
+            "the valid sibling must still be dispatched",
+            enqueued.any {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == siblingCommand
+            },
+        )
+        assertNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                siblingId.toString(),
+            ),
+        )
+        // T1 is preserved and non-runnable.
+        assertEquals(malformedCommand, database.terminalDao.getTerminalById(malformedId)?.command)
+        assertNull(
+            "no runnable carrier may exist for the malformed row",
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                malformedId.toString(),
+            ),
+        )
+        assertTrue(
+            "the malformed row must never be dispatched",
+            enqueued.none {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == malformedCommand
+            },
+        )
+    }
+
+    /**
+     * B. Repeated-format T1 must not abort a genuine current generation-2 T2.
+     */
+    @Test
+    fun repeatedFormatRowDoesNotStrandACurrentGenerationSibling(): Unit = runBlocking {
+        val malformedCommand = TerminalCommandMetadata.renderCommandFormat() + " " +
+            TerminalCommandMetadata.renderCommandFormat() + " " +
+            "https://example.com/video-malformed-repeated"
+        val malformedId = database.terminalDao.insert(TerminalItem(command = malformedCommand))
+        terminals += malformedId
+        useConfiguredProvider(providerA)
+
+        val siblingCommand = TerminalCommandIntentMaterializer.materialize(
+            "https://example.com/video-current-sibling",
+            providerA,
+        )
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        seedCarrier(
+            siblingId,
+            siblingCommand,
+            TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+        )
+
+        useConfiguredProvider(providerB)
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+
+        assertTrue(
+            "the current-generation sibling must still be dispatched",
+            enqueued.any {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == siblingCommand
+            },
+        )
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                malformedId.toString(),
+            ),
+        )
+    }
+
+    /**
+     * C/D. Unusable format value and malformed provider metadata are both
+     * per-row dispositions, and neither may abort the batch.
+     */
+    @Test
+    fun unusableFormatValueAndMalformedProviderDoNotStrandSiblings(): Unit = runBlocking {
+        val emptyFormatCommand = "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}= " +
+            "https://example.com/video-malformed-empty"
+        val emptyFormatId = database.terminalDao.insert(TerminalItem(command = emptyFormatCommand))
+        terminals += emptyFormatId
+
+        val repeatedProviderCommand =
+            "${TerminalProviderDestinationOption.render(providerC)} " +
+                "${TerminalProviderDestinationOption.render(providerC)} " +
+                "https://example.com/video-malformed-provider"
+        val repeatedProviderId =
+            database.terminalDao.insert(TerminalItem(command = repeatedProviderCommand))
+        terminals += repeatedProviderId
+
+        val siblingCommand = TerminalProviderDestinationOption.render(providerC) +
+            " https://example.com/video-valid-provider-sibling"
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+
+        assertTrue(
+            "a self-bound provider sibling must still be dispatched",
+            enqueued.any {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == siblingCommand
+            },
+        )
+        for (stranded in listOf(emptyFormatId, repeatedProviderId)) {
+            assertNull(
+                "malformed row $stranded must have no runnable carrier",
+                database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    stranded.toString(),
+                ),
+            )
+            assertNotNull("malformed row $stranded must be preserved", database.terminalDao.getTerminalById(stranded))
+        }
+    }
+
+    /**
+     * E. A malformed row that does have an outstanding carrier has exactly that
+     * carrier revoked, without touching its siblings.
+     */
+    @Test
+    fun malformedRowWithOutstandingCarrierIsSupersededNotExecuted(): Unit = runBlocking {
+        val malformedCommand = "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION} " +
+            "https://example.com/video-malformed-carrier"
+        val (malformedId, malformedCarrier) = seedLegacyTerminal(malformedCommand)
+        requireNotNull(malformedCarrier)
+        val siblingCommand = "-P /storage/emulated/0/SiblingTwo " +
+            "https://example.com/video-sibling-two"
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+
+        val revoked = database.workManagerHandoffCarrierDao.get(malformedCarrier.handoffId)
+        assertEquals(WorkManagerHandoffCarrier.SUPERSEDED, revoked?.state)
+        // Its exact request is no longer the current owner.
+        assertFalse(isCurrentRequest(malformedId, malformedCarrier))
+        // The row and its command survive.
+        assertEquals(malformedCommand, database.terminalDao.getTerminalById(malformedId)?.command)
+        // The sibling still converged.
+        assertTrue(
+            enqueued.any {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == siblingCommand
+            },
+        )
+    }
+
+    /**
+     * F/G. Restart: the malformed disposition is stable and never synthesizes a
+     * carrier, while valid siblings keep converging across process recreation.
+     */
+    @Test
+    fun malformedDispositionIsStableAcrossRestartAndSiblingsStillConverge(): Unit = runBlocking {
+        val malformedCommand = TerminalCommandMetadata.renderCommandFormat() + " " +
+            TerminalCommandMetadata.renderCommandFormat() + " " +
+            "https://example.com/video-restart-malformed"
+        val malformedId = database.terminalDao.insert(TerminalItem(command = malformedCommand))
+        terminals += malformedId
+        val siblingCommand = "-P /storage/emulated/0/SiblingThree " +
+            "https://example.com/video-sibling-three"
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+        enqueued.clear()
+        // Simulate process recreation: reconcile again from durable state.
+        WorkManagerHandoffRecovery.reconcile(context)
+        settleEnqueueWindow()
+
+        assertNull(
+            "restart must not synthesize a carrier for the malformed row",
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                malformedId.toString(),
+            ),
+        )
+        assertNotNull(database.terminalDao.getTerminalById(malformedId))
+        // The sibling carrier already exists from the first pass, so the second
+        // pass must neither drop nor duplicate it.
+        assertNotNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                siblingId.toString(),
+            ),
+        )
+    }
+
+    /**
+     * H. Worker admission rejects an exact old request carrying malformed
+     * metadata as a non-authoritative no-op, with no parser exception escaping
+     * and no planner or native execution.
+     */
+    @Test
+    fun workerAdmissionRejectsMalformedMetadataWithoutThrowing(): Unit = runBlocking {
+        val malformedCommand = "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION} " +
+            "https://example.com/video-worker-malformed"
+        val (terminalId, carrier) = seedLegacyTerminal(malformedCommand)
+        requireNotNull(carrier)
+
+        // The durable authority check is a no-op, not an exception.
+        assertFalse(isCurrentRequest(terminalId, carrier))
+
+        // The planner is never reached for this state, and composing a plan from
+        // it would refuse rather than execute the remainder.
+        val plannerFailure = runCatching {
+            com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory.create(
+                context = context,
+                preferences = preferences,
+                command = malformedCommand,
+                taskId = "malformed",
+            )
+        }
+        assertTrue("the planner must refuse malformed durable metadata", plannerFailure.isFailure)
+    }
+
+    /**
+     * I. Current insert stays strict: malformed or repeated Terminal-owned
+     * metadata is still refused before any row or carrier becomes durable.
+     */
+    @Test
+    fun currentInsertStillRejectsMalformedMetadataBeforeDurability(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        useConfiguredProvider(providerA)
+        for (malformed in listOf(
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION} https://example.com/video",
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}= https://example.com/video",
+            TerminalCommandMetadata.renderCommandFormat() + " " +
+                TerminalCommandMetadata.renderCommandFormat() + " https://example.com/video",
+            "${TerminalProviderDestinationOption.render(providerC)} " +
+                "${TerminalProviderDestinationOption.render(providerC)} https://example.com/video",
+        )) {
+            val failure = runCatching {
+                viewModel.insert(TerminalItem(command = malformed))
+            }
+            assertTrue("insert must refuse: $malformed", failure.isFailure)
+        }
+        // Nothing became durable.
+        assertTrue(database.terminalDao.getTerminalById(1L) == null)
+        assertTrue(
+            database.workManagerHandoffCarrierDao
+                .getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    "1",
+                ) == null,
+        )
+    }
+
+    /**
+     * The non-throwing durable classification reports malformed metadata as its
+     * own disposition and never as current format or self-bound.
+     */
+    @Test
+    fun durableClassificationReportsMalformedWithoutThrowing() {
+        val malformed = listOf(
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION} https://example.com/video",
+            "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}= https://example.com/video",
+            TerminalCommandMetadata.renderCommandFormat() + " " +
+                TerminalCommandMetadata.renderCommandFormat() + " https://example.com/video",
+            "${TerminalProviderDestinationOption.render(providerC)} " +
+                "${TerminalProviderDestinationOption.render(providerC)} https://example.com/video",
+        )
+        for (command in malformed) {
+            for (generation in listOf(
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            )) {
+                val result = TerminalCommandMetadata.classifyDurableResult(command, generation)
+                assertTrue(
+                    "expected Malformed for: $command",
+                    result is TerminalCommandMetadata.DurableClassification.Malformed,
+                )
+                assertTrue(
+                    "a malformed disposition must carry a reason",
+                    (result as TerminalCommandMetadata.DurableClassification.Malformed)
+                        .reason.isNotBlank(),
+                )
+            }
+        }
     }
 
     @Test

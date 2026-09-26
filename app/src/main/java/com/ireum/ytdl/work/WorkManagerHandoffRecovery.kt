@@ -1586,8 +1586,12 @@ internal object WorkManagerHandoffRecovery {
      *   `reconcileTerminalDispatches`;
      * - finite convergence outcomes: an execution-owned Terminal converges
      *   through [TerminalExecutionRecovery]; a self-bound legacy Terminal is
-     *   reconstructed at the legacy dispatch format generation and runs; an
-     *   ambiguous Terminal is never dispatched again;
+     *   reconstructed at the legacy dispatch format generation and runs; a
+     *   malformed or ambiguous Terminal is never dispatched again;
+     * - sibling isolation: the decision is per row.  One unrecoverable or
+     *   malformed row must never abort the reconciliation transaction and strand
+     *   an unrelated valid sibling, so classification of durable state never
+     *   propagates a metadata parse failure out of the row loop;
      * - process death: the disposition is re-derived on the next startup and is
      *   stable, because no runnable carrier is ever created for it;
      * - retry/reconfigure meaning: retry cannot help, and changing
@@ -1605,17 +1609,36 @@ internal object WorkManagerHandoffRecovery {
         command: String,
         formatGeneration: Long,
     ): Boolean =
-        when (TerminalCommandMetadata.classifyDurable(command, formatGeneration)) {
-            TerminalCommandMetadata.DurableAuthority.CurrentFormat -> true
-            TerminalCommandMetadata.DurableAuthority.SelfBound -> true
-            TerminalCommandMetadata.DurableAuthority.Ambiguous -> {
+        when (
+            val classification = TerminalCommandMetadata.classifyDurableResult(
+                command,
+                formatGeneration,
+            )
+        ) {
+            // Malformed durable metadata is its own disposition.  It is never
+            // current format, never self-bound by guessing around the defect,
+            // and never resolved from the current preference.
+            is TerminalCommandMetadata.DurableClassification.Malformed -> {
                 Log.w(
                     TAG,
-                    "Refusing Terminal dispatch for a persisted command with no durable " +
-                        "destination authority; it will not inherit the current preference",
+                    "Refusing Terminal dispatch for a persisted command with malformed " +
+                        "Terminal-owned metadata: ${classification.reason}",
                 )
                 false
             }
+            is TerminalCommandMetadata.DurableClassification.Parsed ->
+                when (classification.authority) {
+                    TerminalCommandMetadata.DurableAuthority.CurrentFormat -> true
+                    TerminalCommandMetadata.DurableAuthority.SelfBound -> true
+                    TerminalCommandMetadata.DurableAuthority.Ambiguous -> {
+                        Log.w(
+                            TAG,
+                            "Refusing Terminal dispatch for a persisted command with no durable " +
+                                "destination authority; it will not inherit the current preference",
+                        )
+                        false
+                    }
+                }
         }
 
     private suspend fun isCurrentObserveExecutionAuthority(

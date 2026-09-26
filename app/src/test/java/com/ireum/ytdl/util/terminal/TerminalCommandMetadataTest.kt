@@ -182,18 +182,19 @@ class TerminalCommandMetadataTest {
     }
 
     @Test
-    fun unknownFormatMarkerIsNotTrustedAsCurrentFormat() {
+    fun unknownFormatMarkerIsRefusedRatherThanTreatedAsAbsent() {
         val foreign = "${TerminalCommandMetadata.COMMAND_FORMAT_OPTION}=99 $command"
 
-        // An unrecognized format is not the current format, and it carries no
-        // destination authority of its own.
-        assertFalse(TerminalCommandMetadata.strip(foreign).currentFormat)
-        assertEquals(
-            TerminalCommandMetadata.DurableAuthority.Ambiguous,
-            TerminalCommandMetadata.classifyDurable(
-                foreign,
-                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
-            ),
+        // This app only ever writes CURRENT_FORMAT, so another value is not
+        // app-authored and must not be silently dropped.
+        assertTrue(runCatching { TerminalCommandMetadata.strip(foreign) }.isFailure)
+        assertTrue(
+            runCatching {
+                TerminalCommandMetadata.classifyDurableResult(
+                    foreign,
+                    TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+                )
+            }.getOrNull() is TerminalCommandMetadata.DurableClassification.Malformed,
         )
     }
 
