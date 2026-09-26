@@ -302,15 +302,17 @@ class TerminalDownloadWorker(
         return try {
             doWorkInternal()
         } finally {
-            if (isStopped) {
-                cleanupStoppedWorker()
+            withContext(NonCancellable) {
+                if (isStopped) {
+                    cleanupStoppedWorker()
+                }
+                resolveTerminalDispatchIfConverged()
+                TerminalExecutionRegistry.release(
+                    context,
+                    itemId.toLong(),
+                    terminalTaskToken ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken,
+                )
             }
-            resolveTerminalDispatchIfConverged()
-            TerminalExecutionRegistry.release(
-                context,
-                itemId.toLong(),
-                terminalTaskToken ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken,
-            )
         }
     }
 
