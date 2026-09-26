@@ -916,6 +916,107 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
         }
     }
 
+    /**
+     * The direct generation-2 persisted-generation cell.
+     *
+     * `3ffe5b35` could itself persist a generation-2 row and carrier whose
+     * command carries the current-format marker together with malformed provider
+     * metadata, because the provider option was not recognised at all.  The
+     * marker plus a generation-2 carrier is exactly what would otherwise make
+     * the row CurrentFormat, so this proves malformed provider metadata is not
+     * overridden by generation, through real production reconciliation:
+     *
+     * - the exact outstanding generation-2 carrier becomes SUPERSEDED;
+     * - the malformed rows are never enqueued and never admitted;
+     * - each row and its exact command are preserved;
+     * - valid siblings still converge in the same pass.
+     */
+    @Test
+    fun generationTwoMalformedProviderCarrierIsSupersededAndSiblingsStillConverge(): Unit =
+        runBlocking {
+            // Two malformed forms that produce no provider value match at all,
+            // each still carrying the current-format marker.
+            val malformedCommands = listOf(
+                TerminalCommandMetadata.renderCommandFormat() + " " +
+                    "${TerminalProviderDestinationOption.OPTION}= https://example.com/video-gen2-empty",
+                TerminalCommandMetadata.renderCommandFormat() + " " +
+                    "https://example.com/video-gen2-bare " +
+                    TerminalProviderDestinationOption.OPTION,
+            )
+            val malformedCarriers = mutableListOf<Pair<Long, WorkManagerHandoffCarrier>>()
+            malformedCommands.forEach { malformedCommand ->
+                // The marker is genuinely present, so without provider strictness
+                // this row would classify as CurrentFormat.
+                assertTrue(TerminalCommandMetadata.strip(
+                    TerminalCommandMetadata.renderCommandFormat() + " https://example.com/video",
+                ).currentFormat)
+                val (malformedId, carrier) = seedLegacyTerminal(
+                    command = malformedCommand,
+                    formatGeneration = TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+                )
+                requireNotNull(carrier)
+                // The outstanding carrier really is a current-generation one.
+                assertEquals(
+                    TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+                    carrier.sourceConfigurationGeneration,
+                )
+                malformedCarriers += malformedId to carrier
+            }
+
+            // Valid siblings, inserted after the malformed rows.
+            val siblingCommands = malformedCommands.indices.map { index ->
+                val siblingCommand = "-P /storage/emulated/0/Gen2Sibling$index " +
+                    "https://example.com/video-gen2-sibling-$index"
+                val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+                terminals += siblingId
+                siblingCommand
+            }
+            useConfiguredProvider(providerB)
+
+            // One real reconciliation pass over the whole batch.
+            WorkManagerHandoffRecovery.reconcile(context)
+            awaitEnqueue()
+
+            for ((index, entry) in malformedCarriers.withIndex()) {
+                val (malformedId, carrier) = entry
+                val malformedCommand = malformedCommands[index]
+                // 1. The exact outstanding generation-2 carrier is superseded.
+                assertEquals(
+                    "malformed generation-2 carrier $index must be SUPERSEDED",
+                    WorkManagerHandoffCarrier.SUPERSEDED,
+                    database.workManagerHandoffCarrierDao.get(carrier.handoffId)?.state,
+                )
+                // 2. Never enqueued, and never admitted.
+                assertTrue(
+                    "malformed generation-2 row $index must never be enqueued",
+                    enqueued.none {
+                        it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) ==
+                            malformedCommand
+                    },
+                )
+                assertFalse(
+                    "malformed generation-2 row $index must never be admitted",
+                    isCurrentRequest(malformedId, carrier),
+                )
+                // 3. Row and exact command are preserved.
+                assertEquals(
+                    malformedCommand,
+                    database.terminalDao.getTerminalById(malformedId)?.command,
+                )
+            }
+
+            // 4. Valid siblings still converge in the same pass.
+            for ((index, siblingCommand) in siblingCommands.withIndex()) {
+                assertTrue(
+                    "valid sibling $index must still be dispatched",
+                    enqueued.any {
+                        it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) ==
+                            siblingCommand
+                    },
+                )
+            }
+        }
+
     @Test
     fun durableClassificationDistinguishesPersistedGenerations() {
         assertEquals(
