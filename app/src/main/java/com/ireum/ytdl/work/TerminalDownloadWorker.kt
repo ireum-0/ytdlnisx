@@ -61,6 +61,18 @@ internal object TerminalDownloadWorkerEffectTestHooks {
     @Volatile
     internal var afterAdmissionForTesting: ((Int, File) -> Unit)? = null
 
+    /** Holds the worker just after native completion, before effect ownership. */
+    @Volatile
+    internal var afterNativeFinishedForTesting: ((Int) -> Unit)? = null
+
+    /** Holds the worker after durable post-native ownership, before publication. */
+    @Volatile
+    internal var afterPostNativeEffectOwnershipForTesting: ((Int, File?) -> Unit)? = null
+
+    /** Holds the worker after the exact Terminal row deletion commit boundary. */
+    @Volatile
+    internal var afterTerminalRowDeletedForTesting: ((Int) -> Unit)? = null
+
     /** Keeps production worker wiring tests on the same injected Room graph. */
     @Volatile
     internal var databaseForTesting: DBManager? = null
@@ -82,6 +94,8 @@ class TerminalDownloadWorker(
     private val terminalPublishedOutputPaths = mutableListOf<String>()
     /** Set once the Terminal row has been durably deleted after publication. */
     private var terminalSemanticCommit = false
+    /** Set after failure/stop cache and publication cleanup has completed. */
+    private var terminalOutputCleanupCompleted = false
     private var terminalDispatchHandoffId: String? = null
     private var terminalDispatchRequestId: String? = null
     private var terminalDispatchGenerationId: String? = null
@@ -199,41 +213,11 @@ class TerminalDownloadWorker(
 
     private suspend fun cleanupStoppedWorker() = withContext(Dispatchers.IO + NonCancellable) {
         if (itemId == 0) return@withContext
-
-        val token = terminalTaskToken
-            ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken
-        if (token.isNullOrBlank()) {
-            Log.w(TAG, "Stopped Terminal worker has no durable execution witness id=$itemId")
-            return@withContext
-        }
-        // Persist the native-stop obligation before attempting destruction.
-        // A false/unresolved destroy result keeps the row, witness, and any
-        // cache ownership intact so a later recovery pass can retry the exact
-        // generation; no new Terminal worker can be admitted meanwhile.
-        if (!TerminalExecutionRecovery.convergeTerminal(
-                context = context,
-                subjectId = itemId.toLong(),
-                executionToken = token,
-                outcome = TerminalExecutionRecovery.Outcome.STOPPED,
-            )
-        ) {
-            Log.w(TAG, "Terminal native quiescence unresolved; retaining durable owner id=$itemId")
-            return@withContext
-        }
         runCatching {
             NotificationUtil(context).cancelTerminalDownloadNotification(itemId)
         }
-        if (shouldCleanupTerminalCache && !terminalSemanticCommit) {
-            runCatching { cleanupTerminalOutputDirectory() }
-        }
-        val rowConverged = runCatching {
-            val dao = workerDatabase().terminalDao
-            dao.delete(itemId.toLong())
-            dao.getTerminalById(itemId.toLong()) == null
-        }.getOrDefault(false)
-        if (!rowConverged) {
-            Log.w(TAG, "Terminal stop row convergence deferred id=$itemId")
-        }
+        val rowConverged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.STOPPED)
+        if (!rowConverged) Log.w(TAG, "Terminal stop convergence deferred id=$itemId")
         Log.i(TAG, "Stopped terminal worker cleanup completed for itemId=$itemId converged=$rowConverged")
     }
 
@@ -243,18 +227,50 @@ class TerminalDownloadWorker(
         val token = terminalTaskToken
             ?: TerminalExecutionRecovery.read(context, itemId.toLong())?.executionToken
             ?: return@withContext false
-        if (!TerminalExecutionRecovery.convergeTerminal(
-                context = context,
-                subjectId = itemId.toLong(),
-                executionToken = token,
-                outcome = outcome,
-            )
-        ) return@withContext false
+        val record = TerminalExecutionRecovery.read(context, itemId.toLong())
+            ?.takeIf { it.executionToken == token }
+            ?: return@withContext false
+        val postNative = record.phase in setOf(
+            TerminalExecutionRecovery.Phase.POST_NATIVE_EFFECTS,
+            TerminalExecutionRecovery.Phase.POST_NATIVE_PUBLISHING,
+        )
+        if (postNative) {
+            if (!TerminalExecutionRecovery.requestPostNativeOutcome(
+                    context,
+                    itemId.toLong(),
+                    token,
+                    outcome,
+                )
+            ) return@withContext false
+            if (shouldCleanupTerminalCache && !terminalSemanticCommit && !terminalOutputCleanupCompleted) {
+                if (runCatching { cleanupTerminalOutputDirectory() }.isFailure) return@withContext false
+                terminalOutputCleanupCompleted = true
+            }
+            if (!TerminalExecutionRegistry.completePostNativeEffects(
+                    context,
+                    itemId.toLong(),
+                    token,
+                    outcome,
+                )
+            ) return@withContext false
+        } else {
+            if (!TerminalExecutionRecovery.convergeTerminal(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = token,
+                    outcome = outcome,
+                )
+            ) return@withContext false
+            if (shouldCleanupTerminalCache && !terminalSemanticCommit && !terminalOutputCleanupCompleted) {
+                if (runCatching { cleanupTerminalOutputDirectory() }.isFailure) return@withContext false
+                terminalOutputCleanupCompleted = true
+            }
+        }
         runCatching {
             val dao = workerDatabase().terminalDao
             dao.delete(itemId.toLong())
-        }
-        true
+            dao.getTerminalById(itemId.toLong()) == null
+        }.getOrDefault(false)
     }
 
     private suspend fun resolveTerminalDispatchIfConverged() = withContext(Dispatchers.IO + NonCancellable) {
@@ -610,6 +626,17 @@ class TerminalDownloadWorker(
             ) {
                 throw IOException("Could not persist Terminal native completion")
             }
+            TerminalDownloadWorkerEffectTestHooks.afterNativeFinishedForTesting?.invoke(itemId)
+            if (!TerminalExecutionRegistry.beginPostNativeEffects(
+                    context = context,
+                    subjectId = itemId.toLong(),
+                    executionToken = requireNotNull(terminalTaskToken),
+                )
+            ) {
+                throw IOException("Could not acquire Terminal post-native effect ownership")
+            }
+            TerminalDownloadWorkerEffectTestHooks.afterPostNativeEffectOwnershipForTesting
+                ?.invoke(itemId, terminalOutputDirectory)
 
             withContext(Dispatchers.IO) {
                 if(!noCache){
@@ -679,6 +706,14 @@ class TerminalDownloadWorker(
                     }
                     var publicationJournalWriteFailed = false
                     val movedOutputPaths = mutableListOf<String>()
+                    if (!TerminalExecutionRegistry.markPublicationStarted(
+                            context = context,
+                            subjectId = itemId.toLong(),
+                            executionToken = requireNotNull(terminalTaskToken),
+                        )
+                    ) {
+                        throw IOException("Terminal publication was cancelled before its first effect")
+                    }
                     val returnedMovePaths = FileUtil.moveFile(
                         originDir = outputDirectory,
                         context = context,
@@ -780,6 +815,7 @@ class TerminalDownloadWorker(
             if (dao.getTerminalById(itemId.toLong()) != null) {
                 throw IOException("Terminal semantic row deletion could not be confirmed")
             }
+            TerminalDownloadWorkerEffectTestHooks.afterTerminalRowDeletedForTesting?.invoke(itemId)
             // From this point the semantic Terminal outcome is committed.
             // Later marker/journal retirement is convergence debt and must
             // not escape as a contradictory WorkManager failure.
@@ -824,10 +860,6 @@ class TerminalDownloadWorker(
             }
             if (it is YoutubeDL.CanceledException) {
                 val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.STOPPED)
-                if (converged && !noCache) {
-                    cleanupTerminalOutputDirectory()
-                }
-                reconcileTerminalPublicationRecovery()
                 Log.i(TAG, "Terminal worker cancelled id=$itemId converged=$converged")
                 return if (converged) Result.success() else Result.failure()
             }
@@ -844,12 +876,8 @@ class TerminalDownloadWorker(
             }
             notificationUtil.cancelTerminalDownloadNotification(itemId)
             val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.FAILURE)
-            if (converged && !noCache) {
-                cleanupTerminalOutputDirectory()
-            }
             Log.e(TAG, "${context.getString(R.string.failed_download)} $userMessage")
             delay(1000)
-            reconcileTerminalPublicationRecovery()
             return Result.failure()
         } finally {
             FileUtil.deleteConfigFiles(request)
@@ -861,9 +889,6 @@ class TerminalDownloadWorker(
             // converge through that witness; it may never escape through the
             // outer finally with only the process-local token remaining.
             val converged = convergeTerminalOutcome(TerminalExecutionRecovery.Outcome.FAILURE)
-            if (converged && shouldCleanupTerminalCache) {
-                runCatching { cleanupTerminalOutputDirectory() }
-            }
             Log.e(TAG, "Terminal setup failed after durable admission id=$itemId", setupFailure)
             Result.failure()
         }

@@ -8,8 +8,13 @@ import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.io.Closeable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
@@ -24,15 +29,20 @@ import kotlinx.coroutines.runBlocking
 internal object TerminalExecutionRecovery {
     private const val DIRECTORY_NAME = "terminal-execution-recovery"
     private const val FILE_PREFIX = "ytdlnisx-terminal-execution-"
-    private const val SCHEMA_VERSION = 1
+    private const val SCHEMA_VERSION = 2
+    private const val FIRST_SUPPORTED_SCHEMA_VERSION = 1
+    private const val EFFECT_LOCK_SUFFIX = ".effect.lock"
     private val gson = Gson()
     private val lock = Any()
+    private val POST_NATIVE_PHASES = setOf(Phase.POST_NATIVE_EFFECTS, Phase.POST_NATIVE_PUBLISHING)
 
     internal enum class Phase {
         ADMITTED,
         NATIVE_STARTED,
         NATIVE_FINISHED,
         NATIVE_QUIESCENCE_PENDING,
+        POST_NATIVE_EFFECTS,
+        POST_NATIVE_PUBLISHING,
         TERMINAL_FAILURE,
         TERMINAL_STOPPED,
         COMMITTING,
@@ -67,6 +77,8 @@ internal object TerminalExecutionRecovery {
                 Phase.NATIVE_STARTED,
                 Phase.NATIVE_FINISHED,
                 Phase.NATIVE_QUIESCENCE_PENDING,
+                Phase.POST_NATIVE_EFFECTS,
+                Phase.POST_NATIVE_PUBLISHING,
             ) || nativeGenerationToken != null
 
         val terminal: Boolean
@@ -76,15 +88,20 @@ internal object TerminalExecutionRecovery {
                 Phase.COMMITTED,
             )
 
-        val quiescent: Boolean
+        val nativeQuiescent: Boolean
             get() = phase in setOf(
                 Phase.ADMITTED,
                 Phase.NATIVE_FINISHED,
+                Phase.POST_NATIVE_EFFECTS,
+                Phase.POST_NATIVE_PUBLISHING,
                 Phase.TERMINAL_FAILURE,
                 Phase.TERMINAL_STOPPED,
                 Phase.COMMITTING,
                 Phase.COMMITTED,
             )
+
+        val postNativeEffectsQuiescent: Boolean
+            get() = phase !in POST_NATIVE_PHASES && phase != Phase.COMMITTING
     }
 
     internal data class ReconcileResult(
@@ -92,6 +109,36 @@ internal object TerminalExecutionRecovery {
         val converged: Int,
         val deferred: Int,
     )
+
+    /**
+     * Process-held proof that one exact post-native effect owner is alive.
+     * The kernel releases this lock when the process dies; recovery must
+     * reacquire it before settling an abandoned post-native record.
+     */
+    internal class EffectLease internal constructor(
+        private val subjectId: Long,
+        private val executionToken: String,
+        private val channel: FileChannel,
+        private val fileLock: FileLock,
+    ) : Closeable {
+        @Volatile
+        private var closed = false
+
+        internal fun owns(subjectId: Long, executionToken: String): Boolean =
+            !closed && this.subjectId == subjectId && this.executionToken == executionToken &&
+                fileLock.isValid && channel.isOpen
+
+        override fun close() {
+            if (closed) return
+            closed = true
+            runCatching { fileLock.release() }
+            runCatching { channel.close() }
+            // Keep the coordination inode stable. Deleting a lock file after
+            // releasing it can race a recovery process that has already
+            // opened and acquired the old inode, letting a later process lock
+            // a newly created file at the same path concurrently.
+        }
+    }
 
     /** Explicit discovery status for the execution-witness namespace. */
     internal sealed interface DiscoveryResult {
@@ -363,6 +410,132 @@ internal object TerminalExecutionRecovery {
         }
     }
 
+    /**
+     * Claim the post-native effect phase while holding a process lease.  A
+     * cancellation that terminalized NATIVE_FINISHED first makes this CAS
+     * fail, so the worker cannot begin publication afterwards.
+     */
+    internal fun beginPostNativeEffects(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+    ): EffectLease? = beginPostNativeEffects(
+        storageDirectory = File(context.filesDir, DIRECTORY_NAME),
+        subjectId = subjectId,
+        executionToken = executionToken,
+    )
+
+    internal fun beginPostNativeEffects(
+        storageDirectory: File,
+        subjectId: Long,
+        executionToken: String,
+    ): EffectLease? = synchronized(lock) {
+        val lease = acquireEffectLease(storageDirectory, subjectId, executionToken) ?: return null
+        val file = recordFile(storageDirectory, subjectId)
+        val current = read(file)
+        if (
+            current == null || current.executionToken != executionToken ||
+                current.phase != Phase.NATIVE_FINISHED
+        ) {
+            lease.close()
+            return null
+        }
+        if (!persist(file, current.copy(phase = Phase.POST_NATIVE_EFFECTS))) {
+            lease.close()
+            return null
+        }
+        lease
+    }
+
+    /** Atomically cross the final durable gate immediately before publication. */
+    internal fun markPublicationStarted(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+        effectLease: EffectLease,
+    ): Boolean = markPublicationStarted(
+        storageDirectory = File(context.filesDir, DIRECTORY_NAME),
+        subjectId = subjectId,
+        executionToken = executionToken,
+        effectLease = effectLease,
+    )
+
+    internal fun markPublicationStarted(
+        storageDirectory: File,
+        subjectId: Long,
+        executionToken: String,
+        effectLease: EffectLease,
+    ): Boolean {
+        if (!effectLease.owns(subjectId, executionToken)) return false
+        return update(storageDirectory, subjectId, executionToken) { current ->
+        when {
+            current.phase == Phase.POST_NATIVE_EFFECTS && current.outcome == null ->
+                current.copy(phase = Phase.POST_NATIVE_PUBLISHING)
+            current.phase == Phase.POST_NATIVE_PUBLISHING && current.outcome == null -> current
+            else -> null
+        }
+        }
+    }
+
+    /** Store a cancellation/failure winner without declaring effects quiescent. */
+    internal fun requestPostNativeOutcome(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+        outcome: Outcome,
+    ): Boolean = requestPostNativeOutcome(
+        storageDirectory = File(context.filesDir, DIRECTORY_NAME),
+        subjectId = subjectId,
+        executionToken = executionToken,
+        outcome = outcome,
+    )
+
+    internal fun requestPostNativeOutcome(
+        storageDirectory: File,
+        subjectId: Long,
+        executionToken: String,
+        outcome: Outcome,
+    ): Boolean = update(storageDirectory, subjectId, executionToken) { current ->
+        if (current.phase !in POST_NATIVE_PHASES) return@update null
+        current.copy(outcome = current.outcome ?: outcome)
+    }
+
+    /**
+     * Record effect quiescence only after the worker has exited its remaining
+     * provider/file/cache effects. A prior durable cancellation intent wins.
+     */
+    internal fun completePostNativeEffects(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+        effectLease: EffectLease,
+        fallbackOutcome: Outcome,
+    ): Boolean = completePostNativeEffects(
+        storageDirectory = File(context.filesDir, DIRECTORY_NAME),
+        subjectId = subjectId,
+        executionToken = executionToken,
+        effectLease = effectLease,
+        fallbackOutcome = fallbackOutcome,
+    )
+
+    internal fun completePostNativeEffects(
+        storageDirectory: File,
+        subjectId: Long,
+        executionToken: String,
+        effectLease: EffectLease,
+        fallbackOutcome: Outcome,
+    ): Boolean {
+        if (!effectLease.owns(subjectId, executionToken)) return false
+        return update(storageDirectory, subjectId, executionToken) { current ->
+        if (current.phase !in POST_NATIVE_PHASES) return@update null
+        val outcome = current.outcome ?: fallbackOutcome
+        current.copy(
+            phase = if (outcome == Outcome.STOPPED) Phase.TERMINAL_STOPPED else Phase.TERMINAL_FAILURE,
+            outcome = outcome,
+        )
+        }
+    }
+
     internal fun markCommitting(
         context: Context,
         subjectId: Long,
@@ -378,9 +551,10 @@ internal object TerminalExecutionRecovery {
         subjectId: Long,
         executionToken: String,
     ): Boolean = update(storageDirectory, subjectId, executionToken) { current ->
-        when (current.phase) {
-            Phase.NATIVE_FINISHED,
-            Phase.COMMITTING -> current.copy(phase = Phase.COMMITTING)
+        when {
+            current.phase in POST_NATIVE_PHASES && current.outcome == null ->
+                current.copy(phase = Phase.COMMITTING)
+            current.phase == Phase.COMMITTING -> current
             else -> null
         }
     }
@@ -440,6 +614,8 @@ internal object TerminalExecutionRecovery {
             )
             Phase.TERMINAL_FAILURE,
             Phase.TERMINAL_STOPPED -> current
+            Phase.POST_NATIVE_EFFECTS,
+            Phase.POST_NATIVE_PUBLISHING -> current.copy(outcome = current.outcome ?: outcome)
             else -> null
         }
     }
@@ -529,6 +705,13 @@ internal object TerminalExecutionRecovery {
     ): Boolean {
         val current = read(context, subjectId)?.takeIf { it.executionToken == executionToken }
             ?: return false
+        if (current.phase in POST_NATIVE_PHASES) {
+            // The worker still owns post-native provider/file effects. Record
+            // the winner but do not terminalize, authorize row deletion, or
+            // release its token until that exact owner reports quiescence.
+            requestPostNativeOutcome(context, subjectId, executionToken, outcome)
+            return false
+        }
         if (current.phase == Phase.NATIVE_STARTED) {
             if (!markQuiescencePending(context, subjectId, executionToken, outcome)) return false
             if (!proveNativeQuiescent(context, subjectId, executionToken)) return false
@@ -704,6 +887,33 @@ internal object TerminalExecutionRecovery {
                     finishTerminalRecord(context, record)
                 } else false
             }
+            Phase.POST_NATIVE_EFFECTS,
+            Phase.POST_NATIVE_PUBLISHING -> {
+                val lease = acquireEffectLease(
+                    File(context.filesDir, DIRECTORY_NAME),
+                    record.subjectId,
+                    record.executionToken,
+                ) ?: return false
+                lease.use {
+                    val latest = read(context, record.subjectId)
+                        ?.takeIf { it.executionToken == record.executionToken }
+                        ?: return false
+                    if (latest.phase !in POST_NATIVE_PHASES) return false
+                    // This path runs only while recovery owns the released
+                    // process lock, proving the former effect owner is gone.
+                    val outcome = latest.outcome ?: Outcome.FAILURE
+                    if (!completePostNativeEffects(
+                            context,
+                            record.subjectId,
+                            record.executionToken,
+                            lease,
+                            outcome,
+                        )
+                    ) return false
+                    val terminal = read(context, record.subjectId) ?: return false
+                    finishTerminalRecord(context, terminal)
+                }
+            }
             Phase.COMMITTING -> {
                 val rowDeleted = deleteRow(context, record.subjectId)
                 if (rowDeleted && markCommitted(context, record.subjectId, record.executionToken)) {
@@ -760,11 +970,41 @@ internal object TerminalExecutionRecovery {
         val current = read(file) ?: return false
         if (current.executionToken != executionToken) return false
         val next = transform(current) ?: return false
-        next == current || persist(file, next)
+        val versionedNext = next.copy(version = SCHEMA_VERSION)
+        versionedNext == current || persist(file, versionedNext)
     }
 
     private fun recordFile(storageDirectory: File, subjectId: Long): File =
         File(storageDirectory, "$FILE_PREFIX$subjectId.json")
+
+    private fun acquireEffectLease(
+        storageDirectory: File,
+        subjectId: Long,
+        executionToken: String,
+    ): EffectLease? {
+        if (!storageDirectory.exists() && !storageDirectory.mkdirs()) return null
+        if (!storageDirectory.isDirectory) return null
+        val lockFile = File(storageDirectory, "$FILE_PREFIX$subjectId$EFFECT_LOCK_SUFFIX")
+        val channel = runCatching {
+            FileChannel.open(
+                lockFile.toPath(),
+                StandardOpenOption.CREATE,
+                StandardOpenOption.WRITE,
+            )
+        }.getOrNull() ?: return null
+        val fileLock = try {
+            channel.tryLock()
+        } catch (_: OverlappingFileLockException) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+        if (fileLock == null) {
+            runCatching { channel.close() }
+            return null
+        }
+        return EffectLease(subjectId, executionToken, channel, fileLock)
+    }
 
     private fun read(file: File): Record? = runCatching {
         if (!file.isFile) return null
@@ -773,11 +1013,17 @@ internal object TerminalExecutionRecovery {
             !json.has("version") || !json.has("subjectId") ||
             !json.has("executionToken") || !json.has("processId") || !json.has("phase")
         ) return null
+        val phaseName = json.get("phase")?.takeUnless { it.isJsonNull }?.asString ?: return null
+        if (Phase.values().none { it.name == phaseName }) return null
+        val outcome = json.get("outcome")?.takeUnless { it.isJsonNull }?.asString
+        if (outcome != null && Outcome.values().none { it.name == outcome }) return null
         gson.fromJson(json, Record::class.java)
     }.getOrNull()?.takeIf(::isValid)
 
     private fun isValid(record: Record): Boolean =
-        record.version == SCHEMA_VERSION && record.subjectId > 0L &&
+        record.version in FIRST_SUPPORTED_SCHEMA_VERSION..SCHEMA_VERSION &&
+            (record.version >= SCHEMA_VERSION || record.phase !in POST_NATIVE_PHASES) &&
+            record.subjectId > 0L &&
             record.executionToken.isNotBlank() &&
             record.processId == YtdlpProcessIdentity.terminal(record.subjectId)
 

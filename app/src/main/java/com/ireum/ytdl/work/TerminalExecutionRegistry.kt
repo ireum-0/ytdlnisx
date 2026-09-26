@@ -26,6 +26,8 @@ internal object TerminalExecutionRegistry {
 
     private val mutex = Mutex()
     private val activeTokens = mutableMapOf<Long, String>()
+    /** Process-held proof for executions that crossed the post-native effect boundary. */
+    private val effectLeases = mutableMapOf<Long, Pair<String, TerminalExecutionRecovery.EffectLease>>()
     private val activeLock = Any()
 
     suspend fun admit(
@@ -163,7 +165,26 @@ internal object TerminalExecutionRegistry {
         subjectId: Long,
         executionToken: String?,
     ) = mutex.withLock {
+        val record = executionToken?.let { TerminalExecutionRecovery.read(context, subjectId) }
+        val settledEffectPhases = setOf(
+            TerminalExecutionRecovery.Phase.TERMINAL_FAILURE,
+            TerminalExecutionRecovery.Phase.TERMINAL_STOPPED,
+            TerminalExecutionRecovery.Phase.COMMITTING,
+            TerminalExecutionRecovery.Phase.COMMITTED,
+        )
+        val durableEffectStillActive = record?.let {
+            it.executionToken == executionToken &&
+                it.phase in setOf(
+                    TerminalExecutionRecovery.Phase.POST_NATIVE_EFFECTS,
+                    TerminalExecutionRecovery.Phase.POST_NATIVE_PUBLISHING,
+                )
+        } == true
+        val heldEffectLease = executionToken != null &&
+            effectLeases[subjectId]?.first == executionToken
+        val effectNotDurablySettled = heldEffectLease &&
+            record?.let { it.executionToken == executionToken && it.phase in settledEffectPhases } != true
         if (
+            !durableEffectStillActive && !effectNotDurablySettled &&
             executionToken != null &&
                 synchronized(activeLock) { activeTokens[subjectId] == executionToken } &&
                 (
@@ -176,10 +197,68 @@ internal object TerminalExecutionRegistry {
                         TerminalExecutionRecovery.hasRecordFile(context, subjectId)
                     )
         ) {
+            releaseEffectLeaseIfSettled(context, subjectId, executionToken)
             synchronized(activeLock) {
                 if (activeTokens[subjectId] == executionToken) activeTokens.remove(subjectId)
             }
         }
+    }
+
+    /**
+     * Start durable post-native effect ownership before touching output,
+     * journal, provider, or cache state. Cancellation and this transition are
+     * serialized by the registry mutex.
+     */
+    internal suspend fun beginPostNativeEffects(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+    ): Boolean = mutex.withLock {
+        if (synchronized(activeLock) { activeTokens[subjectId] != executionToken }) return@withLock false
+        if (effectLeases.containsKey(subjectId)) return@withLock false
+        val lease = TerminalExecutionRecovery.beginPostNativeEffects(
+            context = context,
+            subjectId = subjectId,
+            executionToken = executionToken,
+        ) ?: return@withLock false
+        effectLeases[subjectId] = executionToken to lease
+        true
+    }
+
+    /** Linearizes the final pre-publication gate against user cancellation. */
+    internal suspend fun markPublicationStarted(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+    ): Boolean = mutex.withLock {
+        if (synchronized(activeLock) { activeTokens[subjectId] != executionToken }) return@withLock false
+        val lease = effectLeases[subjectId]?.takeIf { it.first == executionToken }?.second
+            ?: return@withLock false
+        TerminalExecutionRecovery.markPublicationStarted(
+            context = context,
+            subjectId = subjectId,
+            executionToken = executionToken,
+            effectLease = lease,
+        )
+    }
+
+    /** Only the exact live effect owner can persist its quiescent terminal state. */
+    internal suspend fun completePostNativeEffects(
+        context: Context,
+        subjectId: Long,
+        executionToken: String,
+        outcome: TerminalExecutionRecovery.Outcome,
+    ): Boolean = mutex.withLock {
+        if (synchronized(activeLock) { activeTokens[subjectId] != executionToken }) return@withLock false
+        val lease = effectLeases[subjectId]?.takeIf { it.first == executionToken }?.second
+            ?: return@withLock false
+        TerminalExecutionRecovery.completePostNativeEffects(
+            context = context,
+            subjectId = subjectId,
+            executionToken = executionToken,
+            effectLease = lease,
+            fallbackOutcome = outcome,
+        )
     }
 
     /**
@@ -205,8 +284,13 @@ internal object TerminalExecutionRegistry {
             outcome = TerminalExecutionRecovery.Outcome.STOPPED,
         )
         if (converged) {
-            synchronized(activeLock) {
-                if (activeTokens[subjectId] == token) activeTokens.remove(subjectId)
+            val workerStillOwnsEffects = effectLeases[subjectId]?.first == token &&
+                synchronized(activeLock) { activeTokens[subjectId] == token }
+            if (!workerStillOwnsEffects) {
+                releaseEffectLeaseIfSettled(context, subjectId, token)
+                synchronized(activeLock) {
+                    if (activeTokens[subjectId] == token) activeTokens.remove(subjectId)
+                }
             }
         }
         converged
@@ -218,5 +302,31 @@ internal object TerminalExecutionRegistry {
 
     internal fun isActiveNow(executionToken: String): Boolean = synchronized(activeLock) {
         activeTokens.values.any { it == executionToken }
+    }
+
+    private fun releaseEffectLeaseIfSettled(
+        context: Context,
+        subjectId: Long,
+        executionToken: String?,
+    ) {
+        if (executionToken == null) return
+        val record = TerminalExecutionRecovery.read(
+            context = context,
+            subjectId = subjectId,
+        )
+        if (
+            record?.let {
+                it.executionToken == executionToken &&
+                    it.phase in setOf(
+                    TerminalExecutionRecovery.Phase.TERMINAL_FAILURE,
+                    TerminalExecutionRecovery.Phase.TERMINAL_STOPPED,
+                    TerminalExecutionRecovery.Phase.COMMITTING,
+                    TerminalExecutionRecovery.Phase.COMMITTED,
+                )
+            } != true
+        ) return
+        val owner = effectLeases[subjectId]?.takeIf { it.first == executionToken } ?: return
+        effectLeases.remove(subjectId)
+        owner.second.close()
     }
 }
