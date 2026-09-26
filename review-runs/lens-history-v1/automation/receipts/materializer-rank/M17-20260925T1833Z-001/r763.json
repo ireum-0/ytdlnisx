@@ -1,0 +1,137 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "rank": 763,
+  "materializer_state_blob": "b3ffbd1222aa948ec2e0ee943be7b90a5b60652c",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "493c8827e9cfb321acbbdc830c908f6045adfbd4",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r762.json",
+    "blob_sha": "8c4e478b22f2218752d62ed65261902e0ad2c325"
+  },
+  "history": {
+    "commit_sha": "6027dd2845097a36560f8fc9b3bb722888fcd279",
+    "resolution": "exact commits?sha=25a554d1768f8d3cdd09a6e384a89d915eeeace4&path=review-runs/checkpoints&per_page=1&page=763"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint-run2.md",
+        "status": "added",
+        "source_blob_sha": "23b6264ee964fd1951c4823b0871555042a98ed5",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "23b6264ee964fd1951c4823b0871555042a98ed5",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint-run2.md",
+    "status": "added",
+    "source_blob_sha": "23b6264ee964fd1951c4823b0871555042a98ed5",
+    "frozen_blob_sha": "23b6264ee964fd1951c4823b0871555042a98ed5",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "2c0bf3a5b4489c4294df0aabb91a3ec900f5604d",
+      "evidence": "source Fixed target explicitly records implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint/verdict document does not explicitly establish final or intermediate identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "kind NOT_VERIFIED and no structured payload"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "NOT_VERIFIED",
+        "reason": "source identifies a new P0 but does not record an exact canonical finding ID"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "new P0: ownership marker creation can retroactively authorize a pre-existing numeric cache directory for destructive deletion; existing Terminal partial-publication P2 remains open",
+        "evidence": "source New P0 and Existing P2 sections"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "P0 1 new / P1 0 / P2 1 existing/open"
+      },
+      "count_delta": {
+        "state": "DIRECT",
+        "value": 1,
+        "evidence": "source Verdict explicitly records P0: 1 new"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+      "evidence": "implementation changes from baf26583074601516d4c283deb27bfb65fb7c4ad at rank 762 to 2c0bf3a5b4489c4294df0aabb91a3ec900f5604d at rank 763"
+    },
+    {
+      "type": "EXPLICIT_NEW_FINDING",
+      "evidence": "source Verdict explicitly records P0: 1 new and details the ownership-marker bootstrap failure path"
+    },
+    {
+      "type": "CHECKLIST_GAP_CHANGE",
+      "evidence": "source Checklist gaps section records three concrete gaps and a mandatory proof-bootstrap transition row"
+    },
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint/verdict document without explicit final/intermediate identity"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source reports no GitHub commit-status contexts and independent local/emulator execution NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
