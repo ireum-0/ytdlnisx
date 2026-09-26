@@ -17,6 +17,7 @@ import com.ireum.ytdl.util.storage.AppCacheCategory
 import com.ireum.ytdl.util.storage.AppCacheManager
 import com.ireum.ytdl.util.storage.TerminalCacheOwnership
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
@@ -449,11 +450,18 @@ class TerminalExecutionProductionWiringTest {
 
             resume.countDown()
             assertTrue(awaitFinished(checkNotNull(request)).state.isFinished)
+            awaitPostNativeEffectQuiescence(
+                itemId = itemId,
+                executionToken = token,
+                staging = staging,
+                destination = destination,
+            )
             assertNull(db.terminalDao.getTerminalById(itemId))
             assertEquals(
                 TerminalExecutionRecovery.Phase.TERMINAL_STOPPED,
                 TerminalExecutionRecovery.read(context, itemId)?.phase,
             )
+            assertFalse(TerminalExecutionRegistry.isActiveNow(token))
             assertFalse(File(destination, "cancel-race.mp4").exists())
             assertTrue(TerminalCacheOwnership.recoveryCarrierFile(staging).isFile)
         } finally {
@@ -698,6 +706,50 @@ class TerminalExecutionProductionWiringTest {
             )
             .addTag(tag)
             .build()
+    }
+
+    private suspend fun awaitPostNativeEffectQuiescence(
+        itemId: Long,
+        executionToken: String,
+        staging: File,
+        destination: File,
+    ) = withContext(Dispatchers.IO) {
+        val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        while (true) {
+            val rowPresent = db.terminalDao.getTerminalById(itemId) != null
+            val record = TerminalExecutionRecovery.read(context, itemId)
+            val registryActive = TerminalExecutionRegistry.isActiveNow(executionToken)
+            val recoveryCarrierExists = TerminalCacheOwnership.recoveryCarrierFile(staging).isFile
+            val publishedOutputExists = File(destination, "cancel-race.mp4").exists()
+            val hasStoppedExecutionRecord = record?.let {
+                it.executionToken == executionToken &&
+                    it.phase == TerminalExecutionRecovery.Phase.TERMINAL_STOPPED &&
+                    it.outcome == TerminalExecutionRecovery.Outcome.STOPPED
+            } == true
+
+            if (
+                !rowPresent &&
+                hasStoppedExecutionRecord &&
+                !registryActive &&
+                recoveryCarrierExists &&
+                !publishedOutputExists
+            ) {
+                return@withContext
+            }
+
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0L) {
+                error(
+                    "Timed out waiting for Terminal production cleanup/convergence " +
+                        "itemId=$itemId rowPresent=$rowPresent " +
+                        "recordPhase=${record?.phase} recordOutcome=${record?.outcome} " +
+                        "recordTokenMatches=${record?.executionToken == executionToken} " +
+                        "registryActive=$registryActive recoveryCarrierExists=$recoveryCarrierExists " +
+                        "publishedOutputExists=$publishedOutputExists",
+                )
+            }
+            delay(minOf(TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L), 25L))
+        }
     }
 
     private fun awaitRelease(resume: CountDownLatch) {
