@@ -342,6 +342,7 @@ class TerminalExecutionProductionWiringTest {
 
             resume.countDown()
             assertTrue(awaitFinished(checkNotNull(request)).state.isFinished)
+            awaitStoppedTerminalQuiescence(itemId, token)
             assertNull(db.terminalDao.getTerminalById(itemId))
         } finally {
             resume.countDown()
@@ -622,9 +623,10 @@ class TerminalExecutionProductionWiringTest {
             TerminalDownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting =
                 { observedId, outputDirectory ->
                     assertEquals(itemId.toInt(), observedId)
-                    File(outputDirectory, "committed-race.mp4").apply {
+                    val source = File(outputDirectory, "committed-race.mp4").apply {
                         writeText("committed output")
-                    }.absolutePath
+                    }
+                    "Destination: ${source.absolutePath}"
                 }
             TerminalDownloadWorkerEffectTestHooks.afterTerminalRowDeletedForTesting = { observedId ->
                 assertEquals(itemId.toInt(), observedId)
@@ -705,6 +707,36 @@ class TerminalExecutionProductionWiringTest {
             )
             .addTag(tag)
             .build()
+    }
+
+    private suspend fun awaitStoppedTerminalQuiescence(
+        itemId: Long,
+        executionToken: String,
+    ) = withContext(Dispatchers.IO) {
+        val deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        while (true) {
+            val rowPresent = db.terminalDao.getTerminalById(itemId) != null
+            val record = TerminalExecutionRecovery.read(context, itemId)
+            val tokenMatches = record?.executionToken == executionToken
+            val stoppedRecord = record?.let {
+                it.executionToken == executionToken &&
+                    it.phase == TerminalExecutionRecovery.Phase.TERMINAL_STOPPED &&
+                    it.outcome == TerminalExecutionRecovery.Outcome.STOPPED
+            } == true
+            val registryActive = TerminalExecutionRegistry.isActiveNow(executionToken)
+            if (!rowPresent && stoppedRecord && !registryActive) return@withContext
+
+            val remainingNanos = deadlineNanos - System.nanoTime()
+            if (remainingNanos <= 0L) {
+                error(
+                    "Timed out waiting for Terminal stopped quiescence " +
+                        "itemId=$itemId rowPresent=$rowPresent " +
+                        "recordPhase=${record?.phase} recordOutcome=${record?.outcome} " +
+                        "recordTokenMatches=$tokenMatches registryActive=$registryActive",
+                )
+            }
+            delay(minOf(TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L), 25L))
+        }
     }
 
     private suspend fun awaitPostNativeEffectQuiescence(
