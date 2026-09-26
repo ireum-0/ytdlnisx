@@ -1,0 +1,127 @@
+{
+  "schema_version": "lens-history-v1-materializer-segment-receipt-v2",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "segment_range": [
+    761,
+    764
+  ],
+  "terminal_tail": true,
+  "configured_microsegment_size": 5,
+  "actual_segment_size": 4,
+  "terminal_tail_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+    "blob_sha": "84785a7a10e5810afe79982913ef6b827477733a"
+  },
+  "terminal_authorization": {
+    "prior_auditor_run_id": "M16-20260925T1415Z-001",
+    "prior_audit_path": "review-runs/lens-history-v1/automation/audits/M16-20260925T1415Z-001.json",
+    "prior_audit_blob_sha": "ac2b9730b4fd15d02191533a677c43953bb3929b",
+    "prior_audit_commit_sha": "bc2147c9db9c5443ab3f0dce87b7ece8604a6369",
+    "next_rank_range": [
+      741,
+      764
+    ],
+    "frozen_history_count": 764,
+    "frozen_history_terminal_rank": 764
+  },
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "493c8827e9cfb321acbbdc830c908f6045adfbd4",
+  "previous_aggregate_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r756-760.json",
+    "blob_sha": "bde2597a7e50232683af1592a57bc5da6a5575c1"
+  },
+  "rank_receipts": [
+    {
+      "rank": 761,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r761.json",
+      "blob_sha": "b24e30800687ecdba2aaace61c44efba1f2bff2b"
+    },
+    {
+      "rank": 762,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r762.json",
+      "blob_sha": "8c4e478b22f2218752d62ed65261902e0ad2c325"
+    },
+    {
+      "rank": 763,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r763.json",
+      "blob_sha": "f75bd6266965aeb5a83992eca1707f0c75406b71"
+    },
+    {
+      "rank": 764,
+      "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r764.json",
+      "blob_sha": "61aa65e4a009ad724d5456ff1bce49c26982dcfd"
+    }
+  ],
+  "segment_exception_summary": {
+    "exception_rank_count": 4,
+    "ranks": [
+      761,
+      762,
+      763,
+      764
+    ],
+    "by_rank": [
+      {
+        "rank": 761,
+        "types": [
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 762,
+        "types": [
+          "AMBIGUOUS_KIND",
+          "CHECKLIST_REFINEMENT",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 763,
+        "types": [
+          "IMPLEMENTATION_TRANSITION_BOUNDARY",
+          "EXPLICIT_NEW_FINDING",
+          "CHECKLIST_GAP_CHANGE",
+          "AMBIGUOUS_KIND",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      },
+      {
+        "rank": 764,
+        "types": [
+          "IMPLEMENTATION_TRANSITION_BOUNDARY",
+          "MATERIAL_STATUS_TRANSITION",
+          "CONFIRMED_RESIDUAL_OR_SUBCASE",
+          "AMBIGUOUS_KIND",
+          "PROVISIONAL_COUNTS",
+          "STATUS_BASIS_HISTORICAL_ONLY"
+        ]
+      }
+    ]
+  },
+  "materialization_summary": {
+    "rank_receipts_checked": 4,
+    "history_bindings_complete": 4,
+    "changed_file_enumeration_closed": 4,
+    "source_frozen_identity_matches": 4,
+    "source_frozen_identity_mismatches": 0,
+    "terminal_history_exhausted": true,
+    "no_rank_after_logical_end": true,
+    "official_outputs_deferred": true,
+    "official_outputs_rule": "ten-rank official batches where available; final terminal batch may contain the remaining ranks under bound terminal-tail protocol"
+  }
+}
