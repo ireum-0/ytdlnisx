@@ -1,0 +1,129 @@
+{
+  "schema_version": "lens-history-v1-triage-receipt-v1",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "microsegment_rank_range": [
+    761,
+    764
+  ],
+  "terminal_tail": true,
+  "configured_microsegment_size": 5,
+  "actual_segment_size": 4,
+  "terminal_tail_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/downstream-terminal-tail-v1.md",
+    "blob_sha": "2e9d2279ee740ce08e81df098cbb77f17a1d77bc"
+  },
+  "materializer_terminal_tail_protocol": {
+    "path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+    "blob_sha": "84785a7a10e5810afe79982913ef6b827477733a"
+  },
+  "data_head": "eab811c1a8b74677c97d77bb79fe5ba14eca5c35",
+  "complete_state_blob": "c7d3584643e61d12ad6c06a4b59df79f9df63a45",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "materializer_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer/M17-20260925T1833Z-001/r761-764.json",
+    "blob_sha": "296546547c0ef8e337238d8681f3df3b705f8dce"
+  },
+  "materializer_corrections": [],
+  "materializer_remediations": [
+    {
+      "type": "TERMINAL_TAIL_PROTOCOL",
+      "protocol_path": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md",
+      "protocol_blob_sha": "84785a7a10e5810afe79982913ef6b827477733a",
+      "changes_rank_evidence": false,
+      "changes_semantic_values": false
+    }
+  ],
+  "exception_queue_blob": "352197d0d5af50fb26e5fa11116a476229c1b777",
+  "previous_triage_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/triage/M17-20260925T1833Z-001/r756-760.json",
+    "blob_sha": "250a4c5fd1efe21a6ec2ae15f8a271f974f1a2ca"
+  },
+  "applicable_prior_triage_corrections": [],
+  "source_review": [
+    {
+      "rank": 761,
+      "path": "review-runs/checkpoints/2026-09-07T092340Z__baf26583__checkpoint.md",
+      "source_blob": "1c1f6d70722849477e530a5af552fbadbe8921fa",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "NOT_VERIFIED_SEMANTIC_CANDIDATES",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the source-explicit NOT_YET_RECONFIRMED status for both prior candidates; do not inherit earlier P0/P2 conclusions into this run or infer finality."
+    },
+    {
+      "rank": 762,
+      "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint-run3.md",
+      "source_blob": "192186cc12ca7a60757280885e83d2764f993373",
+      "independent_exception_triggers": [
+        "AMBIGUOUS_KIND",
+        "CHECKLIST_REFINEMENT",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the re-confirmed existing P0/P2, generic checkpoint identity, mandatory proof-bootstrap checklist refinement, and runtime NOT_VERIFIED without inventing a status/count delta."
+    },
+    {
+      "rank": 763,
+      "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint-run2.md",
+      "source_blob": "23b6264ee964fd1951c4823b0871555042a98ed5",
+      "independent_exception_triggers": [
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "EXPLICIT_NEW_FINDING",
+        "CHECKLIST_GAP_CHANGE",
+        "AMBIGUOUS_KIND",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the implementation transition to 2c0bf3a5, source-explicit P0 1 new, existing/open P2, and three checklist gaps. Do not invent a canonical finding ID or final structural kind."
+    },
+    {
+      "rank": 764,
+      "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint.md",
+      "source_blob": "bb69fb88482eabd317bdbf1a887b67015fa04a3d",
+      "independent_exception_triggers": [
+        "IMPLEMENTATION_TRANSITION_BOUNDARY",
+        "MATERIAL_STATUS_TRANSITION",
+        "CONFIRMED_RESIDUAL_OR_SUBCASE",
+        "AMBIGUOUS_KIND",
+        "PROVISIONAL_COUNTS",
+        "STATUS_BASIS_HISTORICAL_ONLY"
+      ],
+      "disposition": "MATERIALIZER_FLAGGED",
+      "human_decision_needed": "Preserve the implementation transition to 36ba1cac, source-level FIXED state of the prior --rm-cache-dir P0, and existing BUG-TERMINAL-04 / BUG-OUTPUT P2 remaining OPEN with changed failure form; do not conflate fixed prior P0 with current-review P0 count 0."
+    }
+  ],
+  "summary": {
+    "ranks_reviewed": 4,
+    "independent_exception_ranks": [
+      761,
+      762,
+      763,
+      764
+    ],
+    "materializer_flagged_exception_ranks": [
+      761,
+      762,
+      763,
+      764
+    ],
+    "triage_discovered_missed_exception_ranks": [],
+    "missed_exception_count": 0,
+    "unsafe_correction_count": 0,
+    "status": "HUMAN_REVIEW_REQUIRED"
+  }
+}
