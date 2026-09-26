@@ -591,7 +591,7 @@ class TerminalExecutionProductionWiringTest {
         val previousCommandPath = preferences.getString("command_path", null)
         val externalFiles = requireNotNull(context.getExternalFilesDir(null))
         val admittedRoot = File(externalFiles, "terminal-committed-cache-${UUID.randomUUID()}").canonicalFile
-        val destination = File(context.filesDir, "terminal-committed-destination-${UUID.randomUUID()}")
+        val destination = File(externalFiles, "terminal-committed-destination-${UUID.randomUUID()}")
         val command = com.ireum.ytdl.util.terminal.TerminalCommandIntentMaterializer.materialize(
             "--no-simulate https://example.com/terminal-publication-committed",
             context.filesDir.absolutePath,
