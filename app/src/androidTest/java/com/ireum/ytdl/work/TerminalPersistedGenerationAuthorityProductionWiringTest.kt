@@ -17,7 +17,10 @@ import com.ireum.ytdl.util.terminal.TerminalCommandMetadata
 import com.ireum.ytdl.util.terminal.TerminalProviderDestinationOption
 import java.io.File
 import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -205,6 +208,38 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
         }
         // A short settle so a late enqueue cannot land after the assertion.
         delay(250L)
+    }
+
+    /** Reads the app-owned reconciliation parent without adding a production test seam. */
+    private fun convergenceScopeJobForTesting(): Job {
+        val scopeField = WorkManagerHandoffRecovery::class.java
+            .getDeclaredField("convergenceScope")
+            .apply { isAccessible = true }
+        val scope = scopeField.get(WorkManagerHandoffRecovery) as CoroutineScope
+        return requireNotNull(scope.coroutineContext[Job])
+    }
+
+    /**
+     * Reconciliation launches terminal dispatches into an app-owned scope and
+     * returns before those jobs finish. Join every child created after the
+     * caller's snapshot; each dispatch awaits its enqueue attempt, so completion
+     * is the bounded negative-observation boundary rather than elapsed time.
+     */
+    private suspend fun awaitNewConvergenceJobs(
+        convergenceJob: Job,
+        preexistingJobs: Set<Job>,
+        timeoutMs: Long = 5_000L,
+    ) {
+        withTimeout(timeoutMs) {
+            val observedJobs = mutableSetOf<Job>()
+            while (true) {
+                val pendingJobs = convergenceJob.children
+                    .filter { it !in preexistingJobs && observedJobs.add(it) }
+                    .toList()
+                if (pendingJobs.isEmpty()) return@withTimeout
+                pendingJobs.joinAll()
+            }
+        }
     }
 
     /**
@@ -974,9 +1009,11 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
             useConfiguredProvider(providerB)
 
             // One real reconciliation pass over the whole batch.
+            val convergenceJob = convergenceScopeJobForTesting()
+            val preexistingJobs = convergenceJob.children.toSet()
             WorkManagerHandoffRecovery.reconcile(context)
             awaitEnqueue(count = siblingCommands.size)
-            settleEnqueueWindow()
+            awaitNewConvergenceJobs(convergenceJob, preexistingJobs)
 
             for ((index, entry) in malformedCarriers.withIndex()) {
                 val (malformedId, carrier) = entry
