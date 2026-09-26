@@ -23,8 +23,19 @@ object TerminalProviderDestinationOption {
     const val OPTION = "--ytdlnisx-terminal-provider-destination"
 
     private val PATTERN = Regex(
-        "(?<!\\S)" + Regex.escape(OPTION) + "(?:=|\\s+)" +
-            "(?:\"([^\"]*)\"|'([^']*)'|(\\S+))",
+        "(?<!\\S)" + Regex.escape(OPTION) +
+            "(?:=(?:\"([^\"]*)\"|'([^']*)'|([^\\s]+))|\\s+(?:\"([^\"]*)\"|'([^']*)'|(\\S+)))",
+    )
+
+    /**
+     * Detects the option appearing as a standalone token with no usable value.
+     *
+     * Without this, a bare or empty-valued option produces no [PATTERN] match
+     * and would be silently ignored, leaving an app-owned token in the command
+     * where it could reach the native config.
+     */
+    private val BARE_TOKEN = Regex(
+        "(?<!\\S)" + Regex.escape(OPTION) + "(?=\\s|=|$)",
     )
 
     /** Renders the structured option for one exact provider tree grant. */
@@ -48,11 +59,19 @@ object TerminalProviderDestinationOption {
      * Removes the Terminal-owned provider option from [command].
      *
      * More than one occurrence is ambiguous and refused rather than resolved
-     * by picking a winner.  A malformed or empty value is refused here so an
-     * unusable provider destination never degrades into a raw path.
+     * by picking a winner.  A bare or empty-valued occurrence carries no usable
+     * value and is refused rather than ignored, because ignoring it would leave
+     * an app-owned token in the command for the native process to see.
      */
     fun extract(command: String): Extracted {
         val matches = PATTERN.findAll(command).toList()
+        // A bare occurrence produces no value match.  It must not be read as an
+        // absent option.
+        if (BARE_TOKEN.findAll(command).count() != matches.size) {
+            throw TerminalCommandMetadataException(
+                "Terminal provider destination is not a usable value",
+            )
+        }
         if (matches.isEmpty()) return Extracted(command, null)
         if (matches.size > 1) {
             throw TerminalCommandMetadataException(

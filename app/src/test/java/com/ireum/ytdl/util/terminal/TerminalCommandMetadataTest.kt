@@ -198,6 +198,90 @@ class TerminalCommandMetadataTest {
         )
     }
 
+    /**
+     * A bare or empty-valued provider option carries no usable value.  It must
+     * be refused, never ignored, because ignoring it would leave an app-owned
+     * token in the command for the native process to observe.
+     */
+    @Test
+    fun bareAndEmptyProviderOptionAreRefusedRatherThanIgnored() {
+        val bare = "${TerminalProviderDestinationOption.OPTION} $command"
+        val emptyEquals = "${TerminalProviderDestinationOption.OPTION}= $command"
+        val bareAtEnd = "$command ${TerminalProviderDestinationOption.OPTION}"
+        val emptyAtEnd = "$command ${TerminalProviderDestinationOption.OPTION}="
+
+        for (malformed in listOf(bare, emptyEquals, bareAtEnd, emptyAtEnd)) {
+            assertTrue(
+                "must refuse: $malformed",
+                runCatching { TerminalCommandMetadata.strip(malformed) }.isFailure,
+            )
+            for (generation in listOf(
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            )) {
+                val result = TerminalCommandMetadata.classifyDurableResult(malformed, generation)
+                assertTrue(
+                    "must be Malformed, was $result for: $malformed",
+                    result is TerminalCommandMetadata.DurableClassification.Malformed,
+                )
+            }
+        }
+    }
+
+    /**
+     * A provider option whose value is not a provider tree is malformed
+     * app-owned metadata.  It must not become self-bound, and it must never be
+     * reinterpreted as a raw path.
+     */
+    @Test
+    fun providerOptionWithNonProviderValueIsMalformedNotSelfBound() {
+        for (bogus in listOf(
+            "${TerminalProviderDestinationOption.OPTION}=not-a-uri $command",
+            "${TerminalProviderDestinationOption.OPTION}=content:// $command",
+            "${TerminalProviderDestinationOption.OPTION} $command",
+            "${TerminalProviderDestinationOption.OPTION}=https://example.com/notaprovider $command",
+        )) {
+            assertTrue(
+                "must refuse: $bogus",
+                runCatching { TerminalCommandMetadata.strip(bogus) }.isFailure,
+            )
+            val legacy = TerminalCommandMetadata.classifyDurableResult(
+                bogus,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            )
+            assertTrue(
+                "must be Malformed, was $legacy for: $bogus",
+                legacy is TerminalCommandMetadata.DurableClassification.Malformed,
+            )
+        }
+    }
+
+    /**
+     * Provider metadata that does satisfy the structural ProviderTree contract
+     * remains exact self-bound authority.
+     */
+    @Test
+    fun validProviderTreeRemainsSelfBoundAuthority() {
+        val legacy = "${TerminalProviderDestinationOption.render(providerC)} $command"
+        val stripped = TerminalCommandMetadata.strip(legacy)
+
+        assertEquals(providerC, stripped.providerTreeUri)
+        assertEquals(command, stripped.command)
+        assertEquals(
+            TerminalCommandMetadata.DurableAuthority.SelfBound,
+            TerminalCommandMetadata.classifyDurable(
+                legacy,
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+            ),
+        )
+        // The rendered form is equally acceptable.
+        assertEquals(
+            providerC,
+            TerminalCommandMetadata.strip(TerminalProviderDestinationOption.render(providerC))
+                .providerTreeUri,
+        )
+    }
+
     @Test
     fun malformedOrRepeatedMetadataStaysFailClosed() {
         val repeated = TerminalCommandMetadata.renderCommandFormat() + " " +

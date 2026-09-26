@@ -773,6 +773,149 @@ class TerminalPersistedGenerationAuthorityProductionWiringTest {
         }
     }
 
+    /**
+     * Bare, empty-valued, and non-provider provider options are malformed
+     * app-owned metadata on both the composition and the durable path.
+     *
+     * The sibling is a valid generation-1 self-bound row that must still be
+     * reconstructed, proving the malformed row does not abort the batch.
+     */
+    @Test
+    fun malformedProviderOptionRowIsIsolatedAndSiblingStillConverges(): Unit = runBlocking {
+        val malformedCommands = listOf(
+            "${TerminalProviderDestinationOption.OPTION} https://example.com/video-bare",
+            "${TerminalProviderDestinationOption.OPTION}= https://example.com/video-empty",
+            "https://example.com/video-bare-end ${TerminalProviderDestinationOption.OPTION}",
+            "https://example.com/video-bogus " +
+                "${TerminalProviderDestinationOption.OPTION}=not-a-provider-tree",
+        )
+        for ((index, malformedCommand) in malformedCommands.withIndex()) {
+            val malformedId = database.terminalDao.insert(TerminalItem(command = malformedCommand))
+            terminals += malformedId
+            val siblingCommand = "-P /storage/emulated/0/StrictSibling$index " +
+                "https://example.com/video-strict-sibling-$index"
+            val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+            terminals += siblingId
+            useConfiguredProvider(providerB)
+
+            WorkManagerHandoffRecovery.reconcile(context)
+            awaitEnqueue()
+
+            // The malformed row is non-runnable and preserved.
+            assertNull(
+                "malformed row $index must have no runnable carrier",
+                database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                    WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                    malformedId.toString(),
+                ),
+            )
+            assertEquals(
+                malformedCommand,
+                database.terminalDao.getTerminalById(malformedId)?.command,
+            )
+            // The malformed command is never dispatched.
+            assertTrue(
+                "malformed row $index must never be dispatched",
+                enqueued.none {
+                    it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) ==
+                        malformedCommand
+                },
+            )
+            // The valid sibling converged in the same pass.
+            assertTrue(
+                "sibling $index must still be dispatched",
+                enqueued.any {
+                    it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) ==
+                        siblingCommand
+                },
+            )
+            enqueued.clear()
+        }
+    }
+
+    /**
+     * A valid provider tree stays exact self-bound authority on the legacy path,
+     * so the strictness change must not over-reject legitimate provider metadata.
+     */
+    @Test
+    fun validProviderTreeSiblingStillRunsOnTheLegacyPath(): Unit = runBlocking {
+        val siblingCommand = TerminalProviderDestinationOption.render(providerC) +
+            " https://example.com/video-valid-provider-sibling"
+        val siblingId = database.terminalDao.insert(TerminalItem(command = siblingCommand))
+        terminals += siblingId
+        useConfiguredProvider(providerB)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+        awaitEnqueue()
+
+        assertTrue(
+            "a valid generation-1 provider sibling must be dispatched",
+            enqueued.any {
+                it.workSpec.input.getString(TerminalDownloadWorker.INPUT_COMMAND) == siblingCommand
+            },
+        )
+        assertEquals(
+            providerC,
+            TerminalCommandMetadata.strip(siblingCommand).providerTreeUri,
+        )
+    }
+
+    /**
+     * Current insertion refuses bare, empty and non-provider provider options
+     * before any row or carrier becomes durable.
+     */
+    @Test
+    fun currentInsertRejectsMalformedProviderOptionBeforeDurability(): Unit = runBlocking {
+        val viewModel = TerminalViewModel(context, database, true)
+        useConfiguredProvider(providerA)
+        for (malformed in listOf(
+            "${TerminalProviderDestinationOption.OPTION} https://example.com/video",
+            "${TerminalProviderDestinationOption.OPTION}= https://example.com/video",
+            "https://example.com/video ${TerminalProviderDestinationOption.OPTION}",
+            "https://example.com/video ${TerminalProviderDestinationOption.OPTION}=",
+            "${TerminalProviderDestinationOption.OPTION}=not-a-provider-tree https://example.com/video",
+        )) {
+            val failure = runCatching { viewModel.insert(TerminalItem(command = malformed)) }
+            assertTrue("insert must refuse: $malformed", failure.isFailure)
+        }
+        // Nothing became durable, so no malformed token can reach planner/native.
+        assertTrue(database.terminalDao.getTerminalById(1L) == null)
+        assertNull(
+            database.workManagerHandoffCarrierDao.getOutstandingForBoundary(
+                WorkManagerHandoffCarrier.TERMINAL_DISPATCH,
+                "1",
+            ),
+        )
+    }
+
+    /**
+     * The durable classification reports every malformed provider form as
+     * Malformed at both dispatch format generations, never as CurrentFormat or
+     * SelfBound.
+     */
+    @Test
+    fun durableClassificationReportsMalformedProviderFormsAtEveryGeneration() {
+        val malformed = listOf(
+            "${TerminalProviderDestinationOption.OPTION} https://example.com/video",
+            "${TerminalProviderDestinationOption.OPTION}= https://example.com/video",
+            "https://example.com/video ${TerminalProviderDestinationOption.OPTION}",
+            "https://example.com/video ${TerminalProviderDestinationOption.OPTION}=",
+            "${TerminalProviderDestinationOption.OPTION}=not-a-provider-tree https://example.com/video",
+        )
+        for (command in malformed) {
+            for (generation in listOf(
+                TerminalCommandMetadata.LEGACY_FORMAT_GENERATION,
+                TerminalCommandMetadata.CURRENT_FORMAT_GENERATION,
+            )) {
+                val result = TerminalCommandMetadata.classifyDurableResult(command, generation)
+                assertTrue(
+                    "expected Malformed for: $command",
+                    result is TerminalCommandMetadata.DurableClassification.Malformed,
+                )
+            }
+        }
+    }
+
     @Test
     fun durableClassificationDistinguishesPersistedGenerations() {
         assertEquals(

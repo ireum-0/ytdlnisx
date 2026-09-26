@@ -123,6 +123,21 @@ object TerminalCommandMetadata {
                 .trim()
         }
         val provider = TerminalProviderDestinationOption.extract(withoutFormat)
+        // Terminal-owned provider metadata is only self-bound authority when it
+        // actually names a provider tree.  A present-but-unusable value is
+        // malformed app-owned metadata: it is never a provider, and it must
+        // never be reinterpreted as a raw path or resolved from the current
+        // preference.  Refusing here also keeps current composition strict,
+        // because a durable command containing one can never be admitted.
+        provider.providerTreeUri?.let { value ->
+            if (TerminalDestinationAuthority.classify(value) !is
+                TerminalDestinationAuthority.ProviderTree
+            ) {
+                throw TerminalCommandMetadataException(
+                    "Terminal provider destination is not a provider tree",
+                )
+            }
+        }
         return Stripped(
             command = provider.command,
             providerTreeUri = provider.providerTreeUri,
