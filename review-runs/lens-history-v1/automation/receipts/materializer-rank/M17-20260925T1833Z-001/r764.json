@@ -1,0 +1,141 @@
+{
+  "schema_version": "lens-history-v1-materializer-rank-receipt-v1",
+  "run_id": "M17-20260925T1833Z-001",
+  "stage": "MATERIALIZE_741_764",
+  "logical_rank_range": [
+    741,
+    764
+  ],
+  "rank": 764,
+  "materializer_state_blob": "b3ffbd1222aa948ec2e0ee943be7b90a5b60652c",
+  "governing_pins": {
+    "frozen_snapshot_sha": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree_sha": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob_sha": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob_sha": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob_sha": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob_sha": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c"
+  },
+  "starting_progress_blob": "493c8827e9cfb321acbbdc830c908f6045adfbd4",
+  "applicable_materializer_remediations": [],
+  "previous_rank_receipt": {
+    "path": "review-runs/lens-history-v1/automation/receipts/materializer-rank/M17-20260925T1833Z-001/r763.json",
+    "blob_sha": "f75bd6266965aeb5a83992eca1707f0c75406b71"
+  },
+  "history": {
+    "commit_sha": "3385e695edd2fdbb84b2ed69b9a9820f6acfef9c",
+    "resolution": "exact commits?sha=25a554d1768f8d3cdd09a6e384a89d915eeeace4&path=review-runs/checkpoints&per_page=1&page=764"
+  },
+  "changed_file_enumeration": {
+    "per_page": 1,
+    "pages_checked": [
+      1,
+      2
+    ],
+    "closure_page": 2,
+    "closure_proof": "files: []",
+    "complete": true,
+    "files": [
+      {
+        "file_page": 1,
+        "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint.md",
+        "status": "added",
+        "source_blob_sha": "bb69fb88482eabd317bdbf1a887b67015fa04a3d",
+        "checkpoint_path": true,
+        "frozen_presence": true,
+        "frozen_blob_sha": "bb69fb88482eabd317bdbf1a887b67015fa04a3d",
+        "source_frozen_match": true
+      }
+    ]
+  },
+  "checkpoint": {
+    "path": "review-runs/checkpoints/ytdlnisx-hourly-review-checkpoint.md",
+    "status": "added",
+    "source_blob_sha": "bb69fb88482eabd317bdbf1a887b67015fa04a3d",
+    "frozen_blob_sha": "bb69fb88482eabd317bdbf1a887b67015fa04a3d",
+    "source_frozen_match": true,
+    "implementation_sha": {
+      "state": "DIRECT",
+      "value": "36ba1cac40b961ae876399fc5a9afe01749c5fe3",
+      "evidence": "source Fixed review target explicitly records Implementation"
+    },
+    "schema_class": "UNINSTRUMENTED",
+    "kind": {
+      "state": "NOT_VERIFIED",
+      "reason": "generic checkpoint with remaining broader registry scope and no explicit final/intermediate identity"
+    },
+    "effectiveness_eligibility": {
+      "state": "NOT_VERIFIED",
+      "reason": "kind NOT_VERIFIED and no structured payload"
+    },
+    "raw_audit_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "primary_deep_lens": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_selection_reason": {
+      "state": "NOT_VERIFIED"
+    },
+    "lens_coverage_current_sha": {
+      "state": "NOT_VERIFIED"
+    },
+    "effectiveness": {},
+    "finding_attribution": {
+      "finding_id": {
+        "state": "DIRECT",
+        "value": "BUG-TERMINAL-04 / BUG-OUTPUT publication-recovery obligation",
+        "evidence": "source P2 section explicitly names BUG-TERMINAL-04 / BUG-OUTPUT publication-recovery obligation"
+      },
+      "finding_disposition": {
+        "state": "DIRECT",
+        "value": "previous --rm-cache-dir P0 is source-level fixed; existing BUG-TERMINAL-04 / BUG-OUTPUT P2 remains open with a changed partial-publication cleanup failure mode",
+        "evidence": "source Current provisional findings sections P0 and P2"
+      },
+      "count_reconciliation": {
+        "state": "DIRECT",
+        "value": "Provisional P0 0 new/current-review blockers / P1 0 / P2 1 existing/open"
+      },
+      "count_delta": {
+        "state": "NOT_VERIFIED",
+        "reason": "source records a historical P0 fixed transition and an existing P2 changed failure mode, not a single canonical numeric count delta"
+      },
+      "modern_primary_detecting_lens": {
+        "state": "NOT_VERIFIED"
+      }
+    }
+  },
+  "factual_exception_triggers": [
+    {
+      "type": "IMPLEMENTATION_TRANSITION_BOUNDARY",
+      "evidence": "implementation changes from 2c0bf3a5b4489c4294df0aabb91a3ec900f5604d at rank 763 to 36ba1cac40b961ae876399fc5a9afe01749c5fe3 at rank 764"
+    },
+    {
+      "type": "MATERIAL_STATUS_TRANSITION",
+      "evidence": "source explicitly states the previously open --rm-cache-dir P0 is source-level fixed"
+    },
+    {
+      "type": "CONFIRMED_RESIDUAL_OR_SUBCASE",
+      "evidence": "source explicitly states existing BUG-TERMINAL-04 / BUG-OUTPUT P2 remains open with a changed failure mode under the remediation"
+    },
+    {
+      "type": "AMBIGUOUS_KIND",
+      "evidence": "generic checkpoint without explicit final/intermediate identity"
+    },
+    {
+      "type": "PROVISIONAL_COUNTS",
+      "evidence": "source explicitly labels the findings section Current provisional findings"
+    },
+    {
+      "type": "STATUS_BASIS_HISTORICAL_ONLY",
+      "evidence": "source reports no GitHub commit-status contexts and independent local/emulator execution NOT_VERIFIED"
+    }
+  ],
+  "materialization": {
+    "replay_comparison": {
+      "state": "NOT_APPLICABLE",
+      "reason": "new materialization range"
+    },
+    "official_outputs_deferred": true
+  }
+}
