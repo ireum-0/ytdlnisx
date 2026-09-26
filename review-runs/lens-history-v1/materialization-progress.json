@@ -24,10 +24,10 @@
       "value": 8
     },
     "inventory_batches": {
-      "completed": 77,
-      "history_entries_materialized": 740,
-      "newest_history_rank_materialized_through": 740,
-      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0077-newest-731-740.jsonl",
+      "completed": 80,
+      "history_entries_materialized": 764,
+      "newest_history_rank_materialized_through": 764,
+      "latest_batch": "review-runs/lens-history-v1/inventory-batches/0080-newest-761-764.jsonl",
       "batch_0001_checks": {
         "commit_detail_file_binding": "COMPLETE",
         "frozen_tree_presence": "COMPLETE",
@@ -711,13 +711,41 @@
         "source_to_frozen_blob_identity": "10/10 MATCH",
         "internal_partition_validation": "731-735 PASS; 736-740 PASS",
         "substantive_provenance": "exact M16 historical classification, status/count/root, provenance and execution-evidence states preserved from sealed rank evidence without backward normalization or modern-lens inference"
+      },
+      "batch_0078_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "741-745 PASS; 746-750 PASS",
+        "substantive_provenance": "exact M17 historical classification, status/count/root, transition/checklist and execution-evidence states preserved without backward normalization or modern-lens inference"
+      },
+      "batch_0079_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "10/10 MATCH",
+        "internal_partition_validation": "751-755 PASS; 756-760 PASS",
+        "substantive_provenance": "M17 implementation transition, explicit INTERMEDIATE identity, source-level status/count chronology and execution-evidence states preserved conservatively"
+      },
+      "batch_0080_checks": {
+        "commit_detail_file_binding": "COMPLETE",
+        "frozen_tree_presence": "COMPLETE",
+        "source_blob_identity": "COMPLETE",
+        "schema_class_assignment": "COMPLETE",
+        "source_to_frozen_blob_identity": "4/4 MATCH",
+        "internal_partition_validation": "761-764 terminal-tail PASS",
+        "terminal_tail_protocol": "review-runs/lens-history-v1/automation/remediation/materializer-remediation-v4-terminal-tail.md@84785a7a10e5810afe79982913ef6b827477733a",
+        "substantive_provenance": "terminal M17 candidate uncertainty, explicit new P0, implementation transitions, source-level fixed/open residual chronology and execution-evidence states preserved conservatively"
       }
     },
     "ledger_batches": {
-      "completed": 77,
-      "records_materialized": 740,
-      "newest_history_rank_materialized_through": 740,
-      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0077-newest-731-740.jsonl",
+      "completed": 80,
+      "records_materialized": 764,
+      "newest_history_rank_materialized_through": 764,
+      "latest_batch": "review-runs/lens-history-v1/ledger-batches/0080-newest-761-764.jsonl",
       "cumulative_eligible_structured_finals_materialized": [
         "d8c9e3d94ecaaa6121f9912cab4240375e8b5680",
         "25a554d1768f8d3cdd09a6e384a89d915eeeace4"
@@ -754,10 +782,10 @@
     "exhaustive_inventory": {
       "status": "IN_PROGRESS",
       "unit": "distinct checkpoint document path at the frozen tree",
-      "reason": "764 is the exact number of commits touching review-runs/checkpoints, not an established count of distinct checkpoint files"
+      "reason": "all 764 checkpoint-path-touching history ranks are materialized; distinct checkpoint document closure remains pending because commit count is not assumed to equal distinct frozen document count"
     },
     "content_enrichment": {
-      "status": "IN_PROGRESS_FOR_MATERIALIZED_BATCHES",
+      "status": "COMPLETE_FOR_MATERIALIZED_HISTORY_RANKS__CORPUS_CLOSURE_PENDING",
       "rule": "lens fields are populated only from the exact source document or deterministic lens-history-v1 derivation"
     },
     "schema_validation": {
@@ -839,9 +867,12 @@
         "review-runs/lens-history-v1/validation/ledger-batch-0074.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0075.json",
         "review-runs/lens-history-v1/validation/ledger-batch-0076.json",
-        "review-runs/lens-history-v1/validation/ledger-batch-0077.json"
+        "review-runs/lens-history-v1/validation/ledger-batch-0077.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0078.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0079.json",
+        "review-runs/lens-history-v1/validation/ledger-batch-0080.json"
       ],
-      "records_checked": 740,
+      "records_checked": 764,
       "invalid_records": 0,
       "effective_ledger_remediation": {
         "run_id": "M11-20260922T0646Z-001",
@@ -864,13 +895,10 @@
       }
     },
     "next_strategy": [
-      "continue bounded history extraction from rank 741 in adaptive materialization batches, with internal five-rank validation and exact checkpoint-path binding",
-      "verify each candidate path exists in the frozen checkpoint tree and record its frozen blob identity",
-      "deduplicate exact checkpoint document paths rather than assuming one commit equals one file",
-      "materialize one lens-history-v1 ledger record per frozen checkpoint document",
-      "content-enrich only fields supported by the exact source text or a checked-in deterministic rule",
-      "validate each additional ledger batch before extending further",
-      "recompute lens-history-v1/final-only-explicit and require exact equality with the frozen manifest"
+      "complete full M17 semantic Triage and independent Auditor review for ranks 741-764",
+      "after a valid terminal-range Auditor PASS, perform separate CORPUS_CLOSURE over distinct checkpoint document paths in the frozen tree",
+      "do not equate 764 checkpoint-path-touching commits with 764 distinct checkpoint documents",
+      "historical_total_effectiveness remains NOT_VERIFIED until corpus-closure evidence supports otherwise"
     ]
   },
   "inventory_contract": {
