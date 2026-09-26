@@ -1,0 +1,116 @@
+{
+  "schema_version": "lens-history-v1-corpus-closure-certification-v1",
+  "closure_run_id": "C01",
+  "certification_role": "AUTHORITATIVE_CORPUS_CLOSURE",
+  "status": "PASS",
+  "parent_head": "41015d30f0710210a088753483b629cfcf5af7a0",
+  "protocol": {
+    "path": "review-runs/lens-history-v1/automation/corpus-closure/C01/protocol-v1.md",
+    "blob_sha": "579d95995f9172aea0502ae962dec9cf7342f15e"
+  },
+  "evidence": {
+    "frozen_document_inventory": {
+      "path": "review-runs/lens-history-v1/automation/corpus-closure/C01/frozen-document-inventory.jsonl",
+      "blob_sha": "7f57caa9f31bc8be7a6b0de171108f8adb0bf9a3"
+    },
+    "reconciliation": {
+      "path": "review-runs/lens-history-v1/automation/corpus-closure/C01/reconciliation.json",
+      "blob_sha": "4d5098af33c02f245ce19531a884bcc70db822ec"
+    }
+  },
+  "governing_pins": {
+    "frozen_snapshot_commit": "25a554d1768f8d3cdd09a6e384a89d915eeeace4",
+    "frozen_checkpoints_tree": "bd72cf55e5e876f46ab1e592bf3008e6044d977b",
+    "schema_blob": "b2fe91adda91ecfbd1cfb1d6195f6ec1df68cf96",
+    "document_identity_rule_blob": "982d8fda98d70c5a196e470b24facf1b7c337cda",
+    "verified_seed_blob": "531dbcbe9dd6854d969d8f1bc2b8a1a532788d51",
+    "frozen_manifest_blob": "8e327e4b0bde29586c3d512f8bd0b077a1a32b8c",
+    "terminal_materializer_state_blob": "c7d3584643e61d12ad6c06a4b59df79f9df63a45",
+    "terminal_m17_audit_blob": "5aa46f29231166a8fb453c8c1ccb61526f677f67",
+    "terminal_m17_audit_commit": "782fb35c499f98be7a7291688675a54fc798413c"
+  },
+  "terminal_gate": {
+    "materializer_state_blob": "c7d3584643e61d12ad6c06a4b59df79f9df63a45",
+    "materializer_status": "COMPLETE",
+    "terminal_audit_blob": "5aa46f29231166a8fb453c8c1ccb61526f677f67",
+    "terminal_audit_status": "PASS",
+    "terminal_audit_unlock_allowed": true,
+    "terminal_audit_next_logical_stage": "CORPUS_CLOSURE"
+  },
+  "corpus": {
+    "history_rank_count": 764,
+    "history_rank_range": [
+      1,
+      764
+    ],
+    "audit_coverage_contiguous": true,
+    "frozen_document_count": 763,
+    "effective_ledger_record_count": 764,
+    "distinct_effective_document_paths": 763,
+    "unaccounted_frozen_document_count": 0,
+    "historical_only_path_count": 0,
+    "frozen_blob_identity_disagreement_count": 0,
+    "required_field_missing_count": 0,
+    "provenance_row_mismatch_count": 0,
+    "unresolved_duplicate_path_contradiction_count": 0,
+    "duplicate_history_event_path": {
+      "path": "review-runs/checkpoints/2026-09-09__67c7a58__track-a-download-finalization-2.md",
+      "ranks": [
+        660,
+        657
+      ],
+      "treatment": "ONE_FROZEN_DOCUMENT_TWO_HISTORY_EVENTS_NO_CONTRADICTION"
+    },
+    "preserved_source_frozen_mismatch": {
+      "rank": 660,
+      "source_blob_sha": "a5021a886f5065e78828a1596c84b83bc099bfd8",
+      "frozen_blob_sha": "fa1086d7b119c19da12dcb17785a84072e35ed57",
+      "treatment": "PRESERVED_HISTORICAL_FACT_NOT_REWRITTEN"
+    }
+  },
+  "effectiveness": {
+    "aggregate_rule": "lens-history-v1/final-only-explicit",
+    "observed_measured_effectiveness": {
+      "new_confirmed_findings": 0,
+      "existing_finding_status_changes": 0,
+      "confirmed_residuals_or_subcases": 1,
+      "rejected_candidates_with_proof": 3,
+      "not_verified_candidates": 1,
+      "checklist_gaps_triggered": 0,
+      "cross_feature_propagation_hits": 2
+    },
+    "frozen_manifest_exact_match": true,
+    "historical_total_effectiveness": {
+      "state": "NOT_VERIFIED",
+      "reason": "pre-structured finals lack complete comparable raw metrics and substantive discoveries can occur outside cumulative-eligible structured finals"
+    }
+  },
+  "ancestry": {
+    "closure_base_commit": "782fb35c499f98be7a7291688675a54fc798413c",
+    "certified_parent_head": "41015d30f0710210a088753483b629cfcf5af7a0",
+    "pre_certification_closure_commit_count": 13,
+    "strict_first_parent_chain": true,
+    "all_pre_certification_files_confined_to": "review-runs/lens-history-v1/automation/corpus-closure/C01/**",
+    "production_application_source_modified": false
+  },
+  "inference_safety": {
+    "unsupported_direct_or_derivable_count": 0,
+    "legacy_audit_lens_to_modern_coverage_inference": false,
+    "missing_metric_to_zero_inference": false,
+    "missing_coverage_to_not_run_inference": false,
+    "historical_uncertainty_preserved": true
+  },
+  "pass_criteria": {
+    "frozen_tree_complete_untruncated": true,
+    "all_764_history_ranks_pass_audited": true,
+    "page_765_empty": true,
+    "zero_unaccounted_frozen_documents": true,
+    "all_effective_ledger_paths_classified": true,
+    "no_unresolved_duplicate_contradiction": true,
+    "no_unauthorized_provenance_or_effectiveness_rewrite": true,
+    "observed_effectiveness_matches_manifest": true,
+    "closure_path_confinement": true
+  },
+  "closure_complete": true,
+  "next_logical_stage": null
+}
