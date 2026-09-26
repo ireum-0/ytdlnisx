@@ -573,9 +573,15 @@ class ConfiguredDownloadArchiveStoreProductionWiringTest {
         try {
             generation.privateArchive.writeText("youtube A1\nyoutube A2\n")
             // An unresolved promotion leaves the fence and the private evidence.
+            // The provider write itself may report failure by throwing, so
+            // neither outcome may be read as a resolved promotion.
             provider.partialWriteThenFailure = "youtube A1\n"
+            val partialWrite = runCatching {
+                DownloadArchiveAuthority.promote(context, generation)
+            }
             assertTrue(
-                DownloadArchiveAuthority.promote(context, generation).not(),
+                "a partial provider write must not report a resolved promotion",
+                partialWrite.isFailure || partialWrite.getOrNull() == false,
             )
             assertTrue(generation.privateArchive.exists())
             assertTrue(DownloadArchiveProviderFence.isUnresolved(context, authorityA))
