@@ -71,8 +71,17 @@ try {
     $headPass=($head -eq $TestedSha)
     $checks.Add([pscustomobject]@{ name='exact_head'; expected=$TestedSha; observed=$head; pass=$headPass })
     if(-not $headPass){$errors.Add("local HEAD expected $TestedSha but was $head")}
-    $checks.Add([pscustomobject]@{ name='tracked_tree'; clean=$tracked.clean; trackedStatus=$tracked.trackedStatus; pass=$tracked.clean })
-    if(-not $tracked.clean){$errors.Add('tracked worktree is not clean at the tested SHA')}
+    $checks.Add([pscustomobject]@{
+        name='tracked_tree'
+        clean=$tracked.clean
+        trackedStatus=$tracked.trackedStatus
+        untrackedPresent=$tracked.untrackedPresent
+        untrackedCount=$tracked.untrackedCount
+        untrackedStatus=@($tracked.untrackedStatus)
+        untrackedListingTruncated=$tracked.untrackedListingTruncated
+        pass=$tracked.clean
+    })
+    if(-not $tracked.clean){$errors.Add('worktree has tracked changes or non-ignored untracked files at the tested SHA')}
 
     $verificationPath=Assert-IgnoredEvidencePath -RepoFull $repoFull -Path $VerificationEvidencePath -LogDirectory $runDirectory -Name 'VerificationEvidencePath'
     $verification=Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json

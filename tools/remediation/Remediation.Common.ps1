@@ -393,10 +393,32 @@ function Get-RemediationTrackedTreeState {
     }
     $status = Get-RemediationGitText -RepoPath $RepoPath -ArgumentList @('status', '--porcelain=v1', '--untracked-files=no') -LogDirectory $LogDirectory -Name 'git-tracked-status'
     $statusText = $status.stdoutSample.Trim()
+    $untracked = Get-RemediationGitText -RepoPath $RepoPath -ArgumentList @('ls-files', '--others', '--exclude-standard', '-z') -LogDirectory $LogDirectory -Name 'git-untracked-status'
+    $untrackedText = [string]$untracked.stdoutSample
+    $untrackedBytes = 0L
+    if (Test-Path -LiteralPath $untracked.stdoutPath -PathType Leaf) {
+        $untrackedBytes = (Get-Item -LiteralPath $untracked.stdoutPath).Length
+    }
+    $untrackedPaths = @()
+    if ($untrackedBytes -gt 0) {
+        $untrackedPaths = @($untrackedText.Split([char[]]@([char]0), [StringSplitOptions]::RemoveEmptyEntries))
+    }
+    $untrackedSummary = @($untrackedPaths | Select-Object -First 8 | ForEach-Object {
+        $path = ([string]$_).Replace(([string][char]13), '<CR>').Replace(([string][char]10), '<LF>').Replace(([string][char]9), '<TAB>')
+        if ($path.Length -gt 160) { $path = $path.Substring(0, 157) + '...' }
+        '?? ' + $path
+    })
+    $untrackedListingTruncated = ($untrackedBytes -gt 65536 -or $untrackedPaths.Count -gt 8)
+    $untrackedCount = $(if ($untrackedBytes -gt 65536) { $null } else { $untrackedPaths.Count })
+    $untrackedPresent = ($untrackedBytes -gt 0)
     return [pscustomobject][ordered]@{
-        clean = ($diff.exitCode -eq 0 -and [string]::IsNullOrWhiteSpace($statusText))
+        clean = ($diff.exitCode -eq 0 -and [string]::IsNullOrWhiteSpace($statusText) -and -not $untrackedPresent)
         diffExitCode = [int]$diff.exitCode
         trackedStatus = $statusText
+        untrackedPresent = [bool]$untrackedPresent
+        untrackedCount = $untrackedCount
+        untrackedStatus = $untrackedSummary
+        untrackedListingTruncated = [bool]$untrackedListingTruncated
     }
 }
 

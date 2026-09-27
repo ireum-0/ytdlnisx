@@ -160,11 +160,31 @@ foreach ($task in $CompileTask) {
         throw "CompileTask is outside the compile-task contract: $task"
     }
 }
+$canonicalGradlePath = Join-Path $repoFull 'gradlew.bat'
 if ([string]::IsNullOrWhiteSpace($GradlePath)) {
-    $GradlePath = Join-Path $repoFull 'gradlew.bat'
-}
-if (-not (Test-Path -LiteralPath $GradlePath -PathType Leaf)) {
-    throw "Gradle wrapper does not exist: $GradlePath"
+    if (-not (Test-Path -LiteralPath $canonicalGradlePath -PathType Leaf)) {
+        throw "Repository-local Gradle wrapper does not exist: $canonicalGradlePath"
+    }
+    $canonicalGradlePath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $canonicalGradlePath).Path)
+    $GradlePath = $canonicalGradlePath
+} elseif ($ToolingDemoMode) {
+    if (-not (Test-Path -LiteralPath $GradlePath -PathType Leaf)) {
+        throw "Gradle wrapper does not exist: $GradlePath"
+    }
+    $GradlePath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $GradlePath).Path)
+} else {
+    if (-not (Test-Path -LiteralPath $canonicalGradlePath -PathType Leaf)) {
+        throw "Repository-local Gradle wrapper does not exist: $canonicalGradlePath"
+    }
+    $canonicalGradlePath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $canonicalGradlePath).Path)
+    if (-not (Test-Path -LiteralPath $GradlePath -PathType Leaf)) {
+        throw "Normal exact-source mode accepts only the repository-local gradlew.bat; supplied path does not exist: $GradlePath"
+    }
+    $suppliedGradlePath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $GradlePath).Path)
+    if (-not [string]::Equals($suppliedGradlePath, $canonicalGradlePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Normal exact-source mode accepts only the repository-local gradlew.bat: $canonicalGradlePath"
+    }
+    $GradlePath = $canonicalGradlePath
 }
 if ($ToolingDemoMode -and [string]::IsNullOrWhiteSpace($DemoResultRoot)) {
     throw 'ToolingDemoMode requires a relative DemoResultRoot under the invocation evidence directory.'
@@ -179,8 +199,10 @@ if ($head -ne $ExpectedSha) {
 }
 $treeSha = Get-RemediationTreeSha -RepoPath $repoFull -CommitSha $head -LogDirectory $runDirectory
 $treeState = Get-RemediationTrackedTreeState -RepoPath $repoFull -CandidateSha $head -LogDirectory $runDirectory
+Write-RemediationJson -Path (Join-Path $runDirectory 'worktree-state.json') -Value $treeState
 if (-not $treeState.clean) {
-    throw 'Verification refuses to run against tracked source changes.'
+    $untrackedSummary = @($treeState.untrackedStatus) -join '; '
+    throw "Verification refuses tracked changes or non-ignored untracked inputs. Tracked status: $($treeState.trackedStatus); untracked: $untrackedSummary"
 }
 if (-not [string]::IsNullOrWhiteSpace($ExpectedParentSha)) {
     $parent = (Get-RemediationGitText -RepoPath $repoFull -ArgumentList @('rev-parse', ($head + '^')) -LogDirectory $runDirectory -Name 'git-parent').stdoutSample.Trim()

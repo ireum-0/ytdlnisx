@@ -72,8 +72,17 @@ try {
     }
 
     $tracked = Get-RemediationTrackedTreeState -RepoPath $repoFull -CandidateSha $observedHead -LogDirectory $runDirectory
-    $checks.Add([pscustomobject][ordered]@{ name = 'tracked_tree'; clean = $tracked.clean; trackedStatus = $tracked.trackedStatus; pass = $tracked.clean })
-    if (-not $tracked.clean) { $mismatches.Add('tracked worktree differs from the exact local HEAD') }
+    $checks.Add([pscustomobject][ordered]@{
+        name = 'tracked_tree'
+        clean = $tracked.clean
+        trackedStatus = $tracked.trackedStatus
+        untrackedPresent = $tracked.untrackedPresent
+        untrackedCount = $tracked.untrackedCount
+        untrackedStatus = @($tracked.untrackedStatus)
+        untrackedListingTruncated = $tracked.untrackedListingTruncated
+        pass = $tracked.clean
+    })
+    if (-not $tracked.clean) { $mismatches.Add('implementation worktree has tracked changes or non-ignored untracked files') }
 
     $remoteSha = Get-RemediationRemoteRefSha -RepoPath $repoFull -RemoteName $RemoteName -BranchName $ImplementationRef -LogDirectory $runDirectory
     $remotePass = ($remoteSha -eq $ExpectedRemoteSha)
