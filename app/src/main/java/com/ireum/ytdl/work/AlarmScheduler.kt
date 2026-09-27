@@ -446,10 +446,20 @@ class AlarmScheduler(private val context: Context) {
     }
 
     fun canSchedule() : Boolean {
-        return if (Build.VERSION.SDK_INT >= 31){
+        return ExactAlarmCapabilityPolicy.canSchedule(
+            apiLevel = Build.VERSION.SDK_INT,
+            alarmManagerAvailable = alarmManager != null,
+        ) {
             alarmManager?.canScheduleExactAlarms() == true
-        }else {
-            false
         }
     }
+}
+
+internal object ExactAlarmCapabilityPolicy {
+    fun canSchedule(
+        apiLevel: Int,
+        alarmManagerAvailable: Boolean,
+        canScheduleExactAlarms: () -> Boolean,
+    ): Boolean = alarmManagerAvailable &&
+        (apiLevel < 31 || canScheduleExactAlarms())
 }
