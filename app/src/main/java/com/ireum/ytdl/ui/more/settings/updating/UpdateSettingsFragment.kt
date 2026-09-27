@@ -51,9 +51,8 @@ class UpdateSettingsFragment : BaseSettingsFragment() {
             setOnPreferenceClickListener {
                 UiUtil.showYTDLSourceBottomSheet(requireActivity(), preferences) { t, r ->
                     summary = t
-                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("ytdlp_source", r))
-                    RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), preferences.edit().putString("ytdlp_source_label", t))
-                    initYTDLUpdate(r)
+                    val generation = updateUtil!!.selectSource(r, t)
+                    initYTDLUpdate(generation)
                 }
                 true
             }
@@ -138,12 +137,12 @@ class UpdateSettingsFragment : BaseSettingsFragment() {
         }
     }
 
-    private fun initYTDLUpdate(channel: String? = null) = lifecycleScope.launch {
+    private fun initYTDLUpdate(expectedGeneration: Long? = null) = lifecycleScope.launch {
         Snackbar.make(requireView(),
             requireContext().getString(R.string.ytdl_updating_started),
             Snackbar.LENGTH_LONG).show()
         runCatching {
-            val res = updateUtil!!.updateYoutubeDL(channel)
+            val res = updateUtil!!.updateYoutubeDL(expectedGeneration)
             when (res.status) {
                 UpdateUtil.YTDLPUpdateStatus.DONE -> {
                     Snackbar.make(requireView(), res.message, Snackbar.LENGTH_LONG).show()
