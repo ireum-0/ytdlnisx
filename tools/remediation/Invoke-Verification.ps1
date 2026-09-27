@@ -142,10 +142,13 @@ function New-ExactCandidateExecutionTree {
         [Parameter(Mandatory)][string]$EvidenceDirectory,
         [Parameter(Mandatory)][string]$LogDirectory
     )
-    $executionPath = [System.IO.Path]::GetFullPath((Join-Path $EvidenceDirectory 'candidate-tree'))
+    $materializationRunId = Split-Path -Leaf $EvidenceDirectory
+    $materializationRoot = [System.IO.Path]::GetFullPath((Join-Path $SourceRepoPath 'build\remediation-worktrees'))
+    $executionPath = [System.IO.Path]::GetFullPath((Join-Path $materializationRoot $materializationRunId))
     if (Test-Path -LiteralPath $executionPath) {
         throw "Exact candidate materialization path already exists: $executionPath"
     }
+    New-Item -ItemType Directory -Path $materializationRoot -Force | Out-Null
     $created = Invoke-RemediationGit -RepoPath $SourceRepoPath -ArgumentList @('worktree', 'add', '--detach', $executionPath, $CandidateSha) -LogDirectory $LogDirectory -Name 'git-create-exact-candidate-worktree' -TimeoutSeconds 300
     if ($created.timedOut -or $created.exitCode -ne 0) {
         throw "Unable to create the exact candidate execution worktree (exit $($created.exitCode)); the source worktree was left unchanged."
@@ -157,7 +160,8 @@ function New-ExactCandidateExecutionTree {
     $record = [pscustomobject][ordered]@{
         contract = 'exact_candidate_execution_lifetime_v1'
         mechanism = 'git_detached_candidate_worktree'
-        lifecycle = 'retained_under_run_evidence_no_cleanup'
+        lifecycle = 'retained_in_ignored_run_scoped_worktree_no_cleanup'
+        materializationRunId = $materializationRunId
         sourceRepositoryPath = [System.IO.Path]::GetFullPath($SourceRepoPath)
         materializationPath = $executionPath
         materializationCreation = [pscustomobject][ordered]@{

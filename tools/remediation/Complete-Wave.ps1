@@ -53,7 +53,9 @@ function Test-ExactSourceExecutionLifetime {
         $failures.Add('verification has no execution-lifetime provenance object')
     } else {
         $evidenceDirectory = [System.IO.Path]::GetFullPath((Split-Path -Parent $VerificationPath)).TrimEnd('\')
-        $expectedMaterialization = [System.IO.Path]::GetFullPath((Join-Path $evidenceDirectory 'candidate-tree'))
+        $evidenceRunId = Split-Path -Leaf $evidenceDirectory
+        $expectedMaterializationRoot = Join-Path $RepoFull 'build\remediation-worktrees'
+        $expectedMaterialization = [System.IO.Path]::GetFullPath((Join-Path $expectedMaterializationRoot $evidenceRunId))
         $actualMaterialization = ''
         try { $actualMaterialization = [System.IO.Path]::GetFullPath([string]$proof.materializationPath) } catch {}
         $recordedSourceRoot = ''
@@ -66,7 +68,8 @@ function Test-ExactSourceExecutionLifetime {
         try { $executedLauncher = [System.IO.Path]::GetFullPath([string]$proof.executedCanonicalLauncherPath) } catch {}
         if ($proof.contract -ne 'exact_candidate_execution_lifetime_v1') { $failures.Add('execution-lifetime contract identifier is missing or unsupported') }
         if ($proof.mechanism -ne 'git_detached_candidate_worktree') { $failures.Add('execution-lifetime mechanism is not the detached exact-candidate worktree') }
-        if ($proof.lifecycle -ne 'retained_under_run_evidence_no_cleanup') { $failures.Add('execution-lifetime materialization lifecycle or no-cleanup policy is absent') }
+        if ($proof.lifecycle -ne 'retained_in_ignored_run_scoped_worktree_no_cleanup') { $failures.Add('execution-lifetime materialization lifecycle or no-cleanup policy is absent') }
+        if ($proof.materializationRunId -ne $evidenceRunId) { $failures.Add('execution-lifetime worktree is not bound to the verification evidence run ID') }
         if ($proof.allowedWritableOutputs -ne 'Git-ignored outputs within the materialization; wrapper evidence remains outside it.') { $failures.Add('execution-lifetime allowed writable output policy is absent or unsupported') }
         if ($proof.localProperties -ne 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.') { $failures.Add('execution-lifetime local.properties non-exposure policy is absent or unsupported') }
         if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('execution-lifetime proof permits gate execution from the mutable source worktree') }
@@ -77,8 +80,8 @@ function Test-ExactSourceExecutionLifetime {
         if (-not $proof.identityPass -or -not $proof.stateBeforeGates.clean -or -not $proof.materializationStateAfterAllGates.clean) { $failures.Add('materialization identity or clean boundary did not PASS') }
         if ($null -eq $proof.materializationCreation -or $proof.materializationCreation.exitCode -ne 0 -or $proof.materializationCreation.timedOut -ne $false -or [string]::IsNullOrWhiteSpace([string]$proof.materializationCreation.command)) { $failures.Add('exact candidate worktree creation evidence is incomplete') }
         if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('gate execution was not isolated from the source worktree') }
-        if (-not [string]::Equals($actualMaterialization, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('materialization path is not the run-owned candidate-tree directory') }
-        if (-not (Test-Path -LiteralPath $expectedMaterialization -PathType Container)) { $failures.Add('run-owned candidate-tree materialization is unavailable') }
+        if (-not [string]::Equals($actualMaterialization, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('materialization path is not the run-owned ignored worktree directory') }
+        if (-not (Test-Path -LiteralPath $expectedMaterialization -PathType Container)) { $failures.Add('run-owned exact worktree materialization is unavailable') }
         if (-not [string]::Equals($requestedLauncher, $expectedSourceLauncher, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('requested normal launcher is not the source repository canonical gradlew.bat') }
         if (-not [string]::Equals($executedLauncher, $expectedExecutionLauncher, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('executed normal launcher is not the materialized canonical gradlew.bat') }
         if ($proof.launcherPolicy -ne 'normal_mode_repository_local_gradlew_bat_from_exact_candidate_materialization') { $failures.Add('normal canonical-launcher policy is absent') }

@@ -519,7 +519,9 @@ try {
     $transientEvidencePath = Get-VerificationJsonPath -Result $transientResult
     $transientEvidence = Get-Content -LiteralPath $transientEvidencePath -Raw | ConvertFrom-Json
     $sourceState = Get-RemediationTrackedTreeState -RepoPath $transientFixture.path -CandidateSha $transientFixture.sha -LogDirectory $processEvidenceRoot
-    $expectedMaterialization = [System.IO.Path]::GetFullPath((Join-Path $transientEvidence.evidenceDirectory 'candidate-tree'))
+    $executionRunId = Split-Path -Leaf $transientEvidence.evidenceDirectory
+    $expectedMaterializationRoot = Join-Path $transientFixture.path 'build\remediation-worktrees'
+    $expectedMaterialization = [System.IO.Path]::GetFullPath((Join-Path $expectedMaterializationRoot $executionRunId))
     $observedWorkingDirectory = [System.IO.Path]::GetFullPath([string]$consumed.workingDirectory)
     $transientPass = (
         $transientResult.exitCode -eq 0 -and
@@ -531,6 +533,7 @@ try {
         $transientEvidence.executionLifetime.status -eq 'PASS' -and
         $transientEvidence.executionLifetime.candidateSha -eq $transientFixture.sha -and
         $transientEvidence.executionLifetime.candidateTree -eq $transientFixture.tree -and
+        $transientEvidence.executionLifetime.materializationRunId -eq $executionRunId -and
         $transientEvidence.gates[0].executionLifetime.provenancePass -eq $true
     )
     Add-AcceptanceCheck -CheckId 'transient_behavior_relevant_mutation_isolated' -Pass $transientPass -Detail 'The gate started after exact-tree observation, consumed the committed value from its detached materialization while the source worktree contained a synchronized transient edit, and passed only after the source was restored.'
