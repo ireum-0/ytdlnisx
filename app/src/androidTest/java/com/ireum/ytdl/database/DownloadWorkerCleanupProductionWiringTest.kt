@@ -1,6 +1,10 @@
 package com.ireum.ytdl.database
 
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.SupportSQLiteQuery
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.preference.PreferenceManager
@@ -61,6 +65,8 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
 
 private val realWorkerTestDownloadIds = AtomicLong(
     System.currentTimeMillis().coerceAtLeast(9_000_000L),
@@ -69,6 +75,44 @@ private val realWorkerTestDownloadIds = AtomicLong(
 @RunWith(AndroidJUnit4::class)
 class DownloadWorkerCleanupProductionWiringTest {
     private lateinit var db: DBManager
+    private val failAuthorityQuery = ThreadLocal<Boolean>()
+    private val roomReadFailures = AtomicInteger(0)
+
+    // Throw at Room's actual SQLite query boundary, after the worker selected
+    // the read. Other Room queries and sibling worker threads stay real.
+    private fun faultingRoomFactory() = SupportSQLiteOpenHelper.Factory { configuration ->
+        val helper = FrameworkSQLiteOpenHelperFactory().create(configuration)
+        fun wrap(database: SupportSQLiteDatabase): SupportSQLiteDatabase = Proxy.newProxyInstance(
+            SupportSQLiteDatabase::class.java.classLoader,
+            arrayOf(SupportSQLiteDatabase::class.java),
+        ) { _, method, arguments ->
+            val query = arguments?.firstOrNull()
+            val sql = (query as? SupportSQLiteQuery)?.sql ?: query as? String
+            if (method.name == "query" && failAuthorityQuery.get() == true &&
+                sql?.contains("FROM downloads WHERE id=") == true
+            ) {
+                failAuthorityQuery.remove()
+                roomReadFailures.incrementAndGet()
+                throw android.database.sqlite.SQLiteException("injected authoritative Room read failure")
+            }
+            try {
+                method.invoke(database, *(arguments ?: emptyArray()))
+            } catch (failure: InvocationTargetException) {
+                throw failure.targetException
+            }
+        } as SupportSQLiteDatabase
+        Proxy.newProxyInstance(
+            SupportSQLiteOpenHelper::class.java.classLoader,
+            arrayOf(SupportSQLiteOpenHelper::class.java),
+        ) { _, method, arguments ->
+            val result = try {
+                method.invoke(helper, *(arguments ?: emptyArray()))
+            } catch (failure: InvocationTargetException) {
+                throw failure.targetException
+            }
+            if (result is SupportSQLiteDatabase) wrap(result) else result
+        } as SupportSQLiteOpenHelper
+    }
 
     @Before
     fun createDb() {
@@ -79,6 +123,7 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadWorkerProcessOwners.clearForTesting()
         DownloadClaimTestHooks.resetForTesting()
         DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = null
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
         DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
@@ -88,7 +133,8 @@ class DownloadWorkerCleanupProductionWiringTest {
         db = Room.inMemoryDatabaseBuilder(
             context,
             DBManager::class.java,
-        ).addTypeConverter(Converters()).allowMainThreadQueries().build()
+        ).openHelperFactory(faultingRoomFactory())
+            .addTypeConverter(Converters()).allowMainThreadQueries().build()
     }
 
     @After
@@ -99,6 +145,7 @@ class DownloadWorkerCleanupProductionWiringTest {
         DownloadWorkerProcessOwners.clearForTesting()
         DownloadClaimTestHooks.resetForTesting()
         DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+        DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = null
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
         DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
@@ -112,6 +159,113 @@ class DownloadWorkerCleanupProductionWiringTest {
         YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
         YtdlpNativeProcessBarrier.markerEnumerationFailureForTesting = false
         db.close()
+    }
+
+    @Test
+    fun realWorkerActiveAuthorityReadFailureEntersRecovery() = runBlocking {
+        exerciseUnreadableAuthority(DownloadRepository.Status.Active.name, false, false)
+    }
+
+    @Test
+    fun realWorkerPostProcessingAuthorityReadFailureEntersRecovery() = runBlocking {
+        exerciseUnreadableAuthority(DownloadRepository.Status.PostProcessing.name, false, false)
+    }
+
+    @Test
+    fun realWorkerUnreadableStopAndCleanupRetainExactOwnerThroughFailedCarrierWrite() = runBlocking {
+        exerciseUnreadableAuthority(DownloadRepository.Status.Active.name, true, true)
+    }
+
+    @Test
+    fun realWorkerPostProcessingUnreadableCleanupRetainsExactOwner() = runBlocking {
+        exerciseUnreadableAuthority(DownloadRepository.Status.PostProcessing.name, true, true)
+    }
+
+    private suspend fun exerciseUnreadableAuthority(
+        status: String,
+        failCleanup: Boolean,
+        failFirstCarrier: Boolean,
+    ) {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        val failedId = insertQueuedDownload("authority-read-failure")
+        val siblingId = insertQueuedDownload("authority-readable-sibling")
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val previousConcurrency = preferences.getInt("concurrent_downloads", 1)
+        val hadConcurrency = preferences.contains("concurrent_downloads")
+        val failedStop = AtomicBoolean(false)
+        val failedCleanup = AtomicBoolean(false)
+        val rejectCarrier = AtomicBoolean(failFirstCarrier)
+        val carrierFailures = AtomicInteger(0)
+        val terminalAttempts = AtomicInteger(0)
+        val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
+        try {
+            assertTrue(preferences.edit().putInt("concurrent_downloads", 2).commit())
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { id ->
+                if (id == failedId) {
+                    val current = requireNotNull(db.downloadDao.getNullableDownloadById(id))
+                    exactExecution.set(current.executionId)
+                    db.downloadDao.updateMultipleRaw(listOf(current.copy(status = status)))
+                }
+                throw IOException("bounded producer failure reaches real repeated stop gate")
+            }
+            DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = { id, boundary ->
+                if (id == failedId && (
+                        boundary == "stop_gate" && failedStop.compareAndSet(false, true) ||
+                            boundary == "attempt_cleanup" && failCleanup &&
+                            failedCleanup.compareAndSet(false, true)
+                        )) failAuthorityQuery.set(true)
+            }
+            DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = { id ->
+                if (id == failedId) terminalAttempts.incrementAndGet()
+                null
+            }
+            DownloadExecutionRecovery.commitOverride = { operation, _ ->
+                if (operation == DownloadExecutionRecovery.JournalCommitOperation.RECORD && rejectCarrier.get()) {
+                    carrierFailures.incrementAndGet()
+                    false
+                } else true
+            }
+            val workInfo = enqueueAndAwaitDownloadWorker(context)
+            assertEquals(WorkInfo.State.FAILED, workInfo.state)
+            assertTrue(failedStop.get())
+            assertEquals(failCleanup, failedCleanup.get())
+            assertEquals(if (failCleanup) 2 else 1, roomReadFailures.get())
+            assertEquals(0, terminalAttempts.get())
+            assertEquals(DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(siblingId)?.status)
+            if (failFirstCarrier) {
+                awaitAuthorityCondition { carrierFailures.get() > 0 }
+                assertEquals(status, db.downloadDao.getNullableDownloadById(failedId)?.status)
+                assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(failedId, exactExecution.get()))
+                assertTrue(DownloadExecutionRecovery.hasRetiringAttempt(failedId, exactExecution.get()))
+                assertTrue(DownloadExecutionRecovery.isRecoveryJobActiveForTesting(failedId))
+                rejectCarrier.set(false)
+            }
+            awaitAuthorityCondition {
+                db.downloadDao.getNullableDownloadById(failedId)?.status == DownloadRepository.Status.Queued.name &&
+                    !DownloadExecutionRecovery.hasRetiringAttempt(failedId, exactExecution.get()) &&
+                    !DownloadExecutionRecovery.isRecoveryJobActiveForTesting(failedId)
+            }
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(failedId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(failedId))
+        } finally {
+            rejectCarrier.set(false)
+            DownloadExecutionRecovery.cancelAllRecoveryJobsAndJoinForTesting()
+            DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = null
+            DownloadExecutionRecovery.commitOverride = null
+            val editor = preferences.edit()
+            if (hadConcurrency) editor.putInt("concurrent_downloads", previousConcurrency)
+            else editor.remove("concurrent_downloads")
+            assertTrue(editor.commit())
+        }
+    }
+
+    private suspend fun awaitAuthorityCondition(condition: () -> Boolean) {
+        kotlinx.coroutines.withTimeout(30_000L) {
+            while (!condition()) delay(25L)
+        }
     }
 
     @Test

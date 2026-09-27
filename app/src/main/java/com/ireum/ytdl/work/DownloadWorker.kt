@@ -297,7 +297,7 @@ internal fun isDurablyCommittedHistoryReplacementForExecution(
     dbManager: DBManager,
     downloadItem: DownloadItem,
 ): Boolean {
-    val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id) ?: return false
+    val current = readDownloadExecutionAuthority(dbManager, downloadItem, "history_authority") ?: return false
     if (downloadItem.executionId.isNotBlank() && current.executionId != downloadItem.executionId) {
         return false
     }
@@ -331,6 +331,8 @@ internal fun hasDurableUserStopRevokedAuthority(
  * production lease is acquired or immediately before the real effect call.
  */
 internal object DownloadWorkerEffectTestHooks {
+    @Volatile
+    internal var beforeAuthorityReadForTesting: ((Long, String) -> Unit)? = null
     /** Uses an in-memory Room database for a real WorkManager worker test. */
     @Volatile
     internal var dbManagerForTesting: DBManager? = null
@@ -437,7 +439,7 @@ internal suspend fun <T> withOwnedDownloadWorkerTerminalSideEffect(
     executionId = downloadItem.executionId,
 ) {
     withDownloadWorkerExecutionLock {
-        val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+        val current = readDownloadExecutionAuthority(dbManager, downloadItem, "terminal_effect")
         if (current != null && hasDurableUserStopRevokedAuthority(context, dbManager, current)) {
             throw CancellationException(
                 "Durable user stop revoked terminal publication authority " +
@@ -474,7 +476,7 @@ internal fun assertDownloadWorkerExecutionOwnedBeforeSideEffect(
     dbManager: DBManager,
     downloadItem: DownloadItem,
 ) {
-    val current = dbManager.downloadDao.getNullableDownloadById(downloadItem.id)
+    val current = readDownloadExecutionAuthority(dbManager, downloadItem, "side_effect")
     if (current != null && hasDurableUserStopRevokedAuthority(context, dbManager, current)) {
         throw CancellationException(
             "Durable user stop revoked Download side-effect authority " +
@@ -790,6 +792,11 @@ class DownloadWorker(
         }
 
         snapshot.activeIds.forEach { downloadId ->
+            // An unreadable attempt has handed its exact token to the retry
+            // owner. Do not retire it here from a second uncertain snapshot.
+            if (DownloadExecutionRecovery.hasRetiringAttempt(
+                    downloadId, snapshot.executionIds[downloadId].orEmpty(),
+                )) return@forEach
             try {
                 val cleaned = withCleanupOwnership(
                     downloadId = downloadId,
@@ -2317,8 +2324,17 @@ class DownloadWorker(
             return !staging.exists() || staging.delete() || !staging.exists()
         }
 
+        private var authorityReadFailure: DownloadAuthorityReadException? = null
+
+        private fun observeAuthority(boundary: String): DownloadItem? = try {
+            readDownloadExecutionAuthority(dbManager, downloadItem, boundary)
+        } catch (failure: DownloadAuthorityReadException) {
+            if (authorityReadFailure == null) authorityReadFailure = failure
+            throw failure
+        }
+
         private fun shouldStopForUserRequest(): Boolean {
-                        val latest = runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
+                        val latest = observeAuthority("stop_gate")
                         val lostExecutionOwnership = downloadItem.executionId.isNotBlank() &&
                             (latest == null || latest.executionId != downloadItem.executionId)
                         val primarySuccessCommitted = DownloadPrimarySuccessAuthorityRepository
@@ -2654,9 +2670,38 @@ class DownloadWorker(
                     if (handleYtdlpFailure(it) == AttemptControl.STOP) return
                 }
             } catch (unexpected: Exception) {
-                if (handleUnexpectedFailure(unexpected) == AttemptControl.STOP) return
+                if (unexpected is DownloadAuthorityReadException) {
+                    authorityReadFailure = unexpected
+                    throw unexpected
+                }
+                try {
+                    if (handleUnexpectedFailure(unexpected) == AttemptControl.STOP) return
+                } catch (failure: DownloadAuthorityReadException) {
+                    authorityReadFailure = failure
+                    throw failure
+                }
             } finally {
-                cleanupAttempt()
+                try {
+                    cleanupAttempt()
+                } catch (failure: DownloadAuthorityReadException) {
+                    val first = authorityReadFailure
+                    if (first == null) authorityReadFailure = failure
+                    else if (first !== failure) first.addSuppressed(failure)
+                } finally {
+                    authorityReadFailure?.let { failure ->
+                        try {
+                            DownloadExecutionRecovery.retainFailedAttempt(
+                                context,
+                                dbManager,
+                                downloadItem,
+                                workerAuthoritativeIssues[downloadItem.id],
+                            )
+                        } catch (retentionFailure: Exception) {
+                            if (retentionFailure !== failure) failure.addSuppressed(retentionFailure)
+                        }
+                        throw failure
+                    }
+                }
             }
         }
 
@@ -4008,6 +4053,7 @@ class DownloadWorker(
         }
 
         private suspend fun handleYtdlpFailure(it: Exception): AttemptControl {
+                        if (it is DownloadAuthorityReadException) throw it
                         // A committed History replacement is the stronger
                         // primary result.  This check must precede ordinary
                         // Error classification because finalization failures
@@ -4582,6 +4628,7 @@ class DownloadWorker(
                     }
 
         private suspend fun handleUnexpectedFailure(unexpected: Exception): AttemptControl {
+                        if (unexpected is DownloadAuthorityReadException) throw unexpected
 
                         if (unexpected is CancellationException) throw unexpected
                         if (unexpected is NativeProcessQuiescenceException) {
@@ -5271,7 +5318,7 @@ class DownloadWorker(
                         val workerEntryMatches = expectedExecutionId.isNullOrBlank() ||
                             workerExecutionIds[downloadItem.id] == expectedExecutionId
                         val latestStatus = withContext(Dispatchers.IO + NonCancellable) {
-                            runCatching { dao.getNullableDownloadById(downloadItem.id) }.getOrNull()
+                            observeAuthority("attempt_cleanup")
                         }
                         val stillOwnsAttempt = expectedExecutionId.isNullOrBlank() ||
                             latestStatus?.executionId == expectedExecutionId
@@ -6829,8 +6876,7 @@ class DownloadWorker(
     private suspend fun ensureExecutionOwnedBeforeAttempt(downloadItem: DownloadItem) {
         withDownloadWorkerExecutionLock {
             val dbManager = workerDbManager()
-            val current = dbManager.downloadDao
-                .getNullableDownloadById(downloadItem.id)
+            val current = readDownloadExecutionAuthority(dbManager, downloadItem, "attempt_admission")
             if (
                 this@DownloadWorker.isStopped ||
                     DownloadCancellationRegistry.belongsTo(

@@ -138,6 +138,54 @@ internal object DownloadExecutionRecovery {
 
     private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val retryJobs = ConcurrentHashMap<Long, Job>()
+    private data class RetiringAttempt(val executionId: String, val issue: DownloadIssue?)
+    private val retiringAttempts = ConcurrentHashMap<Long, RetiringAttempt>()
+
+    /**
+     * The actor has finished all effects, but an authority read was uncertain.
+     * Keep its exact live token until a readable observation can transfer it to
+     * the existing durable journal. The Active/PostProcessing row remains the
+     * cold-start fallback if that first journal write fails.
+     */
+    internal fun retainFailedAttempt(
+        context: Context,
+        dbManager: DBManager,
+        item: DownloadItem,
+        issue: DownloadIssue?,
+    ) {
+        check(item.executionId.isNotBlank())
+        val owner = RetiringAttempt(item.executionId, issue)
+        val prior = retiringAttempts.putIfAbsent(item.id, owner)
+        check(prior == null || prior.executionId == item.executionId) {
+            "A different exact attempt already owns retirement for ${item.id}"
+        }
+        scheduleRecovery(context, item.id, dbManager)
+    }
+
+    internal fun hasRetiringAttempt(downloadId: Long, executionId: String): Boolean =
+        retiringAttempts[downloadId]?.executionId == executionId
+
+    private suspend fun transferRetiringAttempt(
+        context: Context,
+        dbManager: DBManager,
+        downloadId: Long,
+    ) {
+        val owner = retiringAttempts[downloadId] ?: return
+        withDownloadWorkerExecutionSideEffectLease(downloadId, owner.executionId) {
+            // Never manufacture a row from the failed actor's old snapshot.
+            // A read/write failure retains both the token and this retry owner.
+            val current = readRecoveryDownloadForRetry(dbManager, downloadId)
+            if (current?.executionId == owner.executionId) {
+                check(recordPending(context, current, owner.issue)) {
+                    "Exact Download retirement carrier could not be persisted for $downloadId"
+                }
+            }
+            // A successful absent/replaced observation releases only the old
+            // actor token. Native ownership is still reconciled separately.
+            DownloadWorkerExecutionOwners.release(downloadId, owner.executionId)
+            retiringAttempts.remove(downloadId, owner)
+        }
+    }
 
     private data class PendingRecovery(
         val executionId: String,
@@ -2937,6 +2985,7 @@ internal object DownloadExecutionRecovery {
                 try {
                     while (true) {
                         try {
+                            transferRetiringAttempt(appContext, dbManager, downloadId)
                             val current = readRecoveryDownloadForRetry(dbManager, downloadId)
                             val journalRemains = pendingDownloadIds(appContext).contains(downloadId)
                             val nativeMarkerRemains =
@@ -3002,6 +3051,9 @@ internal object DownloadExecutionRecovery {
                     }
                 } finally {
                     if (ownerJob != null) retryJobs.remove(downloadId, ownerJob)
+                    if (retiringAttempts.containsKey(downloadId) && ownerJob?.isCancelled == false) {
+                        scheduleRecovery(appContext, downloadId, dbManager)
+                    }
                 }
             }
         }
@@ -3044,6 +3096,7 @@ internal object DownloadExecutionRecovery {
 
     /** Test-only teardown for the durable recovery carrier. */
     internal fun clearForTesting(context: Context) {
+        retiringAttempts.clear()
         beforeCandidateRecoveryLeaseForTesting = null
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
