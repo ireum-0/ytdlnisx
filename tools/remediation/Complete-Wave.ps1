@@ -39,6 +39,209 @@ function Get-RemediationAheadBehind {
     }
 }
 
+function Test-ExactSourceExecutionLifetime {
+    param(
+        [Parameter(Mandatory)]$Verification,
+        [Parameter(Mandatory)][string]$VerificationPath,
+        [Parameter(Mandatory)][string]$RepoFull,
+        [Parameter(Mandatory)][string]$CandidateSha,
+        [Parameter(Mandatory)][string]$CandidateTree
+    )
+    $failures = New-Object System.Collections.Generic.List[string]
+    $proof = $Verification.executionLifetime
+    if ($null -eq $proof) {
+        $failures.Add('verification has no execution-lifetime provenance object')
+    } else {
+        $evidenceDirectory = [System.IO.Path]::GetFullPath((Split-Path -Parent $VerificationPath)).TrimEnd('\')
+        $expectedMaterialization = [System.IO.Path]::GetFullPath((Join-Path $evidenceDirectory 'candidate-tree'))
+        $actualMaterialization = ''
+        try { $actualMaterialization = [System.IO.Path]::GetFullPath([string]$proof.materializationPath) } catch {}
+        $recordedSourceRoot = ''
+        try { $recordedSourceRoot = [System.IO.Path]::GetFullPath([string]$proof.sourceRepositoryPath) } catch {}
+        $expectedSourceLauncher = [System.IO.Path]::GetFullPath((Join-Path $RepoFull 'gradlew.bat'))
+        $expectedExecutionLauncher = [System.IO.Path]::GetFullPath((Join-Path $expectedMaterialization 'gradlew.bat'))
+        $requestedLauncher = ''
+        $executedLauncher = ''
+        try { $requestedLauncher = [System.IO.Path]::GetFullPath([string]$proof.requestedCanonicalLauncherPath) } catch {}
+        try { $executedLauncher = [System.IO.Path]::GetFullPath([string]$proof.executedCanonicalLauncherPath) } catch {}
+        if ($proof.contract -ne 'exact_candidate_execution_lifetime_v1') { $failures.Add('execution-lifetime contract identifier is missing or unsupported') }
+        if ($proof.mechanism -ne 'git_detached_candidate_worktree') { $failures.Add('execution-lifetime mechanism is not the detached exact-candidate worktree') }
+        if ($proof.lifecycle -ne 'retained_under_run_evidence_no_cleanup') { $failures.Add('execution-lifetime materialization lifecycle or no-cleanup policy is absent') }
+        if ($proof.allowedWritableOutputs -ne 'Git-ignored outputs within the materialization; wrapper evidence remains outside it.') { $failures.Add('execution-lifetime allowed writable output policy is absent or unsupported') }
+        if ($proof.localProperties -ne 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.') { $failures.Add('execution-lifetime local.properties non-exposure policy is absent or unsupported') }
+        if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('execution-lifetime proof permits gate execution from the mutable source worktree') }
+        if ($proof.status -ne 'PASS') { $failures.Add('execution-lifetime proof did not PASS') }
+        if (-not [string]::Equals($recordedSourceRoot, [System.IO.Path]::GetFullPath($RepoFull), [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('execution-lifetime source repository does not match the completion repository') }
+        if ($proof.candidateSha -ne $CandidateSha -or $proof.materializedHead -ne $CandidateSha) { $failures.Add('materialized HEAD does not bind to the tested candidate SHA') }
+        if ($proof.candidateTree -ne $CandidateTree -or $proof.materializedTree -ne $CandidateTree) { $failures.Add('materialized tree does not bind to the tested candidate tree') }
+        if (-not $proof.identityPass -or -not $proof.stateBeforeGates.clean -or -not $proof.materializationStateAfterAllGates.clean) { $failures.Add('materialization identity or clean boundary did not PASS') }
+        if ($null -eq $proof.materializationCreation -or $proof.materializationCreation.exitCode -ne 0 -or $proof.materializationCreation.timedOut -ne $false -or [string]::IsNullOrWhiteSpace([string]$proof.materializationCreation.command)) { $failures.Add('exact candidate worktree creation evidence is incomplete') }
+        if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('gate execution was not isolated from the source worktree') }
+        if (-not [string]::Equals($actualMaterialization, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('materialization path is not the run-owned candidate-tree directory') }
+        if (-not (Test-Path -LiteralPath $expectedMaterialization -PathType Container)) { $failures.Add('run-owned candidate-tree materialization is unavailable') }
+        if (-not [string]::Equals($requestedLauncher, $expectedSourceLauncher, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('requested normal launcher is not the source repository canonical gradlew.bat') }
+        if (-not [string]::Equals($executedLauncher, $expectedExecutionLauncher, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('executed normal launcher is not the materialized canonical gradlew.bat') }
+        if ($proof.launcherPolicy -ne 'normal_mode_repository_local_gradlew_bat_from_exact_candidate_materialization') { $failures.Add('normal canonical-launcher policy is absent') }
+
+        $verificationGates = @($Verification.gates)
+        $lifetimeGates = @($proof.gates)
+        if ($verificationGates.Count -eq 0 -or $lifetimeGates.Count -ne $verificationGates.Count) {
+            $failures.Add('execution-lifetime records do not cover every verification gate')
+        } else {
+            foreach ($gate in $verificationGates) {
+                $matches = @($lifetimeGates | Where-Object { $_.gateId -eq $gate.gateId })
+                if ($matches.Count -ne 1) {
+                    $failures.Add("execution-lifetime record is missing or duplicated for gate $($gate.gateId)")
+                    continue
+                }
+                $gateProof = $gate.executionLifetime
+                $lifetimeGate = $matches[0]
+                $gatePass = (
+                    $gate.status -eq 'PASS' -and
+                    $gate.candidateSha -eq $CandidateSha -and
+                    $gate.candidateTree -eq $CandidateTree -and
+                    $gateProof.provenancePass -eq $true -and
+                    $gateProof.status -eq 'PASS' -and
+                    $gateProof.mechanism -eq $proof.mechanism -and
+                    $gateProof.launcherPolicy -eq $proof.launcherPolicy -and
+                    $gateProof.candidateSha -eq $CandidateSha -and
+                    $gateProof.candidateTree -eq $CandidateTree -and
+                    $gateProof.materializationPath -eq $expectedMaterialization -and
+                    $gateProof.workingDirectory -eq $expectedMaterialization -and
+                    $gateProof.sourceWorktreeUsedForGateExecution -eq $false -and
+                    $gateProof.materializationStateAfterGate.clean -eq $true -and
+                    -not [string]::IsNullOrWhiteSpace([string]$gateProof.startedUtc) -and
+                    -not [string]::IsNullOrWhiteSpace([string]$gateProof.endedUtc) -and
+                    $lifetimeGate.provenancePass -eq $true -and
+                    $lifetimeGate.status -eq 'PASS' -and
+                    $lifetimeGate.mechanism -eq $proof.mechanism -and
+                    $lifetimeGate.launcherPolicy -eq $proof.launcherPolicy -and
+                    $lifetimeGate.candidateSha -eq $CandidateSha -and
+                    $lifetimeGate.candidateTree -eq $CandidateTree -and
+                    $lifetimeGate.materializationPath -eq $expectedMaterialization -and
+                    $lifetimeGate.workingDirectory -eq $expectedMaterialization -and
+                    $lifetimeGate.materializationStateAfterGate.clean -eq $true
+                )
+                if ($gate.kind -ne 'diff') {
+                    $gatePass = $gatePass -and [string]::Equals([string]$gateProof.launcherPath, $expectedExecutionLauncher, [System.StringComparison]::OrdinalIgnoreCase)
+                }
+                if (-not $gatePass) { $failures.Add("exact execution-lifetime proof failed for gate $($gate.gateId)") }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        pass = ($failures.Count -eq 0)
+        failures = @($failures.ToArray())
+    }
+}
+
+function Get-FinalPushAuthority {
+    param(
+        [Parameter(Mandatory)][string]$RepoFull,
+        [Parameter(Mandatory)][string]$RemoteName,
+        [Parameter(Mandatory)][string]$ImplementationRef,
+        [Parameter(Mandatory)][string]$ReviewRef,
+        [Parameter(Mandatory)][string]$ExpectedRemoteBaseSha,
+        [Parameter(Mandatory)][string]$InitialRemoteSha,
+        [Parameter(Mandatory)][string]$TestedSha,
+        [Parameter(Mandatory)][string]$CandidateTree,
+        [Parameter(Mandatory)][string]$RecordedReviewTip,
+        [string]$ForwardReviewAdvanceAcknowledgement,
+        [Parameter(Mandatory)][string]$LogDirectory
+    )
+    $failures = New-Object System.Collections.Generic.List[string]
+    $localHead = $null
+    $localTree = $null
+    $trackedState = $null
+    $reviewLive = $null
+    $reviewAncestor = $false
+    $reviewRelation = 'unavailable'
+    $reviewAcknowledgementPass = $false
+    $destinationLive = $null
+    $destinationState = 'unavailable'
+
+    try {
+        $localHead = Get-RemediationHead -RepoPath $RepoFull -LogDirectory $LogDirectory
+        if ($localHead -ne $TestedSha) { $failures.Add("local HEAD moved before Push: expected $TestedSha, observed $localHead") }
+        $localTree = Get-RemediationTreeSha -RepoPath $RepoFull -CommitSha $localHead -LogDirectory $LogDirectory
+        if ($localTree -ne $CandidateTree) { $failures.Add("local candidate tree moved before Push: expected $CandidateTree, observed $localTree") }
+    } catch {
+        $failures.Add("unable to revalidate local candidate before Push: $($_.Exception.Message)")
+    }
+    try {
+        $trackedState = Get-RemediationTrackedTreeState -RepoPath $RepoFull -CandidateSha $TestedSha -LogDirectory $LogDirectory
+        if (-not $trackedState.clean) { $failures.Add('local worktree became tracked-dirty or gained non-ignored untracked inputs before Push') }
+    } catch {
+        $failures.Add("unable to revalidate local worktree state before Push: $($_.Exception.Message)")
+    }
+
+    try {
+        $reviewLive = Get-RemediationRemoteRefSha -RepoPath $RepoFull -RemoteName $RemoteName -BranchName $ReviewRef -LogDirectory $LogDirectory
+        if ($reviewLive -eq $RecordedReviewTip) {
+            $reviewAncestor = $true
+            $reviewRelation = 'identical'
+        } else {
+            $reviewAncestor = Test-RemediationGitAncestor -RepoPath $RepoFull -AncestorSha $RecordedReviewTip -DescendantSha $reviewLive -LogDirectory $LogDirectory
+            $reviewRelation = $(if ($reviewAncestor) { 'forward_moved' } else { 'diverged_or_behind' })
+        }
+        $reviewAcknowledgementPass = (
+            $reviewRelation -ne 'forward_moved' -or
+            (-not [string]::IsNullOrWhiteSpace($ForwardReviewAdvanceAcknowledgement) -and
+                $ForwardReviewAdvanceAcknowledgement -match [Regex]::Escape($reviewLive))
+        )
+        if (-not $reviewAncestor) { $failures.Add("recorded review tip $RecordedReviewTip is not an ancestor of the live pre-Push review tip $reviewLive") }
+        elseif (-not $reviewAcknowledgementPass) { $failures.Add("forward review movement requires an acknowledgement naming the exact live review tip $reviewLive") }
+    } catch {
+        $reviewRelation = 'ancestry_unavailable'
+        $reviewAncestor = $false
+        $failures.Add("unable to revalidate review authority before Push: $($_.Exception.Message)")
+    }
+
+    # Read the destination last so no further authority lookup separates this
+    # observation from the immutable-object push invocation.
+    try {
+        $destinationLive = Get-RemediationRemoteRefSha -RepoPath $RepoFull -RemoteName $RemoteName -BranchName $ImplementationRef -LogDirectory $LogDirectory
+        if ($destinationLive -eq $TestedSha) {
+            $destinationState = 'already_at_tested_sha'
+        } elseif ($destinationLive -eq $ExpectedRemoteBaseSha) {
+            $destinationState = 'expected_base'
+        } else {
+            $destinationState = 'moved_from_expected_base'
+            $failures.Add("implementation ref moved before Push from the allowed exact states: observed $destinationLive")
+        }
+        if ($InitialRemoteSha -eq $TestedSha -and $destinationLive -ne $TestedSha) {
+            $failures.Add("implementation ref changed after the earlier already-pushed observation: expected $TestedSha, observed $destinationLive")
+        } elseif ($InitialRemoteSha -ne $ExpectedRemoteBaseSha -and $InitialRemoteSha -ne $TestedSha) {
+            $failures.Add("earlier implementation ref observation was outside the authorized states: $InitialRemoteSha")
+        }
+    } catch {
+        $failures.Add("unable to revalidate destination implementation ref before Push: $($_.Exception.Message)")
+    }
+
+    return [pscustomobject][ordered]@{
+        contract = 'exact_tested_sha_push_authority_v1'
+        observedUtc = Format-RemediationUtc (Get-RemediationUtcNow)
+        testedSha = $TestedSha
+        testedTree = $CandidateTree
+        localHead = $localHead
+        localTree = $localTree
+        localTrackedTreeState = $trackedState
+        destinationRef = $ImplementationRef
+        destinationSha = $destinationLive
+        destinationState = $destinationState
+        reviewRef = $ReviewRef
+        recordedReviewTip = $RecordedReviewTip
+        liveReviewTip = $reviewLive
+        reviewRelation = $reviewRelation
+        recordedReviewTipIsAncestor = [bool]$reviewAncestor
+        forwardReviewAcknowledgement = $ForwardReviewAdvanceAcknowledgement
+        forwardReviewAcknowledgementNamesLiveTip = [bool]$reviewAcknowledgementPass
+        authorizedPushSourceObjectId = $(if ($failures.Count -eq 0 -and $destinationState -eq 'expected_base') { $TestedSha } else { $null })
+        pass = ($failures.Count -eq 0)
+        failures = @($failures.ToArray())
+    }
+}
+
 if ($RequiredGateIds.Count -eq 0) { throw 'At least one exact required verification gate must be supplied.' }
 foreach ($sha in @($ExpectedRemoteBaseSha, $TestedSha, $RecordedReviewTip)) {
     if ($sha -notmatch '^[0-9a-fA-F]{40,64}$') { throw "Invalid full Git SHA input: $sha" }
@@ -57,6 +260,8 @@ $verification=$null
 $acceptance=$null
 $pushAttempted=$false
 $pushResult=$null
+$prePushAuthority=$null
+$pushSourceObjectId=$null
 $remoteAfter=$null
 $aheadBehind=$null
 $reviewAncestor=$false
@@ -85,7 +290,11 @@ try {
 
     $verificationPath=Assert-IgnoredEvidencePath -RepoFull $repoFull -Path $VerificationEvidencePath -LogDirectory $runDirectory -Name 'VerificationEvidencePath'
     $verification=Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
-    $verificationPass=($verification.evidenceKind -eq 'exact_source_verification' -and $verification.status -eq 'PASS' -and $verification.candidateSha -eq $TestedSha -and $verification.candidateTree -eq $tree -and $verification.scopeWidening -eq $false)
+    $executionLifetimeCheck=Test-ExactSourceExecutionLifetime -Verification $verification -VerificationPath $verificationPath -RepoFull $repoFull -CandidateSha $TestedSha -CandidateTree $tree
+    $executionLifetimePass=[bool]$executionLifetimeCheck.pass
+    $checks.Add([pscustomobject]@{ name='execution_lifetime_provenance_binding'; contract='exact_candidate_execution_lifetime_v1'; pass=$executionLifetimePass; failures=@($executionLifetimeCheck.failures) })
+    if(-not $executionLifetimePass){$errors.Add('verification evidence does not satisfy the execution-lifetime exact-tree provenance contract')}
+    $verificationPass=($verification.evidenceKind -eq 'exact_source_verification' -and $verification.status -eq 'PASS' -and $verification.candidateSha -eq $TestedSha -and $verification.candidateTree -eq $tree -and $verification.scopeWidening -eq $false -and $executionLifetimePass)
     $checks.Add([pscustomobject]@{ name='verification_evidence_binding'; path=$verificationPath; evidenceKind=$verification.evidenceKind; status=$verification.status; candidateSha=$verification.candidateSha; candidateTree=$verification.candidateTree; pass=$verificationPass })
     if(-not $verificationPass){$errors.Add('verification evidence does not bind to a passing exact-source run for the tested SHA/tree')}
     foreach($gateId in $RequiredGateIds){
@@ -165,16 +374,23 @@ try {
         $status='CHECK_PASS'
     }
     if($Push -and $errors.Count -eq 0){
-        if($remoteBefore -eq $TestedSha){
-            $remoteAfter=$remoteBefore
+        $prePushAuthority=Get-FinalPushAuthority -RepoFull $repoFull -RemoteName $RemoteName -ImplementationRef $ImplementationRef -ReviewRef $ReviewRef -ExpectedRemoteBaseSha $ExpectedRemoteBaseSha -InitialRemoteSha $remoteBefore -TestedSha $TestedSha -CandidateTree $tree -RecordedReviewTip $RecordedReviewTip -ForwardReviewAdvanceAcknowledgement $ForwardReviewAdvanceAcknowledgement -LogDirectory (Join-Path $runDirectory 'pre-push-authority-logs')
+        $checks.Add([pscustomobject]@{ name='just_in_time_push_authority'; contract=$prePushAuthority.contract; pass=$prePushAuthority.pass; localHead=$prePushAuthority.localHead; destinationSha=$prePushAuthority.destinationSha; reviewTip=$prePushAuthority.liveReviewTip; reviewRelation=$prePushAuthority.reviewRelation; pushSourceObjectId=$prePushAuthority.authorizedPushSourceObjectId; failures=@($prePushAuthority.failures) })
+        foreach($failure in $prePushAuthority.failures){$errors.Add("pre-Push authority: $failure")}
+        if(-not $prePushAuthority.pass){
+            $status='PUSH_BLOCKED_BY_CHECKS'
+        } elseif($prePushAuthority.destinationSha -eq $TestedSha){
+            $remoteAfter=$prePushAuthority.destinationSha
             $aheadBehind=[pscustomobject]@{leftOnly=0;rightOnly=0}
             $status='ALREADY_PUSHED_EXACT_SHA'
         } else {
+            $pushSourceObjectId=$TestedSha
+            $pushRefspec=$pushSourceObjectId + ':refs/heads/' + $ImplementationRef
             $pushAttempted=$true
-            $pushResult=Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('push', $RemoteName, ('HEAD:refs/heads/' + $ImplementationRef)) -LogDirectory (Join-Path $runDirectory 'push-logs') -Name 'git-normal-fast-forward-push' -TimeoutSeconds 180
+            $pushResult=Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('push', $RemoteName, $pushRefspec) -LogDirectory (Join-Path $runDirectory 'push-logs') -Name 'git-normal-fast-forward-push' -TimeoutSeconds 180
             if($pushResult.timedOut -or $pushResult.exitCode -ne 0){
                 $status='PUSH_REJECTED_NO_RECONCILIATION'
-                $errors.Add("normal fast-forward push failed (exit $($pushResult.exitCode)); no reconciliation or retry was attempted")
+                $errors.Add("normal fast-forward push of the exact tested object failed (exit $($pushResult.exitCode)); no reconciliation or retry was attempted")
             } else {
                 $remoteAfter=Get-RemediationRemoteRefSha -RepoPath $repoFull -RemoteName $RemoteName -BranchName $ImplementationRef -LogDirectory $runDirectory
                 $equal=($remoteAfter -eq $TestedSha)
@@ -213,6 +429,7 @@ $finalize=[pscustomobject][ordered]@{
     implementationRef=[pscustomobject]@{remote=$RemoteName;name=$ImplementationRef;before=$remoteBefore;after=$remoteAfter}
     reviewRef=[pscustomobject]@{name=$ReviewRef;recordedTip=$RecordedReviewTip;liveTip=$reviewLive;relation=$(if($reviewLive -eq $RecordedReviewTip){'identical'}elseif($reviewAncestor){'forward_moved'}else{'diverged_or_behind'});semanticCompatibility='caller_or_reviewer_owned'}
     aheadBehind=$aheadBehind
+    prePushAuthority=$prePushAuthority
     checks=@($checks.ToArray())
     errors=@($errors.ToArray())
     requiredGateIds=@($RequiredGateIds)
@@ -220,7 +437,9 @@ $finalize=[pscustomobject][ordered]@{
     verificationEvidencePath=$VerificationEvidencePath
     acceptanceEvidencePath=$AcceptanceEvidencePath
     pushAttempted=$pushAttempted
-    pushCommand=$(if($pushAttempted){'git push <remote> HEAD:refs/heads/<authorized-ref>'}else{$null})
+    pushSourceObjectId=$pushSourceObjectId
+    pushRefspec=$(if($pushAttempted){$pushSourceObjectId + ':refs/heads/' + $ImplementationRef}else{$null})
+    pushCommand=$(if($pushAttempted){'git push ' + $RemoteName + ' ' + $pushSourceObjectId + ':refs/heads/' + $ImplementationRef}else{$null})
     pushExitCode=$(if($null -ne $pushResult){$pushResult.exitCode}else{$null})
     pushStdoutPath=$(if($null -ne $pushResult){$pushResult.stdoutPath}else{$null})
     pushStderrPath=$(if($null -ne $pushResult){$pushResult.stderrPath}else{$null})

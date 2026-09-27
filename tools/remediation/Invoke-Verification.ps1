@@ -134,6 +134,59 @@ function New-VerificationGateRecord {
     }
 }
 
+function New-ExactCandidateExecutionTree {
+    param(
+        [Parameter(Mandatory)][string]$SourceRepoPath,
+        [Parameter(Mandatory)][string]$CandidateSha,
+        [Parameter(Mandatory)][string]$CandidateTree,
+        [Parameter(Mandatory)][string]$EvidenceDirectory,
+        [Parameter(Mandatory)][string]$LogDirectory
+    )
+    $executionPath = [System.IO.Path]::GetFullPath((Join-Path $EvidenceDirectory 'candidate-tree'))
+    if (Test-Path -LiteralPath $executionPath) {
+        throw "Exact candidate materialization path already exists: $executionPath"
+    }
+    $created = Invoke-RemediationGit -RepoPath $SourceRepoPath -ArgumentList @('worktree', 'add', '--detach', $executionPath, $CandidateSha) -LogDirectory $LogDirectory -Name 'git-create-exact-candidate-worktree' -TimeoutSeconds 300
+    if ($created.timedOut -or $created.exitCode -ne 0) {
+        throw "Unable to create the exact candidate execution worktree (exit $($created.exitCode)); the source worktree was left unchanged."
+    }
+    $materializedHead = Get-RemediationHead -RepoPath $executionPath -LogDirectory $LogDirectory
+    $materializedTree = Get-RemediationTreeSha -RepoPath $executionPath -CommitSha $materializedHead -LogDirectory $LogDirectory
+    $materializedState = Get-RemediationTrackedTreeState -RepoPath $executionPath -CandidateSha $CandidateSha -LogDirectory $LogDirectory
+    $identityPass = ($materializedHead -eq $CandidateSha -and $materializedTree -eq $CandidateTree -and $materializedState.clean)
+    $record = [pscustomobject][ordered]@{
+        contract = 'exact_candidate_execution_lifetime_v1'
+        mechanism = 'git_detached_candidate_worktree'
+        lifecycle = 'retained_under_run_evidence_no_cleanup'
+        sourceRepositoryPath = [System.IO.Path]::GetFullPath($SourceRepoPath)
+        materializationPath = $executionPath
+        materializationCreation = [pscustomobject][ordered]@{
+            command = $created.command
+            exitCode = [int]$created.exitCode
+            timedOut = [bool]$created.timedOut
+            startedUtc = $created.startUtc
+            endedUtc = $created.endUtc
+            stdoutPath = $created.stdoutPath
+            stderrPath = $created.stderrPath
+        }
+        candidateSha = $CandidateSha
+        candidateTree = $CandidateTree
+        materializedHead = $materializedHead
+        materializedTree = $materializedTree
+        stateBeforeGates = $materializedState
+        identityPass = [bool]$identityPass
+        sourceWorktreeUsedForGateExecution = $false
+        allowedWritableOutputs = 'Git-ignored outputs within the materialization; wrapper evidence remains outside it.'
+        localProperties = 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.'
+        createdUtc = Format-RemediationUtc (Get-RemediationUtcNow)
+    }
+    if (-not $identityPass) {
+        Write-RemediationJson -Path (Join-Path $EvidenceDirectory 'execution-lifetime.json') -Value $record
+        throw 'Exact candidate materialization failed HEAD/tree/clean-state verification; no verification gate was started.'
+    }
+    return $record
+}
+
 $repoFull = (Resolve-Path -LiteralPath $RepoPath).Path
 if (($ConnectedTestClass.Count + $JvmTestClass.Count + $CompileTask.Count + [int][bool]$RunDiffCheck) -eq 0) {
     throw 'No caller-supplied verification scope was provided.'
@@ -192,6 +245,7 @@ if ($ToolingDemoMode -and [string]::IsNullOrWhiteSpace($DemoResultRoot)) {
 
 $runDirectoryInfo = New-RemediationRunDirectory -RepoPath $repoFull -CandidateSha $ExpectedSha -EvidenceRoot $EvidenceRoot
 $runDirectory = $runDirectoryInfo.evidenceDirectory
+$logDirectory = Join-Path $runDirectory 'logs'
 $verificationStarted = Get-RemediationUtcNow
 $head = Get-RemediationHead -RepoPath $repoFull -LogDirectory $runDirectory
 if ($head -ne $ExpectedSha) {
@@ -208,6 +262,31 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedParentSha)) {
     $parent = (Get-RemediationGitText -RepoPath $repoFull -ArgumentList @('rev-parse', ($head + '^')) -LogDirectory $runDirectory -Name 'git-parent').stdoutSample.Trim()
     if ($parent -ne $ExpectedParentSha) {
         throw "Expected parent $ExpectedParentSha, but HEAD parent is $parent."
+    }
+}
+$executionRepoFull = $repoFull
+$executionGradlePath = $GradlePath
+$executionLifetime = $null
+if (-not $ToolingDemoMode) {
+    $executionLifetime = New-ExactCandidateExecutionTree -SourceRepoPath $repoFull -CandidateSha $head -CandidateTree $treeSha -EvidenceDirectory $runDirectory -LogDirectory $logDirectory
+    $executionRepoFull = $executionLifetime.materializationPath
+    $executionGradlePath = Join-Path $executionRepoFull 'gradlew.bat'
+    if (-not (Test-Path -LiteralPath $executionGradlePath -PathType Leaf)) {
+        throw 'The exact candidate materialization does not contain its repository-local gradlew.bat; no verification gate was started.'
+    }
+    $executionGradlePath = [System.IO.Path]::GetFullPath((Resolve-Path -LiteralPath $executionGradlePath).Path)
+    $executionLifetime | Add-Member -NotePropertyName requestedCanonicalLauncherPath -NotePropertyValue $GradlePath
+    $executionLifetime | Add-Member -NotePropertyName executedCanonicalLauncherPath -NotePropertyValue $executionGradlePath
+    $executionLifetime | Add-Member -NotePropertyName launcherPolicy -NotePropertyValue 'normal_mode_repository_local_gradlew_bat_from_exact_candidate_materialization'
+    Write-RemediationJson -Path (Join-Path $runDirectory 'execution-lifetime.json') -Value $executionLifetime
+} else {
+    $executionLifetime = [pscustomobject][ordered]@{
+        mechanism = 'not_applicable_tooling_demo'
+        lifecycle = 'demo_only'
+        candidateSha = $head
+        candidateTree = $treeSha
+        sourceWorktreeUsedForGateExecution = $true
+        launcherPolicy = 'caller_supplied_demo_launcher_only'
     }
 }
 if ($ToolingDemoMode) {
@@ -242,6 +321,7 @@ if ($RunDiffCheck) {
 }
 
 $gateResults = New-Object System.Collections.Generic.List[object]
+$gateExecutionRecords = New-Object System.Collections.Generic.List[object]
 $phaseResults = New-Object System.Collections.Generic.List[object]
 $deviceHealthHistory = New-Object System.Collections.Generic.List[object]
 $pressureHistory = New-Object System.Collections.Generic.List[object]
@@ -251,7 +331,6 @@ $haltAll = $false
 $infrastructureFailureSeen = $false
 $recoveryHealthPassed = $false
 $evidenceKind = $(if ($ToolingDemoMode) { 'tooling_demo' } else { 'exact_source_verification' })
-$logDirectory = Join-Path $runDirectory 'logs'
 New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 
 foreach ($gate in $gateSpecs) {
@@ -344,6 +423,9 @@ foreach ($gate in $gateSpecs) {
         $gateStart = Get-RemediationUtcNow
     }
 
+    $executionStartUtc = $null
+    $executionEndUtc = $null
+    $executionStarted = $false
     $arguments = @($gate.task)
     if ($gate.kind -eq 'connected') {
         $arguments += ('-Pandroid.testInstrumentationRunnerArguments.class=' + $gate.requestedClass)
@@ -357,7 +439,10 @@ foreach ($gate in $gateSpecs) {
     $processResult = $null
     $errorText = $null
     if ($gate.kind -eq 'diff') {
-        $processResult = Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('diff', '--check') -LogDirectory $logDirectory -Name 'git-diff-check' -TimeoutSeconds 300
+        $executionStartUtc = Get-RemediationUtcNow
+        $executionStarted = $true
+        $processResult = Invoke-RemediationGit -RepoPath $executionRepoFull -ArgumentList @('diff', '--check') -LogDirectory $logDirectory -Name 'git-diff-check' -TimeoutSeconds 300
+        $executionEndUtc = Get-RemediationUtcNow
     } else {
         $pulse = {
             param($runningProcess)
@@ -457,7 +542,10 @@ foreach ($gate in $gateSpecs) {
             $previousDemoEnvironment = [Environment]::GetEnvironmentVariable($demoEnvironmentName, 'Process')
             try {
                 if ($ToolingDemoMode) { [Environment]::SetEnvironmentVariable($demoEnvironmentName, $demoFull, 'Process') }
-                $processResult = Invoke-RemediationProcess -FilePath $GradlePath -ArgumentList $arguments -WorkingDirectory $repoFull -LogDirectory $logDirectory -Name ([Regex]::Replace($gate.gateId, '[^A-Za-z0-9_.-]', '_')) -TimeoutSeconds $GateTimeoutSeconds -PollIntervalSeconds 1 -OnStart $startHook -OnPulse $pulse -KillProcessTreeOnTimeout
+                $executionStartUtc = Get-RemediationUtcNow
+                $executionStarted = $true
+                $processResult = Invoke-RemediationProcess -FilePath $executionGradlePath -ArgumentList $arguments -WorkingDirectory $executionRepoFull -LogDirectory $logDirectory -Name ([Regex]::Replace($gate.gateId, '[^A-Za-z0-9_.-]', '_')) -TimeoutSeconds $GateTimeoutSeconds -PollIntervalSeconds 1 -OnStart $startHook -OnPulse $pulse -KillProcessTreeOnTimeout
+                $executionEndUtc = Get-RemediationUtcNow
             } finally {
                 if ($ToolingDemoMode) {
                     if ($hadPreviousDemoEnvironment) { [Environment]::SetEnvironmentVariable($demoEnvironmentName, $previousDemoEnvironment, 'Process') }
@@ -504,6 +592,7 @@ foreach ($gate in $gateSpecs) {
             }
         } catch {
             $errorText = $_.Exception.Message
+            if ($executionStarted) { $executionEndUtc = Get-RemediationUtcNow }
             $phaseDurations[$watch.currentPhase] = [double]($phaseDurations[$watch.currentPhase]) + [Math]::Max(0, ((Get-RemediationUtcNow) - $watch.lastPulseUtc).TotalSeconds)
         }
     }
@@ -519,8 +608,8 @@ foreach ($gate in $gateSpecs) {
             $roots = @($demoFull)
         } else {
             $roots = @(
-                (Join-Path $repoFull 'app\build\test-results'),
-                (Join-Path $repoFull 'app\build\outputs\androidTest-results\connected')
+                (Join-Path $executionRepoFull 'app\build\test-results'),
+                (Join-Path $executionRepoFull 'app\build\outputs\androidTest-results\connected')
             )
         }
         $testSummary = Get-RemediationTestResultSummary -ResultRoots $roots -ExpectedClass $gate.requestedClass -StartedUtc $gateStart -LogPaths $logPaths
@@ -608,7 +697,31 @@ foreach ($gate in $gateSpecs) {
     if ($gate.kind -eq 'compile' -and ($null -eq $processResult -or $processResult.exitCode -ne 0 -or $timedOut)) { $status = 'FAILED_COMPILE_GATE'; $haltAll = $true }
     if ($gate.kind -eq 'diff' -and ($null -eq $processResult -or $processResult.exitCode -ne 0 -or $timedOut)) { $status = 'FAILED_DIFF_CHECK'; $haltAll = $true }
 
+    $afterState = Get-RemediationTrackedTreeState -RepoPath $executionRepoFull -CandidateSha $head -LogDirectory $logDirectory
+    if (-not $afterState.clean) {
+        $haltAll = $true
+        $status = $(if ($ToolingDemoMode) { 'FAILED_TRACKED_TREE_CHANGED' } else { 'FAILED_EXECUTION_TREE_CHANGED' })
+        $errorText = 'The gate execution tree changed tracked or non-ignored inputs; no cleanup was attempted.'
+    }
+    $executionGateRecord = [pscustomobject][ordered]@{
+        gateId = $gate.gateId
+        candidateSha = $head
+        candidateTree = $treeSha
+        mechanism = $executionLifetime.mechanism
+        status = $(if (-not $executionStarted) { 'not_started' } elseif ($status -eq 'PASS') { 'PASS' } else { 'FAIL' })
+        provenancePass = [bool](-not $ToolingDemoMode -and $executionStarted -and $status -eq 'PASS' -and $executionLifetime.identityPass -and $afterState.clean)
+        materializationPath = $(if ($ToolingDemoMode) { $null } else { $executionRepoFull })
+        workingDirectory = $(if ($executionStarted) { $executionRepoFull } else { $null })
+        launcherPath = $(if ($executionStarted -and $gate.kind -ne 'diff') { $executionGradlePath } else { $null })
+        launcherPolicy = $executionLifetime.launcherPolicy
+        sourceWorktreeUsedForGateExecution = [bool]$ToolingDemoMode
+        startedUtc = $(if ($null -ne $executionStartUtc) { Format-RemediationUtc $executionStartUtc } else { $null })
+        endedUtc = $(if ($null -ne $executionEndUtc) { Format-RemediationUtc $executionEndUtc } else { $null })
+        materializationStateAfterGate = $afterState
+    }
+    $gateExecutionRecords.Add($executionGateRecord)
     $gateRecord = New-VerificationGateRecord -GateId $gate.gateId -Kind $gate.kind -RequestedClass $gate.requestedClass -RequestedTask $gate.task -Status $status -Command $(if ($null -ne $processResult) { $processResult.command } else { '' }) -Arguments $arguments -CandidateSha $head -CandidateTree $treeSha -StartedUtc (Format-RemediationUtc $gateStart) -StartedKorea (Format-RemediationKoreaTime $gateStart) -EndedUtc (Format-RemediationUtc $ended) -EndedKorea (Format-RemediationKoreaTime $ended) -ExitCode $exitCode -TimedOut $timedOut -TestSummary $testSummary -InfrastructureSignals $infraSignals -InfrastructureStatus $infraStatus -PhaseMap (ConvertTo-RemediationPhaseMap $phaseDurations) -LogPaths $logPaths -FailureEvidencePath $failurePath -DeviceHealth $deviceHealth -ErrorText $errorText
+    $gateRecord | Add-Member -NotePropertyName executionLifetime -NotePropertyValue $executionGateRecord
     $gateResults.Add($gateRecord)
     $phaseResults.Add([pscustomobject][ordered]@{
         gateId = $gate.gateId
@@ -626,16 +739,23 @@ foreach ($gate in $gateSpecs) {
         stdoutPath = $(if ($null -ne $processResult) { $processResult.stdoutPath } else { $null })
         stderrPath = $(if ($null -ne $processResult) { $processResult.stderrPath } else { $null })
     })
-    $afterState = Get-RemediationTrackedTreeState -RepoPath $repoFull -CandidateSha $head -LogDirectory $logDirectory
-    if (-not $afterState.clean) {
-        $haltAll = $true
-        $gateRecord.status = 'FAILED_TRACKED_TREE_CHANGED'
-        $gateRecord.error = 'Tracked files changed during the verification invocation; no cleanup was attempted.'
-    }
     if ($status -ne 'PASS' -and $gate.kind -ne 'connected') { $haltAll = $true }
 }
 
 $passed = (@($gateResults | Where-Object { $_.status -ne 'PASS' }).Count -eq 0 -and $gateResults.Count -eq $gateSpecs.Count)
+if (-not $ToolingDemoMode) {
+    $materializationFinalState = Get-RemediationTrackedTreeState -RepoPath $executionRepoFull -CandidateSha $head -LogDirectory $logDirectory
+    $executionLifetime | Add-Member -NotePropertyName materializationStateAfterAllGates -NotePropertyValue $materializationFinalState
+    $executionLifetime | Add-Member -NotePropertyName gates -NotePropertyValue @($gateExecutionRecords.ToArray())
+    $executionLifetime | Add-Member -NotePropertyName startedUtc -NotePropertyValue (Format-RemediationUtc $verificationStarted)
+    $executionLifetime | Add-Member -NotePropertyName endedUtc -NotePropertyValue (Format-RemediationUtc (Get-RemediationUtcNow))
+    $lifetimePass = ($executionLifetime.identityPass -and $materializationFinalState.clean -and $gateExecutionRecords.Count -eq $gateSpecs.Count -and @($gateExecutionRecords | Where-Object { -not $_.provenancePass }).Count -eq 0)
+    $executionLifetime | Add-Member -NotePropertyName status -NotePropertyValue $(if ($lifetimePass) { 'PASS' } else { 'FAIL' })
+    if (-not $lifetimePass) { $passed = $false }
+} else {
+    $executionLifetime | Add-Member -NotePropertyName gates -NotePropertyValue @($gateExecutionRecords.ToArray())
+    $executionLifetime | Add-Member -NotePropertyName status -NotePropertyValue 'NOT_APPLICABLE'
+}
 $overall = $(if ($passed) { 'PASS' } elseif ($circuitBreakerOpen) { 'BLOCKED_BY_INFRASTRUCTURE_CIRCUIT_BREAKER' } else { 'FAIL_OR_INCOMPLETE' })
 $verificationEnded = Get-RemediationUtcNow
 $verification = [pscustomobject][ordered]@{
@@ -650,6 +770,7 @@ $verification = [pscustomobject][ordered]@{
     candidateSha = $head
     candidateTree = $treeSha
     trackedTreeCleanBefore = $treeState.clean
+    executionLifetime = $executionLifetime
     expectedParentSha = $ExpectedParentSha
     scope = [pscustomobject][ordered]@{
         connectedTestClasses = @($ConnectedTestClass)
@@ -680,6 +801,7 @@ $verification = [pscustomobject][ordered]@{
     semanticVerdict = 'not_provided_by_verification_tool'
     cleanVerdict = 'not_provided_by_verification_tool'
 }
+Write-RemediationJson -Path (Join-Path $runDirectory 'execution-lifetime.json') -Value $executionLifetime
 Write-RemediationJson -Path (Join-Path $runDirectory 'verification.json') -Value $verification
 Write-RemediationJson -Path (Join-Path $runDirectory 'timings.json') -Value @($phaseResults.ToArray())
 if ($null -ne $firstInfrastructureFailurePath) {

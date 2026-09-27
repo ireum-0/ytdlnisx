@@ -8,7 +8,9 @@ Each invocation creates a unique directory under:
 
     build/remediation-agent/<candidate-sha>/<run-id>/
 
-The directory must be Git-ignored. JSON records bind to the exact committed SHA and tree. Exact-source checks also require no tracked changes and no non-ignored untracked files; Git-ignored evidence/build outputs and an ignored `local.properties` remain allowed. Blocked checks report a bounded untracked-path summary and never remove or alter those files. Raw command stdout/stderr remain separate log files. A new invocation gets a new directory so a retry cannot overwrite the first failure.
+The directory must be Git-ignored. JSON records bind to the exact committed SHA and tree. Exact-source checks also require no tracked changes and no non-ignored untracked files; Git-ignored evidence/build outputs and an ignored `local.properties` in the source worktree remain allowed. Blocked checks report a bounded untracked-path summary and never remove or alter those files. Raw command stdout/stderr remain separate log files. A new invocation gets a new directory so a retry cannot overwrite the first failure.
+
+Normal exact-source verification creates a detached Git worktree at `candidate-tree` inside that run directory and runs each requested Gradle or diff gate there. Its HEAD/tree and clean tracked/non-ignored state are recorded before gates, after each gate, and after the last gate. Gradle's ignored build/test outputs stay in that materialization; wrapper logs and JSON stay in the run evidence directory. The wrapper retains the materialization and its Git worktree registration with the evidence; it never removes or resets it. An ignored source-worktree `local.properties` is not inspected, copied, or serialized, and does not participate in the tracked candidate tree. SDK configuration for the isolated execution tree must therefore be available through the normal host environment.
 
 Do not put credentials in arguments. Preflight checks local.properties ignore/tracking status without reading its contents.
 
@@ -26,7 +28,7 @@ A forward review-tip movement is reported mechanically. The wrapper does not dec
 
 ## Invoke-Verification.ps1
 
-The caller supplies each connected test class, JVM test class, compile task, and whether to run git diff --check. No class or task is inferred. Normal exact-source mode resolves and uses only the repository-local `gradlew.bat`; a supplied alternate launcher is rejected before any gate starts. Synthetic fake launchers remain available only with `ToolingDemoMode`, whose evidence is marked `tooling_demo`.
+The caller supplies each connected test class, JVM test class, compile task, and whether to run git diff --check. No class or task is inferred. Normal exact-source mode accepts only the resolved repository-local `gradlew.bat` and executes that canonical wrapper from the exact candidate materialization; a supplied alternate launcher is rejected before any gate starts. Synthetic fake launchers remain available only with `ToolingDemoMode`, whose evidence is marked `tooling_demo`.
 
 Connected classes execute serially, one class-filtered Gradle invocation at a time. Android instrumentation classes use the Android runner class property; JVM classes use Gradle test filters.
 
@@ -37,6 +39,8 @@ Independent JVM/compile/diff checks after an infrastructure event run only when 
 Gradle daemon reuse is the default. SingleUseDaemon explicitly adds the single-use daemon option. Gate timing is estimated from task, install, instrumentation, and result markers; the estimate and source logs are retained.
 
 For a synthetic wrapper demonstration only, ToolingDemoMode accepts a fake Gradle/ADB executable and a relative result directory name under that run's evidence directory. The wrapper passes its resolved path to the child as `YTDLNISX_REMEDIATION_DEMO_RESULT_ROOT`. Such records are marked tooling_demo and Complete-Wave.ps1 will not accept them as exact-source verification evidence.
+
+Run `Test-ExecutionLifetimeProvenance.ps1` for the combined synchronized tooling acceptance matrix. It temporarily mutates and restores a disposable fixture's tracked input while a gate is active, then verifies the gate read the committed value from its independent candidate materialization. It also exercises the pre-Push local-HEAD, destination-ref, and review-ref races; exact-object push and already-pushed controls; tracked/untracked rejection; ignored output and local.properties allowance; canonical/demo launcher policy; and completion's provenance binding. It does not run Android instrumentation.
 
 Example invocation shape:
 
@@ -56,9 +60,9 @@ The periodic watchdog also captures bounded instrumentation-presence output. Sta
 
 ## Complete-Wave.ps1
 
-Default behavior is Check mode. It validates exact HEAD/tree, no tracked changes or non-ignored untracked files, verification evidence binding, caller-required PASS gates, expected remote base, review-tip ancestry, and the normal fast-forward relation. Ignored evidence and build outputs remain allowed. Evidence output is the only write in Check mode.
+Default behavior is Check mode. It validates exact HEAD/tree, no tracked changes or non-ignored untracked files, verification evidence binding, execution-lifetime provenance for the exact candidate materialization and every passing gate, caller-required PASS gates, expected remote base, review-tip ancestry, and the normal fast-forward relation. Ignored evidence and build outputs remain allowed. Evidence output is the only write in Check mode.
 
-Push mode requires the explicit Push switch. The only push command is a normal push of HEAD to the caller-supplied implementation ref. There is no force, amend, rebase, squash, reset, or reconciliation option. It fetches the ref value after pushing and requires exact equality with the tested SHA and 0/0 ahead/behind. A forward review tip is reported; Push requires an explicit caller-owned compatibility acknowledgement naming the exact live review-tip SHA.
+Push mode requires the explicit Push switch. Immediately before a write it re-reads local HEAD/tree/worktree state, the review ref and its recorded-tip ancestry/forward acknowledgement, then reads the destination implementation ref last. It blocks if local HEAD moved from the tested SHA or either ref is outside the completion contract. A successful normal fast-forward push uses the full immutable TestedSha object ID as the refspec source; it never derives the pushed object from symbolic HEAD. There is no force, amend, rebase, squash, reset, or reconciliation option. After pushing it re-reads the implementation ref and requires exact equality with the tested SHA and 0/0 ahead/behind. A forward review tip remains caller-owned and requires an explicit compatibility acknowledgement naming the exact live review-tip SHA.
 
 Example invocation shape:
 
