@@ -312,6 +312,21 @@ public static class YtdlnisxGitAcceptanceShim
                 string pushLog = Environment.GetEnvironmentVariable("YTDLNISX_ACCEPTANCE_PUSH_LOG");
                 if (!String.IsNullOrWhiteSpace(pushLog))
                     File.AppendAllText(pushLog, String.Join("\t", args) + Environment.NewLine, new UTF8Encoding(false));
+
+                if (mode == "final-boundary")
+                {
+                    bool implementationUpdate = false;
+                    for (int i = 3; i < args.Length; i++)
+                    {
+                        if (args[i].EndsWith(":refs/heads/implementation", StringComparison.Ordinal))
+                        {
+                            implementationUpdate = true;
+                            break;
+                        }
+                    }
+                    if (implementationUpdate && NextCount(Path.Combine(root, "final-boundary.push.count")) == 1)
+                        WaitAtBoundary(root, "final-boundary");
+                }
             }
 
             ProcessStartInfo start = new ProcessStartInfo();
@@ -673,6 +688,65 @@ try {
     )
     Add-AcceptanceCheck -CheckId 'push_destination_race_is_reobserved_before_mutation' -Pass $destinationRacePass -Detail 'A synchronized concurrent writer advanced the destination after its initial observation; final authority re-read observed the incompatible tip and completion did not invoke Push.'
 
+    $finalBoundaryFixture = New-ToolingFixture -Name 'push-final-boundary-destination-race'
+    $finalBoundaryBaseSha = $finalBoundaryFixture.sha
+    $finalBoundaryIntermediateSha = New-EmptyRaceChild -Fixture $finalBoundaryFixture -Message 'intervening destination writer commit C'
+    $finalBoundaryCandidateSha = New-EmptyRaceChild -Fixture $finalBoundaryFixture -Message 'tested candidate commit X'
+    $finalBoundaryFixture.sha = $finalBoundaryCandidateSha
+    $finalBoundaryFixture.tree = Invoke-ToolingGit -RepoPath $finalBoundaryFixture.path -Arguments @('rev-parse', 'HEAD^{tree}')
+    $finalBoundaryFixture | Add-Member -NotePropertyName expectedRemoteBaseSha -NotePropertyValue $finalBoundaryBaseSha
+    $finalBoundaryFixture | Add-Member -NotePropertyName recordedReviewTip -NotePropertyValue $finalBoundaryBaseSha
+    $finalBoundaryParentOfC = Invoke-ToolingGit -RepoPath $finalBoundaryFixture.path -Arguments @('rev-parse', ($finalBoundaryIntermediateSha + '^'))
+    $finalBoundaryParentOfX = Invoke-ToolingGit -RepoPath $finalBoundaryFixture.path -Arguments @('rev-parse', ($finalBoundaryCandidateSha + '^'))
+    $finalBoundaryVerification = Invoke-VerificationChild -Fixture $finalBoundaryFixture -Name 'push-final-boundary-destination-race-verification'
+    $finalBoundaryVerificationPath = Get-VerificationJsonPath -Result $finalBoundaryVerification
+    $finalBoundaryControl = Join-Path $runRoot 'push-final-boundary-destination-race-control'
+    New-Item -ItemType Directory -Path $finalBoundaryControl -Force | Out-Null
+    $finalBoundaryPushLog = Join-Path $finalBoundaryControl 'push-commands.log'
+    $finalBoundaryEnvironment = Get-GitInterceptionEnvironment -Shim $script:gitShim -Mode 'final-boundary' -Fixture $finalBoundaryFixture -ControlRoot $finalBoundaryControl -PushLogPath $finalBoundaryPushLog
+    $finalBoundaryRunning = Invoke-CompleteChild -Fixture $finalBoundaryFixture -VerificationPath $finalBoundaryVerificationPath -Name 'push-final-boundary-destination-race-completion' -Push -Environment $finalBoundaryEnvironment -StartOnly
+    $finalBoundaryDestinationAtBarrier = $null
+    $finalBoundaryDestinationAfterWriter = $null
+    try {
+        Wait-ToolingMarker -Path (Join-Path $finalBoundaryControl 'final-boundary.waiting') -Running $finalBoundaryRunning -TimeoutSeconds 60
+        $finalBoundaryDestinationAtBarrier = Get-ToolingRemoteRefSha -Fixture $finalBoundaryFixture -Branch 'implementation'
+        Invoke-ToolingGit -RepoPath $finalBoundaryFixture.path -Arguments @('push', '--quiet', 'origin', ($finalBoundaryIntermediateSha + ':refs/heads/implementation')) | Out-Null
+        $finalBoundaryDestinationAfterWriter = Get-ToolingRemoteRefSha -Fixture $finalBoundaryFixture -Branch 'implementation'
+    } finally {
+        Write-ToolingUtf8 -Path (Join-Path $finalBoundaryControl 'final-boundary.release') -Content 'continue'
+    }
+    $finalBoundaryCompletion = Finish-CompleteChild -Running $finalBoundaryRunning -Name 'push-final-boundary-destination-race-completion'
+    $finalBoundaryRemote = Get-ToolingRemoteRefSha -Fixture $finalBoundaryFixture -Branch 'implementation'
+    $finalBoundaryPushLogText = $(if (Test-Path -LiteralPath $finalBoundaryPushLog) { Get-Content -LiteralPath $finalBoundaryPushLog -Raw } else { '' })
+    $finalBoundaryPushCount = @((Get-Content -LiteralPath $finalBoundaryPushLog) | Where-Object { $_ -match '\tpush\t' }).Count
+    $finalBoundaryLease = '--force-with-lease=refs/heads/implementation:' + $finalBoundaryBaseSha
+    $finalBoundaryRefspec = $finalBoundaryCandidateSha + ':refs/heads/implementation'
+    $finalBoundaryRacePass = (
+        $finalBoundaryParentOfC -eq $finalBoundaryBaseSha -and
+        $finalBoundaryParentOfX -eq $finalBoundaryIntermediateSha -and
+        $finalBoundaryDestinationAtBarrier -eq $finalBoundaryBaseSha -and
+        $finalBoundaryDestinationAfterWriter -eq $finalBoundaryIntermediateSha -and
+        $finalBoundaryCompletion.result.exitCode -ne 0 -and
+        $null -ne $finalBoundaryCompletion.finalize -and
+        $finalBoundaryCompletion.finalize.status -eq 'PUSH_REJECTED_NO_RECONCILIATION' -and
+        $finalBoundaryCompletion.finalize.pushAttempted -eq $true -and
+        $finalBoundaryCompletion.finalize.prePushAuthority.pass -eq $true -and
+        $finalBoundaryCompletion.finalize.prePushAuthority.destinationSha -eq $finalBoundaryBaseSha -and
+        $finalBoundaryCompletion.finalize.prePushAuthority.destinationIsAncestorOfTestedSha -eq $true -and
+        $finalBoundaryCompletion.finalize.pushExpectedOldObjectId -eq $finalBoundaryBaseSha -and
+        $finalBoundaryCompletion.finalize.pushLeaseArgument -eq $finalBoundaryLease -and
+        $finalBoundaryCompletion.finalize.pushSourceObjectId -eq $finalBoundaryCandidateSha -and
+        $finalBoundaryCompletion.finalize.pushRefspec -eq $finalBoundaryRefspec -and
+        $finalBoundaryCompletion.finalize.pushExitCode -ne 0 -and
+        $finalBoundaryPushLogText.Contains($finalBoundaryLease) -and
+        $finalBoundaryPushLogText.Contains($finalBoundaryRefspec) -and
+        $finalBoundaryPushCount -eq 1 -and
+        $finalBoundaryRemote -eq $finalBoundaryIntermediateSha -and
+        $finalBoundaryRemote -ne $finalBoundaryCandidateSha -and
+        (Invoke-ToolingGit -RepoPath $finalBoundaryFixture.path -Arguments @('rev-parse', 'HEAD')) -eq $finalBoundaryCandidateSha
+    )
+    Add-AcceptanceCheck -CheckId 'push_final_boundary_destination_lease_rejects_intervening_writer' -Pass $finalBoundaryRacePass -Detail "The disposable B -> C -> X fixture accepted destination B at the final authority boundary, then a concurrent writer advanced the remote to C before the target update. The exact-ref lease for B rejected X, retained C, and recorded one push attempt with no retry. B=$finalBoundaryBaseSha C=$finalBoundaryIntermediateSha X=$finalBoundaryCandidateSha."
+
     $reviewRaceFixture = New-PushCandidateFixture -Name 'push-review-race'
     $reviewRaceVerification = Invoke-VerificationChild -Fixture $reviewRaceFixture -Name 'push-review-race-verification'
     $reviewRaceVerificationPath = Get-VerificationJsonPath -Result $reviewRaceVerification
@@ -732,20 +806,24 @@ try {
     $pushControlCompletion = Invoke-CompleteChild -Fixture $pushControlFixture -VerificationPath $pushControlVerificationPath -Name 'push-exact-sha-control-completion' -Push -Environment $pushControlEnvironment
     $pushRecord = Get-Content -LiteralPath $pushControlLog -Raw
     $exactRefspec = $pushControlFixture.sha + ':refs/heads/implementation'
+    $exactLease = '--force-with-lease=refs/heads/implementation:' + $pushControlFixture.expectedRemoteBaseSha
     $pushControlPass = (
         $pushControlCompletion.result.exitCode -eq 0 -and
         $null -ne $pushControlCompletion.finalize -and
         $pushControlCompletion.finalize.status -eq 'PUSHED_AND_VERIFIED' -and
         $pushControlCompletion.finalize.pushAttempted -eq $true -and
         $pushControlCompletion.finalize.pushSourceObjectId -eq $pushControlFixture.sha -and
+        $pushControlCompletion.finalize.pushExpectedOldObjectId -eq $pushControlFixture.expectedRemoteBaseSha -and
+        $pushControlCompletion.finalize.pushLeaseArgument -eq $exactLease -and
         $pushControlCompletion.finalize.pushRefspec -eq $exactRefspec -and
+        $pushRecord.Contains($exactLease) -and
         $pushRecord.Contains($exactRefspec) -and
         -not $pushRecord.Contains('HEAD:refs/heads/implementation') -and
         $pushControlCompletion.finalize.implementationRef.after -eq $pushControlFixture.sha -and
         $pushControlCompletion.finalize.aheadBehind.leftOnly -eq 0 -and
         $pushControlCompletion.finalize.aheadBehind.rightOnly -eq 0
     )
-    Add-AcceptanceCheck -CheckId 'normal_push_uses_exact_tested_object_and_verifies_equality' -Pass $pushControlPass -Detail 'With unchanged exact candidate X and recorded destination base, normal fast-forward Push used X as its immutable refspec source and verified the remote at X with 0/0.'
+    Add-AcceptanceCheck -CheckId 'normal_push_uses_exact_tested_object_and_verifies_equality' -Pass $pushControlPass -Detail 'With unchanged exact candidate X and recorded destination base B, the exact-ref B lease guarded the independently proven forward update from immutable source X; completion verified remote X with 0/0.'
 
     $pushCountBeforeAlready = @((Get-Content -LiteralPath $pushControlLog) | Where-Object { $_ -match '\tpush\t' }).Count
     $alreadyCompletion = Invoke-CompleteChild -Fixture $pushControlFixture -VerificationPath $pushControlVerificationPath -Name 'already-pushed-exact-sha-control-completion' -Push -Environment $pushControlEnvironment

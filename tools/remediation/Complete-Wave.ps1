@@ -162,6 +162,7 @@ function Get-FinalPushAuthority {
     $reviewAcknowledgementPass = $false
     $destinationLive = $null
     $destinationState = 'unavailable'
+    $destinationIsAncestor = $false
 
     try {
         $localHead = Get-RemediationHead -RepoPath $RepoFull -LogDirectory $LogDirectory
@@ -217,6 +218,10 @@ function Get-FinalPushAuthority {
         } elseif ($InitialRemoteSha -ne $ExpectedRemoteBaseSha -and $InitialRemoteSha -ne $TestedSha) {
             $failures.Add("earlier implementation ref observation was outside the authorized states: $InitialRemoteSha")
         }
+        if ($destinationState -eq 'expected_base') {
+            $destinationIsAncestor = Test-RemediationGitAncestor -RepoPath $RepoFull -AncestorSha $destinationLive -DescendantSha $TestedSha -LogDirectory $LogDirectory
+            if (-not $destinationIsAncestor) { $failures.Add("accepted destination $destinationLive is not an ancestor of tested SHA $TestedSha") }
+        }
     } catch {
         $failures.Add("unable to revalidate destination implementation ref before Push: $($_.Exception.Message)")
     }
@@ -232,6 +237,7 @@ function Get-FinalPushAuthority {
         destinationRef = $ImplementationRef
         destinationSha = $destinationLive
         destinationState = $destinationState
+        destinationIsAncestorOfTestedSha = [bool]$destinationIsAncestor
         reviewRef = $ReviewRef
         recordedReviewTip = $RecordedReviewTip
         liveReviewTip = $reviewLive
@@ -239,7 +245,9 @@ function Get-FinalPushAuthority {
         recordedReviewTipIsAncestor = [bool]$reviewAncestor
         forwardReviewAcknowledgement = $ForwardReviewAdvanceAcknowledgement
         forwardReviewAcknowledgementNamesLiveTip = [bool]$reviewAcknowledgementPass
-        authorizedPushSourceObjectId = $(if ($failures.Count -eq 0 -and $destinationState -eq 'expected_base') { $TestedSha } else { $null })
+        authorizedPushSourceObjectId = $(if ($failures.Count -eq 0 -and $destinationState -eq 'expected_base' -and $destinationIsAncestor) { $TestedSha } else { $null })
+        authorizedPushExpectedOldObjectId = $(if ($failures.Count -eq 0 -and $destinationState -eq 'expected_base' -and $destinationIsAncestor) { $destinationLive } else { $null })
+        authorizedPushLeaseArgument = $(if ($failures.Count -eq 0 -and $destinationState -eq 'expected_base' -and $destinationIsAncestor) { '--force-with-lease=refs/heads/' + $ImplementationRef + ':' + $destinationLive } else { $null })
         pass = ($failures.Count -eq 0)
         failures = @($failures.ToArray())
     }
@@ -265,6 +273,8 @@ $pushAttempted=$false
 $pushResult=$null
 $prePushAuthority=$null
 $pushSourceObjectId=$null
+$pushExpectedOldObjectId=$null
+$pushLeaseArgument=$null
 $remoteAfter=$null
 $aheadBehind=$null
 $reviewAncestor=$false
@@ -378,7 +388,7 @@ try {
     }
     if($Push -and $errors.Count -eq 0){
         $prePushAuthority=Get-FinalPushAuthority -RepoFull $repoFull -RemoteName $RemoteName -ImplementationRef $ImplementationRef -ReviewRef $ReviewRef -ExpectedRemoteBaseSha $ExpectedRemoteBaseSha -InitialRemoteSha $remoteBefore -TestedSha $TestedSha -CandidateTree $tree -RecordedReviewTip $RecordedReviewTip -ForwardReviewAdvanceAcknowledgement $ForwardReviewAdvanceAcknowledgement -LogDirectory (Join-Path $runDirectory 'pre-push-authority-logs')
-        $checks.Add([pscustomobject]@{ name='just_in_time_push_authority'; contract=$prePushAuthority.contract; pass=$prePushAuthority.pass; localHead=$prePushAuthority.localHead; destinationSha=$prePushAuthority.destinationSha; reviewTip=$prePushAuthority.liveReviewTip; reviewRelation=$prePushAuthority.reviewRelation; pushSourceObjectId=$prePushAuthority.authorizedPushSourceObjectId; failures=@($prePushAuthority.failures) })
+        $checks.Add([pscustomobject]@{ name='just_in_time_push_authority'; contract=$prePushAuthority.contract; pass=$prePushAuthority.pass; localHead=$prePushAuthority.localHead; destinationSha=$prePushAuthority.destinationSha; destinationIsAncestorOfTestedSha=$prePushAuthority.destinationIsAncestorOfTestedSha; reviewTip=$prePushAuthority.liveReviewTip; reviewRelation=$prePushAuthority.reviewRelation; pushSourceObjectId=$prePushAuthority.authorizedPushSourceObjectId; pushExpectedOldObjectId=$prePushAuthority.authorizedPushExpectedOldObjectId; pushLeaseArgument=$prePushAuthority.authorizedPushLeaseArgument; failures=@($prePushAuthority.failures) })
         foreach($failure in $prePushAuthority.failures){$errors.Add("pre-Push authority: $failure")}
         if(-not $prePushAuthority.pass){
             $status='PUSH_BLOCKED_BY_CHECKS'
@@ -387,23 +397,37 @@ try {
             $aheadBehind=[pscustomobject]@{leftOnly=0;rightOnly=0}
             $status='ALREADY_PUSHED_EXACT_SHA'
         } else {
-            $pushSourceObjectId=$TestedSha
-            $pushRefspec=$pushSourceObjectId + ':refs/heads/' + $ImplementationRef
-            $pushAttempted=$true
-            $pushResult=Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('push', $RemoteName, $pushRefspec) -LogDirectory (Join-Path $runDirectory 'push-logs') -Name 'git-normal-fast-forward-push' -TimeoutSeconds 180
-            if($pushResult.timedOut -or $pushResult.exitCode -ne 0){
-                $status='PUSH_REJECTED_NO_RECONCILIATION'
-                $errors.Add("normal fast-forward push of the exact tested object failed (exit $($pushResult.exitCode)); no reconciliation or retry was attempted")
+            $authorizedSource=$prePushAuthority.authorizedPushSourceObjectId
+            $authorizedOldObjectId=$prePushAuthority.authorizedPushExpectedOldObjectId
+            $authorizedLeaseArgument=$prePushAuthority.authorizedPushLeaseArgument
+            $expectedLeaseArgument='--force-with-lease=refs/heads/' + $ImplementationRef + ':' + $prePushAuthority.destinationSha
+            if ($authorizedSource -ne $TestedSha -or
+                $authorizedOldObjectId -ne $prePushAuthority.destinationSha -or
+                -not $prePushAuthority.destinationIsAncestorOfTestedSha -or
+                $authorizedLeaseArgument -ne $expectedLeaseArgument) {
+                $status='PUSH_BLOCKED_BY_CHECKS'
+                $errors.Add('final authority did not bind the exact tested SHA to the accepted old destination through the exact-ref lease and forward ancestry proof')
             } else {
-                $remoteAfter=Get-RemediationRemoteRefSha -RepoPath $repoFull -RemoteName $RemoteName -BranchName $ImplementationRef -LogDirectory $runDirectory
-                $equal=($remoteAfter -eq $TestedSha)
-                if($equal){
-                    $aheadBehind=Get-RemediationAheadBehind -RepoFull $repoFull -LeftSha $TestedSha -RightSha $remoteAfter -LogDirectory $runDirectory
-                    $sync=($aheadBehind.leftOnly -eq 0 -and $aheadBehind.rightOnly -eq 0)
-                    if($sync){$status='PUSHED_AND_VERIFIED'}else{$status='POST_PUSH_AHEAD_BEHIND_MISMATCH';$errors.Add('post-push ahead/behind was not 0/0')}
+                $pushSourceObjectId=$authorizedSource
+                $pushExpectedOldObjectId=$authorizedOldObjectId
+                $pushLeaseArgument=$authorizedLeaseArgument
+                $pushRefspec=$pushSourceObjectId + ':refs/heads/' + $ImplementationRef
+                $pushAttempted=$true
+                $pushResult=Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('push', $pushLeaseArgument, $RemoteName, $pushRefspec) -LogDirectory (Join-Path $runDirectory 'push-logs') -Name 'git-exact-old-authority-forward-push' -TimeoutSeconds 180
+                if($pushResult.timedOut -or $pushResult.exitCode -ne 0){
+                    $status='PUSH_REJECTED_NO_RECONCILIATION'
+                    $errors.Add("exact-old-authority conditional forward push of the tested object failed (exit $($pushResult.exitCode)); no retry or reconciliation was attempted")
                 } else {
-                    $status='POST_PUSH_REMOTE_MISMATCH'
-                    $errors.Add("post-push remote SHA was $remoteAfter, expected $TestedSha")
+                    $remoteAfter=Get-RemediationRemoteRefSha -RepoPath $repoFull -RemoteName $RemoteName -BranchName $ImplementationRef -LogDirectory $runDirectory
+                    $equal=($remoteAfter -eq $TestedSha)
+                    if($equal){
+                        $aheadBehind=Get-RemediationAheadBehind -RepoFull $repoFull -LeftSha $TestedSha -RightSha $remoteAfter -LogDirectory $runDirectory
+                        $sync=($aheadBehind.leftOnly -eq 0 -and $aheadBehind.rightOnly -eq 0)
+                        if($sync){$status='PUSHED_AND_VERIFIED'}else{$status='POST_PUSH_AHEAD_BEHIND_MISMATCH';$errors.Add('post-push ahead/behind was not 0/0')}
+                    } else {
+                        $status='POST_PUSH_REMOTE_MISMATCH'
+                        $errors.Add("post-push remote SHA was $remoteAfter, expected $TestedSha")
+                    }
                 }
             }
         }
@@ -441,8 +465,11 @@ $finalize=[pscustomobject][ordered]@{
     acceptanceEvidencePath=$AcceptanceEvidencePath
     pushAttempted=$pushAttempted
     pushSourceObjectId=$pushSourceObjectId
+    pushExpectedOldObjectId=$pushExpectedOldObjectId
+    pushLeaseArgument=$pushLeaseArgument
+    pushWriteAuthorityMechanism=$(if($pushAttempted){'exact_expected_old_compare_and_swap_with_forward_ancestry'}else{$null})
     pushRefspec=$(if($pushAttempted){$pushSourceObjectId + ':refs/heads/' + $ImplementationRef}else{$null})
-    pushCommand=$(if($pushAttempted){'git push ' + $RemoteName + ' ' + $pushSourceObjectId + ':refs/heads/' + $ImplementationRef}else{$null})
+    pushCommand=$(if($pushAttempted){'git push ' + $pushLeaseArgument + ' ' + $RemoteName + ' ' + $pushSourceObjectId + ':refs/heads/' + $ImplementationRef}else{$null})
     pushExitCode=$(if($null -ne $pushResult){$pushResult.exitCode}else{$null})
     pushStdoutPath=$(if($null -ne $pushResult){$pushResult.stdoutPath}else{$null})
     pushStderrPath=$(if($null -ne $pushResult){$pushResult.stderrPath}else{$null})
