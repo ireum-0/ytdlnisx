@@ -23,12 +23,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /** Exercises the actual LocalAddWorker admission path around the old LIKE precheck. */
@@ -38,6 +40,7 @@ class LocalAddWorkerProductionWiringTest {
     private lateinit var database: DBManager
     private lateinit var testRoot: File
     private var previousOpenSession: String? = null
+    private var previousPendingSessionIds: Set<String> = emptySet()
 
     @Before
     fun setUp() {
@@ -45,11 +48,13 @@ class LocalAddWorkerProductionWiringTest {
         WorkManager.getInstance(context).cancelAllWork().result.get(10, TimeUnit.SECONDS)
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         previousOpenSession = preferences.getString("local_add_open_session", null)
+        previousPendingSessionIds = LocalAddStorage.loadPendingSessionIds(context).toSet()
         database = Room.inMemoryDatabaseBuilder(
             context,
             DBManager::class.java,
         ).addTypeConverter(Converters()).allowMainThreadQueries().build()
         LocalAddWorkerTestHooks.databaseForTesting = database
+        LocalAddWorkerTestHooks.beforePendingPublicationForTesting = null
         LocalAddWorkerTestHooks.matchForTesting = { _, _ -> null }
         LocalAddWorkerTestHooks.metadataForTesting = { uri ->
             if (uri.scheme == "content" && uri.pathSegments.firstOrNull() == "document") {
@@ -65,11 +70,11 @@ class LocalAddWorkerProductionWiringTest {
     @After
     fun tearDown() {
         WorkManager.getInstance(context).cancelAllWork().result.get(10, TimeUnit.SECONDS)
-        val currentSession = LocalAddStorage.consumeOpenSession(context)
-        if (!currentSession.isNullOrBlank() && currentSession != previousOpenSession) {
-            LocalAddStorage.clearPending(context, currentSession)
-        }
+        LocalAddStorage.loadPendingSessionIds(context)
+            .filterNot(previousPendingSessionIds::contains)
+            .forEach { LocalAddStorage.clearPending(context, it) }
         LocalAddStorage.setOpenSession(context, previousOpenSession)
+        LocalAddWorkerTestHooks.beforePendingPublicationForTesting = null
         LocalAddWorkerTestHooks.databaseForTesting = null
         LocalAddWorkerTestHooks.matchForTesting = null
         LocalAddWorkerTestHooks.metadataForTesting = null
@@ -93,7 +98,7 @@ class LocalAddWorkerProductionWiringTest {
         val info = awaitFinished(workManager, request.id)
 
         assertEquals(WorkInfo.State.SUCCEEDED, info.state)
-        val sessionId = awaitOpenSession()
+        val sessionId = awaitNewPendingSession()
         val pending = LocalAddStorage.loadPending(context, sessionId)
         assertEquals(listOf(candidatePath), pending.map { it.uri })
         assertEquals(1, database.historyDao.getAll().size)
@@ -118,7 +123,7 @@ class LocalAddWorkerProductionWiringTest {
         val info = awaitFinished(workManager, request.id)
 
         assertEquals(WorkInfo.State.SUCCEEDED, info.state)
-        val sessionId = awaitOpenSession()
+        val sessionId = awaitNewPendingSession()
         val pending = LocalAddStorage.loadPending(context, sessionId)
         assertEquals(listOf(exactPath, whitespacePath), pending.map { it.uri })
     }
@@ -142,7 +147,7 @@ class LocalAddWorkerProductionWiringTest {
         val info = awaitFinished(workManager, request.id)
 
         assertEquals(WorkInfo.State.SUCCEEDED, info.state)
-        val sessionId = awaitOpenSession()
+        val sessionId = awaitNewPendingSession()
         val pending = LocalAddStorage.loadPending(context, sessionId)
         assertEquals(listOf(firstPath, secondPath), pending.map { it.uri })
     }
@@ -159,12 +164,93 @@ class LocalAddWorkerProductionWiringTest {
             error("Timed out waiting for LocalAddWorker $id")
         }
 
-    private suspend fun awaitOpenSession(): String = withContext(Dispatchers.IO) {
+    @Test
+    fun openedOlderPendingSessionRemainsDiscoverableAfterNewWorkerPublishes() = runBlocking {
+        val workManager = WorkManager.getInstance(context)
+        suspend fun publish(path: String): String {
+            val request = OneTimeWorkRequestBuilder<LocalAddWorker>()
+                .setInputData(workDataOf(
+                    LocalAddWorker.KEY_ENTRIES_JSON to Gson().toJson(listOf(LocalAddEntryDto(path, null))),
+                ))
+                .addTag("local-add-worker-pending-index-test")
+                .build()
+            workManager.enqueue(request)
+            assertEquals(WorkInfo.State.SUCCEEDED, awaitFinished(workManager, request.id).state)
+            return awaitNewPendingSession()
+        }
+
+        val firstId = publish("content://provider/document/open-before-second")
+        assertEquals(1, LocalAddStorage.loadPending(context, firstId).size)
+        val secondId = publish("content://provider/document/second-session")
+        assertEquals(setOf(firstId, secondId),
+            LocalAddStorage.loadPendingSessionIds(context).filterNot(previousPendingSessionIds::contains).toSet())
+
+        LocalAddStorage.clearPending(context, firstId)
+        assertEquals(listOf(secondId),
+            LocalAddStorage.loadPendingSessionIds(context).filterNot(previousPendingSessionIds::contains))
+    }
+
+    @Test
+    fun threeConcurrentRealWorkersPublishIndependentlyDiscoverableSessions() = runBlocking {
+        val entered = CountDownLatch(3)
+        val release = CountDownLatch(1)
+        val sessionIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        LocalAddWorkerTestHooks.beforePendingPublicationForTesting = { sessionId ->
+            sessionIds += sessionId
+            entered.countDown()
+            check(release.await(30, TimeUnit.SECONDS)) { "pending-session publication was not released" }
+        }
+        val workManager = WorkManager.getInstance(context)
+        val requests = (0 until 3).map { index ->
+            OneTimeWorkRequestBuilder<LocalAddWorker>()
+                .setInputData(workDataOf(
+                    LocalAddWorker.KEY_ENTRIES_JSON to Gson().toJson(
+                        listOf(LocalAddEntryDto("content://provider/document/concurrent-$index", null)),
+                    ),
+                ))
+                .addTag("local-add-worker-pending-index-test")
+                .build()
+                .also(workManager::enqueue)
+        }
+        try {
+            assertTrue("all workers must reach the exact pending publication boundary",
+                withContext(Dispatchers.IO) { entered.await(30, TimeUnit.SECONDS) })
+        } finally {
+            release.countDown()
+        }
+        requests.forEach { assertEquals(WorkInfo.State.SUCCEEDED, awaitFinished(workManager, it.id).state) }
+        val published = LocalAddStorage.loadPendingSessionIds(context)
+            .filterNot(previousPendingSessionIds::contains)
+        assertEquals(3, published.size)
+        assertEquals(3, sessionIds.size)
+        assertTrue(published.containsAll(sessionIds))
+        assertEquals(3, published.map(LocalAddStorage::pendingNotificationTag).toSet().size)
+        published.forEach { assertEquals(1, LocalAddStorage.loadPending(context, it).size) }
+    }
+
+    @Test
+    fun legacyOpenPointerIsAdoptedOnlyWhenItsExactPayloadExists() = runBlocking {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val validId = UUID.randomUUID().toString()
+        val missingId = UUID.randomUUID().toString()
+        LocalAddStorage.savePending(context, validId, listOf(
+            com.ireum.ytdl.util.LocalAddCandidateDto(
+                uri = "content://provider/document/legacy", treeUri = null, title = "legacy",
+                ext = "mp4", size = 1L, durationSeconds = 0,
+            ),
+        ))
+        LocalAddStorage.setOpenSession(context, validId)
+        assertTrue(LocalAddStorage.loadPendingSessionIds(context).contains(validId))
+        assertTrue(preferences.getString("local_add_open_session", null) != validId)
+        LocalAddStorage.setOpenSession(context, missingId)
+        assertFalse(LocalAddStorage.loadPendingSessionIds(context).contains(missingId))
+    }
+
+    private suspend fun awaitNewPendingSession(): String = withContext(Dispatchers.IO) {
         repeat(100) {
-            val session = PreferenceManager
-                .getDefaultSharedPreferences(context)
-                .getString("local_add_open_session", null)
-            if (!session.isNullOrBlank()) return@withContext session
+            val session = LocalAddStorage.loadPendingSessionIds(context)
+                .firstOrNull { it !in previousPendingSessionIds }
+            if (session != null) return@withContext session
             Thread.sleep(100L)
         }
         error("LocalAddWorker did not publish a pending session")

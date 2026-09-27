@@ -741,6 +741,11 @@ class NotificationUtil(var context: Context) {
     }
 
     @SuppressLint("MissingPermission")
+    fun notify(tag: String, id: Int, notification: Notification) {
+        notificationManager.notify(tag, id, notification)
+    }
+
+    @SuppressLint("MissingPermission")
     fun updateDownloadNotification(
         id: Int,
         desc: String,

@@ -1255,14 +1255,19 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
 
     private fun maybeOpenPendingLocalAdd() {
         if (localMatchDialog != null) return
-        val sessionId = LocalAddStorage.consumeOpenSession(requireContext()) ?: return
+        val pendingIds = LocalAddStorage.loadPendingSessionIds(requireContext())
+        val requestedId = arguments?.getString("localAddSessionId")
+        val sessionId = requestedId?.takeIf(pendingIds::contains) ?: pendingIds.firstOrNull() ?: return
+        if (requestedId == sessionId) arguments?.remove("localAddSessionId")
         openPendingLocalAddSession(sessionId)
     }
 
     fun openLocalAddSessionFromIntent(sessionId: String) {
         if (sessionId.isBlank() || !isAdded) return
-        LocalAddStorage.consumeOpenSession(requireContext())
         if (localMatchDialog != null) return
+        if (arguments?.getString("localAddSessionId") == sessionId) {
+            arguments?.remove("localAddSessionId")
+        }
         openPendingLocalAddSession(sessionId)
     }
 
@@ -1384,7 +1389,7 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                     snackbar.dismiss()
                     return@setOnClickListener
                 }
-                val sessionId = LocalAddStorage.consumeOpenSession(requireContext())
+                val sessionId = LocalAddStorage.loadPendingSessionIds(requireContext()).firstOrNull()
                 if (!sessionId.isNullOrBlank()) {
                     openPendingLocalAddSession(sessionId)
                     return@setOnClickListener
@@ -1721,6 +1726,11 @@ class HistoryFragment : Fragment(), HistoryPaginatedAdapter.OnItemClickListener 
                 LocalAddStorage.clearPending(requireContext(), sessionId)
             } else {
                 LocalAddStorage.savePending(requireContext(), sessionId, remaining)
+            }
+            if (remaining.isEmpty() && isAdded) {
+                withContext(Dispatchers.Main) {
+                    if (isAdded) maybeOpenPendingLocalAdd()
+                }
             }
         }
     }

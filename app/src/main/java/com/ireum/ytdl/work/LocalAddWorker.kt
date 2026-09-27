@@ -56,6 +56,9 @@ internal object LocalAddWorkerTestHooks {
 
     @Volatile
     internal var metadataForTesting: ((Uri) -> MetadataOverride?)? = null
+
+    @Volatile
+    internal var beforePendingPublicationForTesting: ((String) -> Unit)? = null
 }
 
 class LocalAddWorker(
@@ -203,10 +206,11 @@ class LocalAddWorker(
         if (isStopped) throw CancellationException("Local add worker stopped")
         if (pending.isNotEmpty()) {
             val sessionId = UUID.randomUUID().toString()
+            LocalAddWorkerTestHooks.beforePendingPublicationForTesting?.invoke(sessionId)
             LocalAddStorage.savePending(context, sessionId, pending)
-            LocalAddStorage.setOpenSession(context, sessionId)
             NotificationUtil(context).notify(
-                NOTIFICATION_ID,
+                LocalAddStorage.pendingNotificationTag(sessionId),
+                LocalAddStorage.PENDING_NOTIFICATION_ID,
                 createPendingNotification(pending.size, sessionId)
             )
         }
@@ -240,6 +244,9 @@ class LocalAddWorker(
     private fun createOpenPendingIntent(sessionId: String): PendingIntent {
         val intent = Intent(context, MainActivity::class.java)
         intent.action = Intent.ACTION_VIEW
+        // Intent data participates in PendingIntent identity, so UUID hash
+        // collisions in requestCode cannot redirect one session's action.
+        intent.data = Uri.parse("${context.packageName}://local-add-pending/$sessionId")
         intent.putExtra("destination", "Downloads")
         intent.putExtra("localAddSessionId", sessionId)
         return PendingIntent.getActivity(

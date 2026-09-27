@@ -6,6 +6,7 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 import androidx.preference.PreferenceManager
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import java.util.UUID
 
 data class LocalAddMatchDto(
     val url: String,
@@ -53,27 +54,77 @@ object LocalAddStorage {
     const val OWNER_RETIRED = "RETIRED"
 
     private val gson = Gson()
+    const val PENDING_NOTIFICATION_ID = 93501
 
     private fun prefs(context: Context): SharedPreferences =
         PreferenceManager.getDefaultSharedPreferences(context)
 
     fun savePending(context: Context, sessionId: String, candidates: List<LocalAddCandidateDto>) {
+        require(isSessionId(sessionId)) { "LocalAdd pending session ID is invalid" }
         val json = gson.toJson(candidates)
-        prefs(context).edit()
-            .putString(KEY_PENDING_PREFIX + sessionId, json)
-            .apply()
+        check(prefs(context).edit().putString(KEY_PENDING_PREFIX + sessionId, json).commit()) {
+            "LocalAdd pending candidates could not be durably published"
+        }
     }
 
     fun loadPending(context: Context, sessionId: String): List<LocalAddCandidateDto> {
-        val json = prefs(context).getString(KEY_PENDING_PREFIX + sessionId, null) ?: return emptyList()
-        val type = object : TypeToken<List<LocalAddCandidateDto>>() {}.type
-        return gson.fromJson(json, type) ?: emptyList()
+        return decodePending(prefs(context).getString(KEY_PENDING_PREFIX + sessionId, null))
+            .orEmpty()
     }
 
     fun clearPending(context: Context, sessionId: String) {
-        prefs(context).edit()
-            .remove(KEY_PENDING_PREFIX + sessionId)
-            .apply()
+        check(prefs(context).edit().remove(KEY_PENDING_PREFIX + sessionId).commit()) {
+            "LocalAdd pending completion could not be durably persisted"
+        }
+    }
+
+    /** Exact pending result sessions are discovered from their own durable keys. */
+    fun loadPendingSessionIds(context: Context): List<String> {
+        val preferences = prefs(context)
+        val ids = preferences.all.keys.asSequence()
+            .filter { it.startsWith(KEY_PENDING_PREFIX) }
+            .map { it.removePrefix(KEY_PENDING_PREFIX) }
+            .filter(::isSessionId)
+            .filter { decodePending(preferences.getString(KEY_PENDING_PREFIX + it, null)) != null }
+            .toMutableSet()
+
+        // Older releases wrote one discovery pointer. Its value already names
+        // a per-session payload; adopt that exact entry and retire only the
+        // pointer after enumeration has found the durable payload.
+        val legacyId = preferences.getString(KEY_OPEN_SESSION, null)
+        if (legacyId != null && isSessionId(legacyId) &&
+            decodePending(preferences.getString(KEY_PENDING_PREFIX + legacyId, null)) != null
+        ) {
+            ids += legacyId
+            if (preferences.getString(KEY_OPEN_SESSION, null) == legacyId) {
+                preferences.edit().remove(KEY_OPEN_SESSION).commit()
+            }
+        }
+        return ids.sorted()
+    }
+
+    fun pendingNotificationTag(sessionId: String): String {
+        require(isSessionId(sessionId))
+        return "local_add_pending_$sessionId"
+    }
+
+    private fun isSessionId(value: String): Boolean = try {
+        UUID.fromString(value).toString() == value
+    } catch (_: IllegalArgumentException) {
+        false
+    }
+
+    private fun decodePending(json: String?): List<LocalAddCandidateDto>? {
+        if (json.isNullOrBlank()) return null
+        return try {
+            val type = object : TypeToken<List<LocalAddCandidateDto>>() {}.type
+            val decoded: List<LocalAddCandidateDto> = gson.fromJson(json, type) ?: return null
+            decoded.takeIf { candidates ->
+                candidates.isNotEmpty() && candidates.all { it.uri.isNotBlank() }
+            }
+        } catch (_: RuntimeException) {
+            null
+        }
     }
 
     fun saveEntries(context: Context, sessionId: String, entries: List<LocalAddEntryDto>) {

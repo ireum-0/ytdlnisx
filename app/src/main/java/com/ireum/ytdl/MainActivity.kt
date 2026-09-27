@@ -491,10 +491,10 @@ class MainActivity : BaseActivity() {
             when(intent.getStringExtra("destination")){
                 "Downloads" -> {
                     val localSessionId = intent.getStringExtra("localAddSessionId")
-                    if (!localSessionId.isNullOrBlank()) {
-                        com.ireum.ytdl.util.LocalAddStorage.setOpenSession(this, localSessionId)
-                    }
                     val bundle = buildHistoryRestoreBundle(intent)
+                    if (!localSessionId.isNullOrBlank()) {
+                        bundle.putString("localAddSessionId", localSessionId)
+                    }
                     val currentHistoryFragment =
                         navHostFragment.childFragmentManager.primaryNavigationFragment as? HistoryFragment
                     if (navController.currentDestination?.id == R.id.historyFragment && currentHistoryFragment != null) {
