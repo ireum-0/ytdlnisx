@@ -1543,7 +1543,22 @@ class DownloadWorkerCleanupProductionWiringTest {
 
             val request = enqueueDownloadWorker(context)
             workerRequest = request
-            val workInfo = awaitDownloadWorkerCondition(context, request.id) {
+            val workInfo = awaitDownloadWorkerCondition(
+                context = context,
+                workId = request.id,
+                timeoutDiagnostics = { lastState, elapsedMs ->
+                    committedHistoryFinalizationTimeoutDiagnostics(
+                        context = context,
+                        historyId = historyId,
+                        downloadId = downloadId,
+                        outputPaths = outputPaths,
+                        finalizationFailures = finalizationFailures,
+                        exactExecution = exactExecution,
+                        workInfoState = lastState,
+                        elapsedMs = elapsedMs,
+                    )
+                },
+            ) {
                 val e1 = exactExecution.get()
                 val replaced = db.historyDao.getNullableItem(historyId)
                 val producer = e1?.let { producerRecoveryRecord(context, downloadId, it) }
@@ -1656,9 +1671,11 @@ class DownloadWorkerCleanupProductionWiringTest {
     private suspend fun awaitDownloadWorkerCondition(
         context: android.content.Context,
         workId: UUID,
+        timeoutDiagnostics: ((WorkInfo.State?, Long) -> String)? = null,
         condition: () -> Boolean,
     ): WorkInfo = withContext(Dispatchers.IO) {
         val workManager = WorkManager.getInstance(context)
+        val waitStartedAtNanos = System.nanoTime()
         var lastState: WorkInfo.State? = null
         repeat(240) {
             val workInfo = runCatching {
@@ -1674,10 +1691,72 @@ class DownloadWorkerCleanupProductionWiringTest {
             if (workInfo != null && condition()) return@withContext workInfo
             Thread.sleep(250L)
         }
+        val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStartedAtNanos)
+        val diagnosticSuffix = timeoutDiagnostics?.let { collect ->
+            runCatching { collect(lastState, elapsedMs) }
+                .fold(
+                    onSuccess = { "; elapsedMs=$elapsedMs; timeout predicates: $it" },
+                    onFailure = {
+                        "; elapsedMs=$elapsedMs; timeout predicate diagnostics unavailable: " +
+                            "${it.javaClass.simpleName}: ${it.message.orEmpty()}"
+                    },
+                )
+        }.orEmpty()
         error(
             "Timed out waiting for real DownloadWorker $workId durable producer condition; " +
-                "last WorkInfo state=$lastState",
+                "last WorkInfo state=$lastState$diagnosticSuffix",
         )
+    }
+
+    private fun committedHistoryFinalizationTimeoutDiagnostics(
+        context: android.content.Context,
+        historyId: Long,
+        downloadId: Long,
+        outputPaths: AtomicInteger,
+        finalizationFailures: AtomicInteger,
+        exactExecution: java.util.concurrent.atomic.AtomicReference<String>,
+        workInfoState: WorkInfo.State?,
+        elapsedMs: Long,
+    ): String {
+        val executionId = exactExecution.get()
+        val historyObservation = runCatching { db.historyDao.getNullableItem(historyId) }
+        val downloadObservation = runCatching { db.downloadDao.getNullableDownloadById(downloadId) }
+        val producerObservation = executionId?.let {
+            runCatching { producerRecoveryRecord(context, downloadId, it) }
+        }
+        val executionOwner = DownloadWorkerExecutionOwners.ownerOf(downloadId)
+        val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
+        val genericCarrierObservation = runCatching {
+            DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId)
+        }
+        val dispositionObservation = runCatching {
+            DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId)
+        }
+        val phaseObservation = runCatching {
+            DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId)
+        }
+        val history = historyObservation.getOrNull()
+        val download = downloadObservation.getOrNull()
+        val producer = producerObservation?.getOrNull()
+        val historyMatches = history?.title == "replacement" && history.downloadId == downloadId
+        val producerMatches = producer?.let {
+            it.downloadId == downloadId &&
+                it.executionId == executionId &&
+                it.phase == DownloadProducerRecovery.Phase.COMPLETE
+        } == true
+
+        return listOf(
+            "elapsedMs=$elapsedMs",
+            "outputPaths={expected=1,actual=${outputPaths.get()},matches=${outputPaths.get() == 1}}",
+            "finalizationHook={expected=1,actual=${finalizationFailures.get()},matches=${finalizationFailures.get() == 1}}",
+            "replacementHistory={matches=$historyMatches,present=${history != null},id=${history?.id},title=${history?.title},downloadId=${history?.downloadId},readError=${historyObservation.exceptionOrNull()?.javaClass?.simpleName}}",
+            "downloadRow={expected=absent,absent=${download == null},id=${download?.id},status=${download?.status},executionId=${download?.executionId},readError=${downloadObservation.exceptionOrNull()?.javaClass?.simpleName}}",
+            "producerRecovery={matches=$producerMatches,expectedExecutionId=$executionId,downloadId=${producer?.downloadId},executionId=${producer?.executionId},generationId=${producer?.generationId},sequence=${producer?.sequence},phase=${producer?.phase},readError=${producerObservation?.exceptionOrNull()?.javaClass?.simpleName}}",
+            "executionOwner={expected=null,actual=$executionOwner,matches=${executionOwner == null}}",
+            "processOwner={expected=null,actual=$processOwner,matches=${processOwner == null}}",
+            "genericRecoveryCarrier={expected=absent,targetPresent=${genericCarrierObservation.getOrNull()},disposition=${dispositionObservation.getOrNull()},phase=${phaseObservation.getOrNull()},readError=${genericCarrierObservation.exceptionOrNull()?.javaClass?.simpleName}}",
+            "workInfo={state=$workInfoState,observed=${workInfoState != null},unfinished=${workInfoState?.isFinished == false}}",
+        ).joinToString("; ")
     }
 
     private suspend fun cancelAndAwaitWorker(
