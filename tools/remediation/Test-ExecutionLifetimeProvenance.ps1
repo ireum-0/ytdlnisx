@@ -96,6 +96,17 @@ if (-not [string]::IsNullOrWhiteSpace($control)) {
         Start-Sleep -Milliseconds 40
     }
 }
+$instrumentationClassArgument = @($args | Where-Object { $_ -like '-Pandroid.testInstrumentationRunnerArguments.class=*' } | Select-Object -First 1)
+if ($instrumentationClassArgument.Count -gt 0) {
+    $instrumentationClass = ([string]$instrumentationClassArgument[0]).Substring('-Pandroid.testInstrumentationRunnerArguments.class='.Length)
+    $escapedClass = [System.Security.SecurityElement]::Escape($instrumentationClass)
+    $resultRoot = Join-Path $workingDirectory 'app\build\outputs\androidTest-results\connected\debug'
+    New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
+    $junit = '<testsuite name="' + $escapedClass + '" tests="1" failures="0" errors="0" skipped="0"><testcase classname="' + $escapedClass + '" name="synthetic_connected_gate" /></testsuite>'
+    [System.IO.File]::WriteAllText((Join-Path $resultRoot 'TEST-synthetic-connected-gate.xml'), $junit, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Output 'Starting 1 tests'
+    Write-Output '1 tests completed'
+}
 Write-Output 'BUILD SUCCESSFUL'
 exit 0
 '@
@@ -487,6 +498,44 @@ function Add-AcceptanceCheck {
     if (-not $Pass) { $script:acceptanceEvidence.status = 'FAIL' } else { $script:acceptanceEvidence.status = 'IN_PROGRESS' }
     Write-RemediationJson -Path $script:acceptanceEvidencePath -Value $script:acceptanceEvidence
     if (-not $Pass) { throw "Tooling acceptance failed: $CheckId" }
+}
+
+function Get-ExpectedVerificationArtifactToken {
+    param([Parameter(Mandatory)][string]$GateId)
+    $prefix = [Regex]::Replace($GateId, '[^A-Za-z0-9_.-]', '_')
+    if ($prefix.Length -gt 8) { $prefix = $prefix.Substring(0, 8) }
+    if ([string]::IsNullOrWhiteSpace($prefix)) { $prefix = 'gate' }
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    try { $bytes = $hasher.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($GateId)) } finally { $hasher.Dispose() }
+    $digest = ([System.BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant().Substring(0, 32)
+    return $prefix + '-' + $digest
+}
+
+function Invoke-ConnectedVerificationChild {
+    param(
+        [Parameter(Mandatory)]$Fixture,
+        [Parameter(Mandatory)][string[]]$Classes,
+        [Parameter(Mandatory)][string]$AdbPath,
+        [Parameter(Mandatory)][string]$DeviceSerial,
+        [Parameter(Mandatory)][string]$AdbCallLog,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $arguments = @(
+        '-RepoPath', $Fixture.path,
+        '-ExpectedSha', $Fixture.sha,
+        '-ConnectedTestClass'
+    ) + $Classes + @(
+        '-AdbPath', $AdbPath,
+        '-DeviceSerial', $DeviceSerial,
+        '-ProbeTimeoutSeconds', '2',
+        '-DeviceWatchdogIntervalSeconds', '30',
+        '-GateTimeoutSeconds', '60',
+        '-EvidenceRoot', $Fixture.evidenceRoot
+    )
+    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment @{ YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog }
+    $result = Complete-ToolingPowerShell -Running $running -TimeoutSeconds 180
+    Save-ChildEvidence -Name $Name -Result $result
+    return $result
 }
 
 $repoFull = (Resolve-Path -LiteralPath $RepoPath).Path
@@ -945,6 +994,104 @@ try {
         (Get-ToolingRemoteRefSha -Fixture $pushControlFixture -Branch 'implementation') -eq $pushControlFixture.sha
     )
     Add-AcceptanceCheck -CheckId 'already_pushed_exact_sha_is_non_destructive' -Pass $alreadyPass -Detail 'A second Push completion observed remote X already exact, reported the established already-pushed state, and issued no additional Push command.'
+
+    $longGateFixture = New-ToolingFixture -Name 'long-connected-gate-artifact-token'
+    $longClassPrefix = 'com.ireum.ytdl.' + ('LongConnectedGateSegment' * 12)
+    $longClasses = @(($longClassPrefix + 'A'), ($longClassPrefix + 'B'))
+    $longGateIds = @($longClasses | ForEach-Object { 'connected:' + $_ })
+    $syntheticAdbPath = Join-Path $runRoot 'synthetic-long-gate-adb.ps1'
+    $syntheticAdb = @'
+$ErrorActionPreference = 'Stop'
+$arguments = @($args)
+if ($arguments.Count -ge 2 -and $arguments[0] -eq '-s') { $arguments = @($arguments | Select-Object -Skip 2) }
+$callLog = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG')
+if (-not [string]::IsNullOrWhiteSpace($callLog)) {
+    [System.IO.File]::AppendAllText($callLog, (($args -join ' ') + [Environment]::NewLine), (New-Object System.Text.UTF8Encoding($false)))
+}
+$command = $arguments -join ' '
+switch -Exact ($command) {
+    'devices -l' { Write-Output 'List of devices attached'; Write-Output 'emulator-artifact device product:synthetic model:Acceptance_API_36'; exit 0 }
+    'shell echo alive' { Write-Output 'alive'; exit 0 }
+    'shell getprop sys.boot_completed' { Write-Output '1'; exit 0 }
+    'shell cmd package path android' { Write-Output 'package:/system/framework/framework-res.apk'; exit 0 }
+    'shell getprop ro.product.model' { Write-Output 'Acceptance API 36'; exit 0 }
+    'shell getprop ro.build.version.sdk' { Write-Output '36'; exit 0 }
+    'shell getprop ro.build.fingerprint' { Write-Output 'synthetic/acceptance/device:16/TEST/1:userdebug/test-keys'; exit 0 }
+    'shell getprop ro.boot.qemu.avd_name' { Write-Output 'Synthetic_Artifact_Probe'; exit 0 }
+    'shell getprop ro.kernel.qemu' { Write-Output '1'; exit 0 }
+    'shell getprop persist.sys.timezone' { Write-Output 'Asia/Seoul'; exit 0 }
+    'shell date +%s' { Write-Output ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()); exit 0 }
+    'shell date +%Y-%m-%dT%H:%M:%S%z' {
+        $now = [DateTimeOffset]::Now
+        Write-Output ($now.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture) + $now.ToString('zzz', [Globalization.CultureInfo]::InvariantCulture).Replace(':', ''))
+        exit 0
+    }
+    default { Write-Output ''; exit 0 }
+}
+'@
+    Write-ToolingUtf8 -Path $syntheticAdbPath -Content $syntheticAdb
+    $syntheticAdbCallLog = Join-Path $runRoot 'synthetic-long-gate-adb-calls.log'
+    $longGateRuns = @()
+    $longGateRunClassIndexes = @(0, 0, 1)
+    for ($runIndex = 0; $runIndex -lt $longGateRunClassIndexes.Count; $runIndex++) {
+        $classIndex = $longGateRunClassIndexes[$runIndex]
+        $longGateResult = Invoke-ConnectedVerificationChild -Fixture $longGateFixture -Classes @($longClasses[$classIndex]) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $syntheticAdbCallLog -Name ('long-connected-gate-artifact-token-' + $runIndex)
+        $longGateEvidencePath = Get-VerificationJsonPath -Result $longGateResult
+        $longGateEvidence = Get-Content -LiteralPath $longGateEvidencePath -Raw | ConvertFrom-Json
+        $longGateRuns += [pscustomobject]@{ classIndex = $classIndex; result = $longGateResult; evidence = $longGateEvidence }
+    }
+    $expectedLongTokens = @($longGateIds | ForEach-Object { Get-ExpectedVerificationArtifactToken -GateId $_ })
+    $expectedLongTokensRepeat = @($longGateIds | ForEach-Object { Get-ExpectedVerificationArtifactToken -GateId $_ })
+    $longHealthAndGateEndLogsExist = $true
+    $boundedPaths = New-Object System.Collections.Generic.List[string]
+    $mappingPass = $true
+    foreach ($run in $longGateRuns) {
+        $longGateEvidence = $run.evidence
+        $classIndex = [int]$run.classIndex
+        $record = @($longGateEvidence.gates)
+        $mapping = @($longGateEvidence.scope.gateArtifactTokens | Where-Object { $_.gateId -eq $longGateIds[$classIndex] })
+        if ($record.Count -ne 1 -or $mapping.Count -ne 1) { $mappingPass = $false; continue }
+        $record = $record[0]
+        $mappingPass = $mappingPass -and $run.result.exitCode -eq 0 -and $longGateEvidence.status -eq 'PASS' -and $longGateEvidence.scope.connectedTestClasses.Count -eq 1 -and $longGateEvidence.scope.connectedTestClasses[0] -eq $longClasses[$classIndex] -and $longGateEvidence.scope.gateOrder[0] -eq $longGateIds[$classIndex] -and $longGateEvidence.scope.artifactTokenPolicy -eq 'sanitized-prefix-8-plus-lowercase-sha256-128-v1' -and $longGateEvidence.scope.artifactTokenMaximumLength -eq 41
+        $mappingPass = $mappingPass -and $record.gateId -eq $longGateIds[$classIndex] -and $record.requestedTestClass -eq $longClasses[$classIndex] -and $record.artifactToken -eq $expectedLongTokens[$classIndex] -and $mapping[0].artifactToken -eq $expectedLongTokens[$classIndex] -and $expectedLongTokens[$classIndex] -eq $expectedLongTokensRepeat[$classIndex] -and $expectedLongTokens[$classIndex].Length -le 41 -and $expectedLongTokens[$classIndex] -match '^[A-Za-z0-9_.-]+$'
+        $mappingPass = $mappingPass -and $record.status -eq 'PASS' -and $record.executedTests -eq 1 -and $record.failureCount -eq 0 -and $record.errorCount -eq 0 -and $record.deviceHealth.healthy -eq $true
+        $deviceDirectory = Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'device-health') $record.artifactToken
+        $gateEndDirectory = Join-Path (Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'watchdog') $record.artifactToken) 'gate-end'
+        $timeCorrelationDirectory = Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'time-correlation') $record.artifactToken
+        $gateStartCorrelationJson = Join-Path $timeCorrelationDirectory 'gate-start.json'
+        $gateEndCorrelationJson = Join-Path $timeCorrelationDirectory 'gate-end.json'
+        $timeCorrelationLogs = @(Get-ChildItem -LiteralPath $timeCorrelationDirectory -Filter '*.log' -File -ErrorAction SilentlyContinue)
+        $deviceProbeLog = @(Get-ChildItem -LiteralPath $deviceDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue)
+        $gateEndProbeLog = @(Get-ChildItem -LiteralPath $gateEndDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue)
+        if (-not (Test-Path -LiteralPath $deviceDirectory -PathType Container) -or $deviceProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $gateEndDirectory -PathType Container) -or $gateEndProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $timeCorrelationDirectory -PathType Container) -or -not (Test-Path -LiteralPath $gateStartCorrelationJson -PathType Leaf) -or -not (Test-Path -LiteralPath $gateEndCorrelationJson -PathType Leaf) -or $timeCorrelationLogs.Count -eq 0) {
+            $longHealthAndGateEndLogsExist = $false
+        }
+        foreach ($path in (@($record.logPaths) + @($deviceProbeLog | ForEach-Object { $_.FullName }) + @($gateEndProbeLog | ForEach-Object { $_.FullName }) + @($timeCorrelationLogs | ForEach-Object { $_.FullName }) + @($gateStartCorrelationJson, $gateEndCorrelationJson))) { $boundedPaths.Add([string]$path) }
+    }
+    $evidenceRootFull = [System.IO.Path]::GetFullPath([string]$longGateFixture.evidenceRoot).TrimEnd('\') + '\'
+    $boundedPathsValid = ($boundedPaths.Count -gt 0)
+    foreach ($path in $boundedPaths) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or -not [System.IO.Path]::GetFullPath($path).StartsWith($evidenceRootFull, [System.StringComparison]::OrdinalIgnoreCase) -or $path.Length -ge 260) {
+            $boundedPathsValid = $false
+        }
+        foreach ($component in ([System.IO.Path]::GetFullPath($path).Split([System.IO.Path]::DirectorySeparatorChar))) {
+            if ($component.Length -gt 255) { $boundedPathsValid = $false }
+        }
+    }
+    $syntheticAdbCalls = $(if (Test-Path -LiteralPath $syntheticAdbCallLog -PathType Leaf) { Get-Content -LiteralPath $syntheticAdbCallLog -Raw } else { '' })
+    $syntheticAdbDeviceProbeCount = @($syntheticAdbCalls -split '\r?\n' | Where-Object { $_ -eq 'devices -l' }).Count
+    $fullClassesPreserved = $mappingPass -and $longGateRuns[0].evidence.gates[0].artifactToken -eq $longGateRuns[1].evidence.gates[0].artifactToken -and $longGateRuns[0].evidence.gates[0].artifactToken -ne $longGateRuns[2].evidence.gates[0].artifactToken
+    $longArtifactPass = (
+        $longGateRuns.Count -eq 3 -and
+        $longGateIds[0].Length -gt 255 -and
+        $longGateIds[1].Length -gt 255 -and
+        $fullClassesPreserved -and
+        $mappingPass -and
+        $longHealthAndGateEndLogsExist -and
+        $boundedPathsValid -and
+        $syntheticAdbDeviceProbeCount -ge 3
+    )
+    Add-AcceptanceCheck -CheckId 'long_connected_gate_ids_use_bounded_tokens_and_reach_synthetic_adb' -Pass $longArtifactPass -Detail 'Two >255-character semantic gate IDs remained unchanged in evidence; repeated execution mapped the same ID to the same <=41-character token, while a distinct ID mapped to a different token. All three runs materialized bounded health, gate-end, correlation, and Gradle paths after actual synthetic ADB probes. The synthetic fixture does not establish Android device health.'
 
     $script:acceptanceEvidence.status = 'PASS'
     $script:acceptanceEvidence.endedUtc = Format-RemediationUtc (Get-RemediationUtcNow)

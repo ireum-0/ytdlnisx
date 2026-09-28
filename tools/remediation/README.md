@@ -50,6 +50,8 @@ Recovery retries require the exact prior infrastructure evidence, a non-empty ca
 
 ## Device and stall evidence
 
+Semantic gate IDs and requested test classes remain full length in verification JSON. Filesystem paths use a per-gate artifact token: the first 8 sanitized gate-ID characters, a hyphen, and the first 32 lowercase hexadecimal characters of SHA-256 over the full UTF-8 gate ID. The token is deterministic, collision-checked within each run, and at most 41 characters. `scope.gateArtifactTokens` and each gate record retain the explicit full-ID-to-token mapping. Device-health, watchdog, gate-end, time-correlation, diagnostic prefixes, and main gate logs use the bounded token. If evidence-path setup fails before a device probe starts, the run records a tooling/infrastructure bootstrap failure with the path error and zero-test/Gradle-not-started evidence; it does not report the device as unhealthy.
+
 The health record includes serial/state, bounded shell and PackageManager latency, sys.boot_completed, model/build/AVD identity, start/end time samples, and device timezone. UTC is the machine-correlation axis. Raw device wall time is preserved exactly; derived device UTC and Asia/Seoul values are separate fields.
 
 During a diagnosed stall, bounded diagnostics preserve CPU, I/O, and memory PSI or mark them unavailable; recent raw logcat; slow system_server, ANR, binder/service-manager, and package-install signals; a guest process snapshot; and a host snapshot of emulator/QEMU/ADB processes, available memory, and coarse disk queue data when available. A probable guest-wide stall is a diagnostic signal only, not a root-cause verdict. No AVD is wiped, created, deleted, restarted, or reconfigured by these wrappers.
