@@ -3,7 +3,6 @@
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.ColorDrawable
-import android.os.Build
 import android.os.Bundle
 import android.view.Window
 import android.view.WindowManager
@@ -43,17 +42,17 @@ class ResumeActivity : BaseActivity() {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT
             )
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
-            } else {
-                setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
-            }
         }
 
         setContentView(R.layout.activity_share)
         this.setFinishOnTouchOutside(false)
         context = baseContext
-        downloadViewModel = ViewModelProvider(this)[DownloadViewModel::class.java]
+        val testFactory = downloadViewModelFactoryForTesting
+        downloadViewModel = if (testFactory == null) {
+            ViewModelProvider(this)[DownloadViewModel::class.java]
+        } else {
+            ViewModelProvider(this, testFactory)[DownloadViewModel::class.java]
+        }
         val intent = intent
         handleIntents(intent)
     }
@@ -139,5 +138,9 @@ class ResumeActivity : BaseActivity() {
                 finishAffinity()
             }
         }
+    }
+
+    internal companion object {
+        var downloadViewModelFactoryForTesting: ViewModelProvider.Factory? = null
     }
 }
