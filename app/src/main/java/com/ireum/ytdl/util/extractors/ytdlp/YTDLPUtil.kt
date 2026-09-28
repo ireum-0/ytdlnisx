@@ -26,6 +26,7 @@ import com.ireum.ytdl.database.models.YoutubeGeneratePoTokenItem
 import com.ireum.ytdl.database.models.YoutubePlayerClientItem
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.database.viewmodel.ResultViewModel
+import com.ireum.ytdl.database.cookies.CookieProjectionCoordinator
 import com.ireum.ytdl.util.Extensions.getIDFromYoutubeURL
 import com.ireum.ytdl.util.Extensions.getIntByAny
 import com.ireum.ytdl.util.Extensions.getStringByAny
@@ -124,9 +125,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
 
         if (includeAuthentication && sharedPreferences.getBoolean("use_cookies", false)){
-            FileUtil.getCookieFile(context){
-                addOption("--cookies", it)
-            }
+            addOption("--cookies", CookieProjectionCoordinator.requireUsableFile(context).absolutePath)
 
             val useHeader = sharedPreferences.getBoolean("use_header", false)
             val header = sharedPreferences.getString("useragent_header", "")
@@ -1041,7 +1040,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         addOption("--socket-timeout", socketTimeout)
         if (sharedPreferences.getBoolean("force_ipv4", false)) addOption("-4")
         if (sharedPreferences.getBoolean("use_cookies", false)) {
-            FileUtil.getCookieFile(context) { addOption("--cookies", it) }
+            addOption("--cookies", CookieProjectionCoordinator.requireUsableFile(context).absolutePath)
             if (sharedPreferences.getBoolean("use_header", false)) {
                 sharedPreferences.getString("useragent_header", "")
                     ?.takeIf(String::isNotBlank)
@@ -2006,17 +2005,16 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         }
         val cookiesEnabled = sharedPreferences.getBoolean("use_cookies", false)
         if (cookiesEnabled) {
-            FileUtil.getCookieFile(context) { cookiePath ->
-                if (
-                    YoutubeMediaAccessPolicy.shouldAttachConfiguredCookies(
-                        isYoutubeRequest = downloadItem.url.isYoutubeURL(),
-                        profile = mediaAccessProfile,
-                        cookiesEnabled = true,
-                        cookieFileAvailable = cookiePath.isNotBlank(),
-                    )
-                ) {
-                    request.addOption("--cookies", cookiePath)
-                }
+            val cookieFile = CookieProjectionCoordinator.requireUsableFile(context)
+            if (
+                YoutubeMediaAccessPolicy.shouldAttachConfiguredCookies(
+                    isYoutubeRequest = downloadItem.url.isYoutubeURL(),
+                    profile = mediaAccessProfile,
+                    cookiesEnabled = true,
+                    cookieFileAvailable = true,
+                )
+            ) {
+                request.addOption("--cookies", cookieFile.absolutePath)
             }
         }
 

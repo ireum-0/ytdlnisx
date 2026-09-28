@@ -1,6 +1,7 @@
 ﻿package com.ireum.ytdl.ui.more.cookies
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
 import android.os.Bundle
@@ -27,6 +28,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.R
+import com.ireum.ytdl.database.cookies.CookieAcquisitionHandoff
+import com.ireum.ytdl.database.cookies.CookieProjectionCoordinator
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.util.Extensions.isYoutubeURL
@@ -37,8 +40,10 @@ import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 class WebViewActivity : BaseActivity() {
     private lateinit var cookiesViewModel: CookieViewModel
@@ -52,6 +57,7 @@ class WebViewActivity : BaseActivity() {
     private lateinit var cookies: String
     private lateinit var webViewClient: WebViewClient
     private lateinit var preferences: SharedPreferences
+    private lateinit var acquisitionRequestId: String
 
     private var incognito: Boolean = false
 
@@ -67,6 +73,10 @@ class WebViewActivity : BaseActivity() {
         }
         description = extras?.getString("description", "").orEmpty()
         incognito = extras?.getBoolean("incognito", false) == true
+        acquisitionRequestId = extras?.getString(CookieAcquisitionHandoff.EXTRA_REQUEST_ID)
+            ?.takeIf(String::isNotBlank)
+            ?: UUID.randomUUID().toString()
+        intent.putExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID, acquisitionRequestId)
 
         cookiesViewModel = ViewModelProvider(this)[CookieViewModel::class.java]
         lifecycleScope.launch {
@@ -126,33 +136,44 @@ class WebViewActivity : BaseActivity() {
             }
 
             generateBtn.setOnClickListener {
+                generateBtn.isEnabled = false
                 lifecycleScope.launch {
-                    withContext(Dispatchers.IO) {
-                        cookiesViewModel.getCookiesFromDB(url).getOrNull()?.let {
-                            runCatching {
-                                cookiesViewModel.insert(
-                                    com.ireum.ytdl.database.models.CookieItem(
-                                        0,
-                                        url,
-                                        it,
-                                        description,
-                                        true
-                                    )
-                                )
-                                cookiesViewModel.updateCookiesFile()
-                            }.onFailure {
-                                withContext(Dispatchers.Main) {
-                                    Toast.makeText(
-                                        this@WebViewActivity,
-                                        "Something went wrong",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
+                    val result = try {
+                        withContext(Dispatchers.IO) {
+                            val content = cookiesViewModel.getCookiesFromDB(url).getOrThrow()
+                            cookiesViewModel.acquireAndProject(
+                                url = url,
+                                description = description,
+                                content = content,
+                                requestId = acquisitionRequestId,
+                            )
                         }
-                        withContext(Dispatchers.Main) {
-                            this@WebViewActivity.setResult(RESULT_OK)
-                            this@WebViewActivity.finish()
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        CookieProjectionCoordinator.AcquisitionOutcome.Failed(
+                            CookieProjectionCoordinator.Failure.MUTATION_FAILED,
+                        )
+                    }
+
+                    when (result) {
+                        is CookieProjectionCoordinator.AcquisitionOutcome.Ready -> {
+                            val data = Intent()
+                                .putExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID, result.requestId)
+                                .putExtra(
+                                    CookieAcquisitionHandoff.EXTRA_PROJECTION_GENERATION,
+                                    result.projectionGeneration,
+                                )
+                            setResult(RESULT_OK, data)
+                            finish()
+                        }
+                        is CookieProjectionCoordinator.AcquisitionOutcome.Failed -> {
+                            generateBtn.isEnabled = true
+                            Toast.makeText(
+                                this@WebViewActivity,
+                                "Cookies could not be prepared. Retry after the page finishes loading.",
+                                Toast.LENGTH_LONG,
+                            ).show()
                         }
                     }
                 }

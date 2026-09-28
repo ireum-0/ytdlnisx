@@ -3,6 +3,7 @@ package com.ireum.ytdl.util.terminal
 import android.content.Context
 import android.content.SharedPreferences
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.database.cookies.CookieProjectionCoordinator
 import com.ireum.ytdl.util.SensitiveTextRedactor
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpArgumentPolicy
@@ -373,9 +374,10 @@ object TerminalCommandPlanFactory {
     ): TerminalCommandPlan {
         val downloadLocation = configuredDestination(preferences)
         val useCookies = preferences.getBoolean("use_cookies", false)
-        var cookiePath: String? = null
-        if (useCookies) {
-            FileUtil.getCookieFile(context) { cookiePath = it }
+        val cookiePath = if (useCookies) {
+            CookieProjectionCoordinator.requireUsableFile(context).absolutePath
+        } else {
+            null
         }
         val userAgentHeader = if (
             useCookies && preferences.getBoolean("use_header", false)

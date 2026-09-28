@@ -31,7 +31,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.R
-import com.ireum.ytdl.database.models.CookieItem
+import com.ireum.ytdl.database.cookies.CookieProjectionCoordinator
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
 import com.ireum.ytdl.ui.BaseActivity
 import com.ireum.ytdl.util.UiUtil
@@ -44,8 +44,10 @@ import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 
 class PoTokenWebViewLoginActivity : BaseActivity() {
@@ -133,31 +135,40 @@ class PoTokenWebViewLoginActivity : BaseActivity() {
 
 
                             //update cookies
-                            withContext(Dispatchers.IO) {
-                                val cookieURL = "Po Token Generated Cookies"
-                                cookiesViewModel.getCookiesFromDB(cookieURL).getOrNull()?.let {
-                                    kotlin.runCatching {
-                                        cookiesViewModel.insert(
-                                            CookieItem(
-                                                0,
-                                                cookieURL,
-                                                it,
-                                                "",
-                                                true
-                                            )
+                            try {
+                                val cookieOutcome = withContext(Dispatchers.IO) {
+                                    val cookieUrl = "Po Token Generated Cookies"
+                                    val content = cookiesViewModel.getCookiesFromDB(cookieUrl).getOrThrow()
+                                    cookiesViewModel.acquireAndProject(
+                                        url = cookieUrl,
+                                        description = "",
+                                        content = content,
+                                        requestId = UUID.randomUUID().toString(),
+                                    )
+                                }
+                                when (cookieOutcome) {
+                                    is CookieProjectionCoordinator.AcquisitionOutcome.Ready -> {
+                                        RestoreMutationAdmission.applyOrdinaryPreferences(
+                                            this@PoTokenWebViewLoginActivity,
+                                            preferences.edit().putBoolean("use_cookies", true),
                                         )
-                                        cookiesViewModel.updateCookiesFile()
-                                        RestoreMutationAdmission.applyOrdinaryPreferences(this@PoTokenWebViewLoginActivity, preferences.edit().putBoolean("use_cookies", true))
-                                    }.onFailure {
-                                        withContext(Dispatchers.Main) {
-                                            Toast.makeText(
-                                                this@PoTokenWebViewLoginActivity,
-                                                "Tokens were generated but cookies were not updated",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
+                                    }
+                                    is CookieProjectionCoordinator.AcquisitionOutcome.Failed -> {
+                                        Toast.makeText(
+                                            this@PoTokenWebViewLoginActivity,
+                                            "Tokens were generated but cookies were not updated",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
                                     }
                                 }
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                Toast.makeText(
+                                    this@PoTokenWebViewLoginActivity,
+                                    "Tokens were generated but cookies were not updated",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
                             }
 
                             webView.clearCache(true)

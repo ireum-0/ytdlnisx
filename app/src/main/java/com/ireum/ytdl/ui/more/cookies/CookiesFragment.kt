@@ -135,11 +135,8 @@ class CookiesFragment : Fragment(), CookieAdapter.OnItemClickListener {
                     deleteDialog.setMessage(getString(R.string.confirm_delete_cookies_desc))
                     deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
                     deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-                        cookiesViewModel.deleteAll()
-                        runCatching {
-                            FileUtil.getCookieFile(requireContext(), true){
-                                File(it).apply { writeText("") }
-                            }
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            cookiesViewModel.deleteAll()
                         }
                     }
                     deleteDialog.show()
@@ -225,7 +222,9 @@ class CookiesFragment : Fragment(), CookieAdapter.OnItemClickListener {
                 save.setOnClickListener {
                     item.description = descriptionEditText.text.toString()
                     item.url = urlEditText.text.toString()
-                    cookiesViewModel.update(item)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        cookiesViewModel.update(item)
+                    }
                     listAdapter.notifyItemChanged(position)
                     layout.dismiss()
                 }
@@ -273,7 +272,9 @@ class CookiesFragment : Fragment(), CookieAdapter.OnItemClickListener {
         deleteDialog.setTitle(getString(R.string.you_are_going_to_delete) + " \"" + cookieItem.url + "\"!")
         deleteDialog.setNegativeButton(getString(R.string.cancel)) { dialogInterface: DialogInterface, _: Int -> dialogInterface.cancel() }
         deleteDialog.setPositiveButton(getString(R.string.ok)) { _: DialogInterface?, _: Int ->
-            cookiesViewModel.delete(cookieItem)
+            lifecycleScope.launch(Dispatchers.IO) {
+                cookiesViewModel.delete(cookieItem)
+            }
         }
         deleteDialog.show()
     }

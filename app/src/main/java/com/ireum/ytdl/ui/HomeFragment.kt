@@ -35,6 +35,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.ireum.ytdl.MainActivity
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.cookies.CookieAcquisitionHandoff
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.ResultItem
 import com.ireum.ytdl.database.models.SearchSuggestionItem
@@ -69,10 +70,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URL
+import java.util.UUID
 import kotlin.collections.ArrayList
 
+private const val KEY_PENDING_COOKIE_ACQUISITION = "pending_cookie_acquisition_id"
 
 class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggestionsAdapter.OnItemClickListener, OnClickListener {
+    private var pendingCookieAcquisitionId: String? = null
     private var inputQueries: MutableList<String>? = null
     private var homeAdapter: HomeAdapter? = null
     private var searchSuggestionsAdapter: SearchSuggestionsAdapter? = null
@@ -123,6 +127,7 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
         inflater: LayoutInflater, container: ViewGroup?,
         savedInstanceState: Bundle?
     ): View? {
+        pendingCookieAcquisitionId = savedInstanceState?.getString(KEY_PENDING_COOKIE_ACQUISITION)
         fragmentView = inflater.inflate(R.layout.fragment_home, container, false)
         activity = getActivity()
         mainActivity = activity as MainActivity?
@@ -293,9 +298,7 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
                                 }
                                 },
                                 cookieFetch = {
-                                    val myIntent = Intent(requireContext(), WebViewActivity::class.java)
-                                    myIntent.putExtra("url", "https://${URL(queryList.first()).host}")
-                                    cookiesFetchedResultLauncher.launch(myIntent)
+                                    launchCookieAcquisition("https://${URL(queryList.first()).host}")
                                 },
                                 closed = {}
                             )
@@ -343,10 +346,33 @@ class HomeFragment : Fragment(), HomeAdapter.OnItemClickListener, SearchSuggesti
     private var cookiesFetchedResultLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        val expectedRequestId = pendingCookieAcquisitionId
+        pendingCookieAcquisitionId = null
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && CookieAcquisitionHandoff.matches(
+                expectedRequestId = expectedRequestId,
+                resultRequestId = data?.getStringExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID),
+                projectionGeneration = data?.getStringExtra(CookieAcquisitionHandoff.EXTRA_PROJECTION_GENERATION),
+            )
+        ) {
             sharedPreferences?.let { RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), it.edit().putBoolean("use_cookies", true)) }
             startSearch()
         }
+    }
+
+    private fun launchCookieAcquisition(url: String) {
+        if (pendingCookieAcquisitionId != null) return
+        val requestId = UUID.randomUUID().toString()
+        pendingCookieAcquisitionId = requestId
+        val intent = Intent(requireContext(), WebViewActivity::class.java)
+            .putExtra("url", url)
+            .putExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID, requestId)
+        cookiesFetchedResultLauncher.launch(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(KEY_PENDING_COOKIE_ACQUISITION, pendingCookieAcquisitionId)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {

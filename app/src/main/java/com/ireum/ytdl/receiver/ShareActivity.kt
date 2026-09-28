@@ -68,9 +68,7 @@ class ShareActivity : BaseActivity() {
         cookieViewModel = ViewModelProvider(this)[CookieViewModel::class.java]
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
 
-        cookieViewModel.updateCookiesFile()
-        val intent = intent
-        handleIntents(intent)
+        prepareCookiesThenHandle(intent)
     }
 
     override fun onDestroy() {
@@ -80,7 +78,16 @@ class ShareActivity : BaseActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleIntents(intent)
+        prepareCookiesThenHandle(intent)
+    }
+
+    private fun prepareCookiesThenHandle(intent: Intent) {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                cookieViewModel.updateCookiesFile()
+            }
+            handleIntents(intent)
+        }
     }
 
     private fun handleIntents(intent: Intent) {

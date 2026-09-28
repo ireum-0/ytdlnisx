@@ -279,9 +279,13 @@ class MainActivity : BaseActivity() {
             getHeaderView(0).findViewById<TextView>(R.id.title).text = ThemeUtil.getStyledAppName(this@MainActivity)
         }
 
-        cookieViewModel.updateCookiesFile()
-        val intent = intent
-        handleIntents(intent)
+        val launchIntent = intent
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                cookieViewModel.updateCookiesFile()
+            }
+            handleIntents(launchIntent)
+        }
 
         val automaticYtdlpUpdates = preferences.getBoolean("auto_update_ytdlp", false)
         CoroutineScope(SupervisorJob()).launch(Dispatchers.IO) {

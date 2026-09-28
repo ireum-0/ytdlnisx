@@ -14,6 +14,8 @@ import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.cookies.CookieProjectionCoordinator
+import com.ireum.ytdl.database.dao.CookieDao
 import com.ireum.ytdl.database.models.CookieItem
 import com.ireum.ytdl.database.repository.CookieRepository
 import com.ireum.ytdl.ui.more.cookies.WebViewActivity
@@ -22,11 +24,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Date
+import java.util.UUID
 
 
-class CookieViewModel(private val application: Application) : AndroidViewModel(application) {
-    private val repository: CookieRepository
-    val items: LiveData<List<CookieItem>>
+class CookieViewModel private constructor(
+    private val application: Application,
+    private val repository: CookieRepository,
+    private val projectionContext: Context,
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(
+        application,
+        CookieRepository(DBManager.getInstance(application).cookieDao),
+        application,
+    )
+
+    internal constructor(
+        application: Application,
+        cookieDao: CookieDao,
+        projectionContext: Context,
+    ) : this(application, CookieRepository(cookieDao), projectionContext)
+
+    val items: LiveData<List<CookieItem>> = repository.items.asLiveData()
 
     val cookieHeader =
             "# Netscape HTTP Cookie File\n" +
@@ -42,12 +60,6 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
         CookieObject.SECURE
     )
 
-    init {
-        val dao = DBManager.getInstance(application).cookieDao
-        repository = CookieRepository(dao)
-        items = repository.items.asLiveData()
-    }
-
     fun getAll(): List<CookieItem> {
         return repository.getAll()
     }
@@ -60,34 +72,77 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
         return repository.getByURLDescription(url, description)
     }
 
-    suspend fun insert(item: CookieItem) : Long {
-        val exists = getByURLDescription(item.url, item.description)
-        if (exists != null) {
-            exists.content = item.content
-            repository.update(exists)
-            return exists.id
-        }
+    internal suspend fun acquireAndProject(
+        url: String,
+        description: String,
+        content: String,
+        requestId: String,
+    ): CookieProjectionCoordinator.AcquisitionOutcome =
+        CookieProjectionCoordinator.acquireAndProject(
+            context = projectionContext,
+            cookieHeader = cookieHeader,
+            requestId = requestId,
+            upsert = {
+                val existing = getByURLDescription(url, description)
+                if (existing != null) {
+                    existing.content = content
+                    existing.enabled = true
+                    repository.update(existing)
+                    existing.id
+                } else {
+                    repository.insert(
+                        CookieItem(
+                            id = 0,
+                            url = url,
+                            content = content,
+                            description = description,
+                            enabled = true,
+                        ),
+                    )
+                }
+            },
+            readExactRow = { id ->
+                getByURLDescription(url, description)?.takeIf {
+                    it.id == id && it.url == url && it.description == description &&
+                        it.content == content && it.enabled
+                }
+            },
+            readEnabledRows = repository::getAllEnabled,
+        )
 
-        return repository.insert(item)
-    }
+    internal suspend fun delete(item: CookieItem): CookieProjectionCoordinator.Outcome =
+        CookieProjectionCoordinator.mutateAndProject(
+            projectionContext,
+            cookieHeader,
+            mutation = { repository.delete(item) },
+            readEnabledRows = repository::getAllEnabled,
+        )
 
-    fun delete(item: CookieItem) = viewModelScope.launch(Dispatchers.IO) {
-        repository.delete(item)
-        updateCookiesFile()
-    }
+    internal suspend fun changeCookieEnabledState(
+        itemId: Long,
+        isEnabled: Boolean,
+    ): CookieProjectionCoordinator.Outcome = CookieProjectionCoordinator.mutateAndProject(
+        projectionContext,
+        cookieHeader,
+        mutation = { repository.changeCookieEnabledState(itemId, isEnabled) },
+        readEnabledRows = repository::getAllEnabled,
+    )
 
-    suspend fun changeCookieEnabledState(itemId: Long, isEnabled: Boolean) {
-        repository.changeCookieEnabledState(itemId, isEnabled)
-        updateCookiesFile()
-    }
+    internal suspend fun deleteAll(): CookieProjectionCoordinator.Outcome =
+        CookieProjectionCoordinator.mutateAndProject(
+            projectionContext,
+            cookieHeader,
+            mutation = { repository.deleteAll() },
+            readEnabledRows = repository::getAllEnabled,
+        )
 
-    fun deleteAll() = viewModelScope.launch(Dispatchers.IO) {
-        repository.deleteAll()
-    }
-
-    fun update(item: CookieItem) = viewModelScope.launch(Dispatchers.IO) {
-        repository.update(item)
-    }
+    internal suspend fun update(item: CookieItem): CookieProjectionCoordinator.Outcome =
+        CookieProjectionCoordinator.mutateAndProject(
+        projectionContext,
+            cookieHeader,
+            mutation = { repository.update(item) },
+            readEnabledRows = repository::getAllEnabled,
+        )
 
     object CookieObject {
         const val NAME = "name"
@@ -107,39 +162,40 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
         val dbPath = File("/data/data/${BuildConfig.APPLICATION_ID}/").walkTopDown().find { it.name == "Cookies" }
             ?: throw Exception("Cookies File not found!")
 
-        val db = SQLiteDatabase.openDatabase(
-            dbPath.absolutePath, null, OPEN_READONLY
-        )
-
-
         val cookieList = mutableListOf<WebViewActivity.CookieItem>()
-        db.query(
-            "cookies", projection, null, null, null, null, null
-        ).run {
-            while (moveToNext()) {
-                val expiry = getLong(getColumnIndexOrThrow(CookieObject.EXPIRY))
-                val name = getString(getColumnIndexOrThrow(CookieObject.NAME))
-                val value = getString(getColumnIndexOrThrow(CookieObject.VALUE))
-                val path = getString(getColumnIndexOrThrow(CookieObject.PATH))
-                val secure = getLong(getColumnIndexOrThrow(CookieObject.SECURE)) == 1L
-                val hostKey = getString(getColumnIndexOrThrow(CookieObject.HOST))
+        val db = SQLiteDatabase.openDatabase(dbPath.absolutePath, null, OPEN_READONLY)
+        try {
+            db.query("cookies", projection, null, null, null, null, null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val expiry = cursor.getLong(cursor.getColumnIndexOrThrow(CookieObject.EXPIRY))
+                    val name = cursor.getString(cursor.getColumnIndexOrThrow(CookieObject.NAME))
+                        ?: throw IllegalStateException("Cookie name is missing")
+                    val value = cursor.getString(cursor.getColumnIndexOrThrow(CookieObject.VALUE))
+                        ?: throw IllegalStateException("Cookie value is missing")
+                    val path = cursor.getString(cursor.getColumnIndexOrThrow(CookieObject.PATH))
+                        ?: throw IllegalStateException("Cookie path is missing")
+                    val secure = cursor.getLong(cursor.getColumnIndexOrThrow(CookieObject.SECURE)) == 1L
+                    val hostKey = cursor.getString(cursor.getColumnIndexOrThrow(CookieObject.HOST))
+                        ?.takeIf(String::isNotBlank)
+                        ?: throw IllegalStateException("Cookie host is missing")
 
-
-                val host = if (hostKey[0] != '.') ".$hostKey" else hostKey
-                cookieList.add(
-                    WebViewActivity.CookieItem(
-                        domain = host,
-                        name = name,
-                        value = value,
-                        path = path,
-                        secure = secure,
-                        expiry = expiry
+                    val host = if (!hostKey.startsWith('.')) ".$hostKey" else hostKey
+                    cookieList.add(
+                        WebViewActivity.CookieItem(
+                            domain = host,
+                            name = name,
+                            value = value,
+                            path = path,
+                            secure = secure,
+                            expiry = expiry,
+                        ),
                     )
-                )
+                }
             }
-            close()
+        } finally {
+            db.close()
         }
-        db.close()
+        if (cookieList.isEmpty()) throw IllegalStateException("WebView returned no cookie records")
 
         "# $url\n" +
         "# Generated by YTDLnisx\n" +
@@ -148,21 +204,12 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
         }.toString()
     }
 
-    fun updateCookiesFile() = viewModelScope.launch(Dispatchers.IO) {
-        val cookies = repository.getAllEnabled()
-        val cookieTXT = StringBuilder(cookieHeader)
-        FileUtil.getCookieFile(application, true){ c ->
-            val cookieFile = File(c)
-            if (cookies.isEmpty()) cookieFile.apply { writeText("") }
-            cookies.forEach {
-                it.content.lines().forEach {line ->
-                    if (! cookieTXT.contains(line)) cookieTXT.append(it.content)
-                }
-            }
-            cookieFile.apply { writeText(cookieTXT.toString()) }
-        }
-
-    }
+    internal suspend fun updateCookiesFile(): CookieProjectionCoordinator.Outcome =
+        CookieProjectionCoordinator.projectCurrent(
+            context = projectionContext,
+            cookieHeader = cookieHeader,
+            readEnabledRows = repository::getAllEnabled,
+        )
 
     suspend fun importFromClipboard() {
         try{
@@ -180,25 +227,26 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
                     "Cookie Import at [${Date()}]",
                     true
                 )
-                insert(cookie)
-                updateCookiesFile()
+                acquireAndProject(
+                    url = cookie.url,
+                    description = cookie.description,
+                    content = cookie.content,
+                    requestId = UUID.randomUUID().toString(),
+                )
             }
         }catch (e: Exception){
             e.printStackTrace()
         }
     }
 
-    fun exportToClipboard() = viewModelScope.launch {
+    fun exportToClipboard() = viewModelScope.launch(Dispatchers.IO) {
         try{
+            val projection = updateCookiesFile()
+            if (projection !is CookieProjectionCoordinator.Outcome.Ready) return@launch
             val clipboard: ClipboardManager =
                 application.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            FileUtil.getCookieFile(application, true){c ->
-                val cookieFile = File(c)
-                if (! cookieFile.exists()) updateCookiesFile()
-                cookieFile.readText().let {
-                    clipboard.setText(it)
-                }
-            }
+            val cookieFile = CookieProjectionCoordinator.requireUsableFile(projectionContext)
+            clipboard.setText(cookieFile.readText(Charsets.UTF_8))
 
         }catch (e: Exception){
             e.printStackTrace()
@@ -207,8 +255,12 @@ class CookieViewModel(private val application: Application) : AndroidViewModel(a
 
     fun exportToFile(exported: (File?) -> Unit) = viewModelScope.launch(Dispatchers.IO) {
         try{
-            val cookieFile = File(application.cacheDir, "cookies.txt")
-            if (!cookieFile.exists()) updateCookiesFile()
+            val projection = updateCookiesFile()
+            if (projection !is CookieProjectionCoordinator.Outcome.Ready) {
+                exported(null)
+                return@launch
+            }
+            val cookieFile = File(projectionContext.cacheDir, "cookies.txt")
 
             val dir = File("${FileUtil.getCachePath(application)}/Cookie Backups")
             dir.mkdirs()

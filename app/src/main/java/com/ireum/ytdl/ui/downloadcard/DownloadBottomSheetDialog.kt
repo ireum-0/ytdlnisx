@@ -33,6 +33,7 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.viewpager2.widget.ViewPager2
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.cookies.CookieAcquisitionHandoff
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.ResultItem
@@ -69,7 +70,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URL
+import java.util.UUID
 
+private const val KEY_PENDING_COOKIE_ACQUISITION = "pending_cookie_acquisition_id"
 
 class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private lateinit var tabLayout: TabLayout
@@ -101,9 +104,11 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private var sourceHistoryId: Long = -1L
     private var quickDownloadContext: Boolean = false
     private var initialPreset: DownloadPreset? = null
+    private var pendingCookieAcquisitionId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingCookieAcquisitionId = savedInstanceState?.getString(KEY_PENDING_COOKIE_ACQUISITION)
         downloadViewModel = ViewModelProvider(requireActivity())[DownloadViewModel::class.java]
         historyViewModel = ViewModelProvider(requireActivity())[HistoryViewModel::class.java]
         resultViewModel = ViewModelProvider(requireActivity())[ResultViewModel::class.java]
@@ -145,6 +150,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
+        outState.putString(KEY_PENDING_COOKIE_ACQUISITION, pendingCookieAcquisitionId)
         val downloadItem = getDownloadItem()
         arguments?.putParcelable("result", result)
         arguments?.putParcelable("downloadItem", downloadItem)
@@ -555,9 +561,7 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
                             continueAnyway =  true,
                             continued = {},
                             cookieFetch = {
-                                val myIntent = Intent(requireContext(), WebViewActivity::class.java)
-                                myIntent.putExtra("url", "https://${URL(result.url).host}")
-                                cookiesFetchedResultLauncher.launch(myIntent)
+                                launchCookieAcquisition("https://${URL(result.url).host}")
                             },
                             closed = {
                                 dismiss()
@@ -747,11 +751,29 @@ class DownloadBottomSheetDialog : BottomSheetDialogFragment() {
     private var cookiesFetchedResultLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        val expectedRequestId = pendingCookieAcquisitionId
+        pendingCookieAcquisitionId = null
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && CookieAcquisitionHandoff.matches(
+                expectedRequestId = expectedRequestId,
+                resultRequestId = data?.getStringExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID),
+                projectionGeneration = data?.getStringExtra(CookieAcquisitionHandoff.EXTRA_PROJECTION_GENERATION),
+            )
+        ) {
             RestoreMutationAdmission.applyOrdinaryPreferences(requireContext(), sharedPreferences.edit().putBoolean("use_cookies", true))
             updateItem.isVisible = true
             initUpdateData()
         }
+    }
+
+    private fun launchCookieAcquisition(url: String) {
+        if (pendingCookieAcquisitionId != null) return
+        val requestId = UUID.randomUUID().toString()
+        pendingCookieAcquisitionId = requestId
+        val intent = Intent(requireContext(), WebViewActivity::class.java)
+            .putExtra("url", url)
+            .putExtra(CookieAcquisitionHandoff.EXTRA_REQUEST_ID, requestId)
+        cookiesFetchedResultLauncher.launch(intent)
     }
 
     private fun showPresetMenu() {
