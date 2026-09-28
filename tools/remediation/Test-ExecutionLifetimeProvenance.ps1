@@ -62,6 +62,14 @@ if (-not [string]::IsNullOrWhiteSpace($control)) {
     }
 }
 $workingDirectory = (Get-Location).Path
+$gradleInvocationLog = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG')
+if (-not [string]::IsNullOrWhiteSpace($gradleInvocationLog)) {
+    [System.IO.File]::WriteAllText($gradleInvocationLog, 'started', (New-Object System.Text.UTF8Encoding($false)))
+}
+$gradleDelaySeconds = 0
+if ([int]::TryParse([Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_DELAY_SECONDS'), [ref]$gradleDelaySeconds) -and $gradleDelaySeconds -gt 0) {
+    Start-Sleep -Seconds $gradleDelaySeconds
+}
 $behaviorPath = Join-Path $workingDirectory 'behavior.cfg'
 $behavior = [System.IO.File]::ReadAllText($behaviorPath)
 $bootstrapCapturePath = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_BOOTSTRAP_CAPTURE')
@@ -518,8 +526,13 @@ function Invoke-ConnectedVerificationChild {
         [Parameter(Mandatory)][string]$AdbPath,
         [Parameter(Mandatory)][string]$DeviceSerial,
         [Parameter(Mandatory)][string]$AdbCallLog,
-        [Parameter(Mandatory)][string]$Name
+        [Parameter(Mandatory)][string]$Name,
+        [string]$EvidenceRootOverride,
+        [string]$GradleMarker,
+        [ValidateRange(1, 300)][int]$WatchdogIntervalSeconds = 30,
+        [ValidateRange(0, 30)][int]$GradleDelaySeconds = 0
     )
+    $selectedEvidenceRoot = $(if ([string]::IsNullOrWhiteSpace($EvidenceRootOverride)) { $Fixture.evidenceRoot } else { $EvidenceRootOverride })
     $arguments = @(
         '-RepoPath', $Fixture.path,
         '-ExpectedSha', $Fixture.sha,
@@ -528,11 +541,14 @@ function Invoke-ConnectedVerificationChild {
         '-AdbPath', $AdbPath,
         '-DeviceSerial', $DeviceSerial,
         '-ProbeTimeoutSeconds', '2',
-        '-DeviceWatchdogIntervalSeconds', '30',
+        '-DeviceWatchdogIntervalSeconds', [string]$WatchdogIntervalSeconds,
         '-GateTimeoutSeconds', '60',
-        '-EvidenceRoot', $Fixture.evidenceRoot
+        '-EvidenceRoot', $selectedEvidenceRoot
     )
-    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment @{ YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog }
+    $environment = @{ YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog }
+    if (-not [string]::IsNullOrWhiteSpace($GradleMarker)) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG = $GradleMarker }
+    if ($GradleDelaySeconds -gt 0) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_DELAY_SECONDS = [string]$GradleDelaySeconds }
+    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment $environment
     $result = Complete-ToolingPowerShell -Running $running -TimeoutSeconds 180
     Save-ChildEvidence -Name $Name -Result $result
     return $result
@@ -996,6 +1012,15 @@ try {
     Add-AcceptanceCheck -CheckId 'already_pushed_exact_sha_is_non_destructive' -Pass $alreadyPass -Detail 'A second Push completion observed remote X already exact, reported the established already-pushed state, and issued no additional Push command.'
 
     $longGateFixture = New-ToolingFixture -Name 'long-connected-gate-artifact-token'
+    $longGateEvidenceRootBase = [System.IO.Path]::GetFullPath([string]$longGateFixture.evidenceRoot).TrimEnd('\')
+    $longGateEvidenceRootTail = 'download01-direct-output-hook'
+    $longGateEvidenceRootTargetLength = 147
+    $longGateEvidenceRootPaddingLength = $longGateEvidenceRootTargetLength - $longGateEvidenceRootBase.Length - $longGateEvidenceRootTail.Length - 2
+    if ($longGateEvidenceRootPaddingLength -lt 1 -or $longGateEvidenceRootPaddingLength -gt 220) {
+        throw "Unable to construct the recorded long EvidenceRoot shape (base=$($longGateEvidenceRootBase.Length), padding=$longGateEvidenceRootPaddingLength)."
+    }
+    $longGateCustomEvidenceRoot = Join-Path (Join-Path $longGateEvidenceRootBase ('p' * $longGateEvidenceRootPaddingLength)) $longGateEvidenceRootTail
+    if ($longGateCustomEvidenceRoot.Length -ne $longGateEvidenceRootTargetLength) { throw 'The custom EvidenceRoot fixture did not reach the exact whole-path boundary target.' }
     $longClassPrefix = 'com.ireum.ytdl.' + ('LongConnectedGateSegment' * 12)
     $longClasses = @(($longClassPrefix + 'A'), ($longClassPrefix + 'B'))
     $longGateIds = @($longClasses | ForEach-Object { 'connected:' + $_ })
@@ -1035,7 +1060,7 @@ switch -Exact ($command) {
     $longGateRunClassIndexes = @(0, 0, 1)
     for ($runIndex = 0; $runIndex -lt $longGateRunClassIndexes.Count; $runIndex++) {
         $classIndex = $longGateRunClassIndexes[$runIndex]
-        $longGateResult = Invoke-ConnectedVerificationChild -Fixture $longGateFixture -Classes @($longClasses[$classIndex]) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $syntheticAdbCallLog -Name ('long-connected-gate-artifact-token-' + $runIndex)
+        $longGateResult = Invoke-ConnectedVerificationChild -Fixture $longGateFixture -Classes @($longClasses[$classIndex]) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $syntheticAdbCallLog -Name ('long-connected-gate-artifact-token-' + $runIndex) -EvidenceRootOverride $longGateCustomEvidenceRoot -WatchdogIntervalSeconds 1 -GradleDelaySeconds 2
         $longGateEvidencePath = Get-VerificationJsonPath -Result $longGateResult
         $longGateEvidence = Get-Content -LiteralPath $longGateEvidencePath -Raw | ConvertFrom-Json
         $longGateRuns += [pscustomobject]@{ classIndex = $classIndex; result = $longGateResult; evidence = $longGateEvidence }
@@ -1055,20 +1080,28 @@ switch -Exact ($command) {
         $mappingPass = $mappingPass -and $run.result.exitCode -eq 0 -and $longGateEvidence.status -eq 'PASS' -and $longGateEvidence.scope.connectedTestClasses.Count -eq 1 -and $longGateEvidence.scope.connectedTestClasses[0] -eq $longClasses[$classIndex] -and $longGateEvidence.scope.gateOrder[0] -eq $longGateIds[$classIndex] -and $longGateEvidence.scope.artifactTokenPolicy -eq 'sanitized-prefix-8-plus-lowercase-sha256-128-v1' -and $longGateEvidence.scope.artifactTokenMaximumLength -eq 41
         $mappingPass = $mappingPass -and $record.gateId -eq $longGateIds[$classIndex] -and $record.requestedTestClass -eq $longClasses[$classIndex] -and $record.artifactToken -eq $expectedLongTokens[$classIndex] -and $mapping[0].artifactToken -eq $expectedLongTokens[$classIndex] -and $expectedLongTokens[$classIndex] -eq $expectedLongTokensRepeat[$classIndex] -and $expectedLongTokens[$classIndex].Length -le 41 -and $expectedLongTokens[$classIndex] -match '^[A-Za-z0-9_.-]+$'
         $mappingPass = $mappingPass -and $record.status -eq 'PASS' -and $record.executedTests -eq 1 -and $record.failureCount -eq 0 -and $record.errorCount -eq 0 -and $record.deviceHealth.healthy -eq $true
-        $deviceDirectory = Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'device-health') $record.artifactToken
-        $gateEndDirectory = Join-Path (Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'watchdog') $record.artifactToken) 'gate-end'
-        $timeCorrelationDirectory = Join-Path (Join-Path $longGateEvidence.evidenceDirectory 'time-correlation') $record.artifactToken
-        $gateStartCorrelationJson = Join-Path $timeCorrelationDirectory 'gate-start.json'
-        $gateEndCorrelationJson = Join-Path $timeCorrelationDirectory 'gate-end.json'
+        $mappingPass = $mappingPass -and $record.watchdogSamples.Count -gt 0 -and $record.watchdogPressureSamples.Count -gt 0 -and $record.watchdogSamples[0].gateId -eq $longGateIds[$classIndex] -and $record.watchdogSamples[0].artifactToken -eq $record.artifactToken
+        $mappingPass = $mappingPass -and $longGateEvidence.evidencePathBudget.accepted -and $longGateEvidence.evidencePathBudget.evidenceRootLength -eq $longGateEvidenceRootTargetLength -and $longGateEvidence.evidencePathBudget.evidenceRoot -eq $longGateCustomEvidenceRoot -and $longGateEvidence.evidencePathBudget.requiredMaximumPathLength -le 259 -and $longGateEvidence.evidencePathBudget.actualMaximumPathLength -le 259
+        $deviceDirectory = Join-Path $longGateEvidence.evidenceDirectory 'h'
+        $gateEndDirectory = Join-Path $longGateEvidence.evidenceDirectory 'w'
+        $timeCorrelationRoot = Join-Path $longGateEvidence.evidenceDirectory 't'
+        $timeCorrelationDirectory = Join-Path $timeCorrelationRoot $record.artifactToken
+        $gateStartCorrelationJson = Join-Path $timeCorrelationRoot ($record.artifactToken + '.s')
+        $gateEndCorrelationJson = Join-Path $timeCorrelationRoot ($record.artifactToken + '.e')
+        $gateStartCorrelation = if (Test-Path -LiteralPath $gateStartCorrelationJson -PathType Leaf) { Get-Content -LiteralPath $gateStartCorrelationJson -Raw | ConvertFrom-Json } else { $null }
+        $gateEndCorrelation = if (Test-Path -LiteralPath $gateEndCorrelationJson -PathType Leaf) { Get-Content -LiteralPath $gateEndCorrelationJson -Raw | ConvertFrom-Json } else { $null }
         $timeCorrelationLogs = @(Get-ChildItem -LiteralPath $timeCorrelationDirectory -Filter '*.log' -File -ErrorAction SilentlyContinue)
         $deviceProbeLog = @(Get-ChildItem -LiteralPath $deviceDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue)
         $gateEndProbeLog = @(Get-ChildItem -LiteralPath $gateEndDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue)
-        if (-not (Test-Path -LiteralPath $deviceDirectory -PathType Container) -or $deviceProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $gateEndDirectory -PathType Container) -or $gateEndProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $timeCorrelationDirectory -PathType Container) -or -not (Test-Path -LiteralPath $gateStartCorrelationJson -PathType Leaf) -or -not (Test-Path -LiteralPath $gateEndCorrelationJson -PathType Leaf) -or $timeCorrelationLogs.Count -eq 0) {
+        if (-not (Test-Path -LiteralPath $deviceDirectory -PathType Container) -or $deviceProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $gateEndDirectory -PathType Container) -or $gateEndProbeLog.Count -eq 0 -or -not (Test-Path -LiteralPath $timeCorrelationDirectory -PathType Container) -or $null -eq $gateStartCorrelation -or $null -eq $gateEndCorrelation -or $gateStartCorrelation.gateId -ne $longGateIds[$classIndex] -or $gateEndCorrelation.gateId -ne $longGateIds[$classIndex] -or $timeCorrelationLogs.Count -eq 0) {
             $longHealthAndGateEndLogsExist = $false
         }
         foreach ($path in (@($record.logPaths) + @($deviceProbeLog | ForEach-Object { $_.FullName }) + @($gateEndProbeLog | ForEach-Object { $_.FullName }) + @($timeCorrelationLogs | ForEach-Object { $_.FullName }) + @($gateStartCorrelationJson, $gateEndCorrelationJson))) { $boundedPaths.Add([string]$path) }
+        $longGateEvidence.evidencePathBudget.accepted = $longGateEvidence.evidencePathBudget.accepted -and $longGateEvidence.evidencePathBudget.evidenceRootLength -eq $longGateEvidenceRootTargetLength -and $longGateEvidence.evidencePathBudget.evidenceRoot -eq $longGateCustomEvidenceRoot -and $longGateEvidence.evidencePathBudget.requiredMaximumPathLength -le 259 -and $longGateEvidence.evidencePathBudget.actualMaximumPathLength -le 259
+        $artifactFiles = @(Get-ChildItem -LiteralPath $longGateEvidence.evidenceDirectory -File -Recurse -Force)
+        foreach ($artifactFile in $artifactFiles) { $boundedPaths.Add([string]$artifactFile.FullName) }
     }
-    $evidenceRootFull = [System.IO.Path]::GetFullPath([string]$longGateFixture.evidenceRoot).TrimEnd('\') + '\'
+    $evidenceRootFull = [System.IO.Path]::GetFullPath([string]$longGateCustomEvidenceRoot).TrimEnd('\') + '\'
     $boundedPathsValid = ($boundedPaths.Count -gt 0)
     foreach ($path in $boundedPaths) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or -not [System.IO.Path]::GetFullPath($path).StartsWith($evidenceRootFull, [System.StringComparison]::OrdinalIgnoreCase) -or $path.Length -ge 260) {
@@ -1092,6 +1125,92 @@ switch -Exact ($command) {
         $syntheticAdbDeviceProbeCount -ge 3
     )
     Add-AcceptanceCheck -CheckId 'long_connected_gate_ids_use_bounded_tokens_and_reach_synthetic_adb' -Pass $longArtifactPass -Detail 'Two >255-character semantic gate IDs remained unchanged in evidence; repeated execution mapped the same ID to the same <=41-character token, while a distinct ID mapped to a different token. All three runs materialized bounded health, gate-end, correlation, and Gradle paths after actual synthetic ADB probes. The synthetic fixture does not establish Android device health.'
+
+    $brokenHealthAdbPath = Join-Path $runRoot 'synthetic-path-budget-health-failure-adb.ps1'
+    $brokenHealthAdbText = $syntheticAdb.Replace("'shell cmd package path android' { Write-Output 'package:/system/framework/framework-res.apk'; exit 0 }", "'shell cmd package path android' { Write-Output ''; exit 1 }")
+    if ($brokenHealthAdbText -eq $syntheticAdb) { throw 'Could not construct the synthetic PackageManager health-failure fixture.' }
+    Write-ToolingUtf8 -Path $brokenHealthAdbPath -Content $brokenHealthAdbText
+    $customHealthFailureCallLog = Join-Path $runRoot 'custom-root-health-failure-adb-calls.log'
+    $customHealthGradleMarker = Join-Path $runRoot 'custom-root-health-failure-gradle-started'
+    $customHealthFailure = Invoke-ConnectedVerificationChild -Fixture $longGateFixture -Classes @($longClasses[0]) -AdbPath $brokenHealthAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $customHealthFailureCallLog -Name 'custom-root-stall-evidence-paths' -EvidenceRootOverride $longGateCustomEvidenceRoot -GradleMarker $customHealthGradleMarker
+    $customHealthFailureVerificationPath = Get-VerificationJsonPath -Result $customHealthFailure
+    $customHealthFailureEvidence = Get-Content -LiteralPath $customHealthFailureVerificationPath -Raw | ConvertFrom-Json
+    $customHealthGate = @($customHealthFailureEvidence.gates)[0]
+    $customHealthInfra = Get-Content -LiteralPath $customHealthGate.failureEvidencePath -Raw | ConvertFrom-Json
+    $customHealthEvidenceFiles = @(Get-ChildItem -LiteralPath $customHealthFailureEvidence.evidenceDirectory -File -Recurse -Force)
+    $customHealthStallLogs = @($customHealthEvidenceFiles | Where-Object { $_.DirectoryName -match '[\\/]stall-diagnostics$' -and $_.Extension -eq '.log' })
+    $customHealthPathsValid = ($customHealthEvidenceFiles.Count -gt 0 -and $customHealthStallLogs.Count -gt 0)
+    foreach ($artifactFile in $customHealthEvidenceFiles) {
+        $artifactPath = [System.IO.Path]::GetFullPath($artifactFile.FullName)
+        if ($artifactPath.Length -ge 260 -or -not $artifactPath.StartsWith(($longGateCustomEvidenceRoot.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase)) { $customHealthPathsValid = $false }
+        foreach ($component in $artifactPath.Split([System.IO.Path]::DirectorySeparatorChar)) { if ($component.Length -gt 255) { $customHealthPathsValid = $false } }
+    }
+    $customRootBudgetPass = (
+        $longGateRuns.Count -eq 3 -and
+        @($longGateRuns | Where-Object { -not $_.evidence.evidencePathBudget.accepted -or $_.evidence.evidencePathBudget.requiredMaximumPathLength -gt 259 -or $_.evidence.evidencePathBudget.actualMaximumPathLength -gt 259 }).Count -eq 0 -and
+        $longGateCustomEvidenceRoot.EndsWith('\download01-direct-output-hook', [System.StringComparison]::OrdinalIgnoreCase) -and
+        $syntheticAdbDeviceProbeCount -ge 3 -and
+        $customHealthFailure.exitCode -ne 0 -and
+        $customHealthInfra.eventKind -eq 'connected_health_preflight_failure' -and
+        $customHealthGate.deviceHealth.healthy -eq $false -and
+        $customHealthPathsValid -and
+        -not (Test-Path -LiteralPath $customHealthGradleMarker -PathType Leaf)
+    )
+    Add-AcceptanceCheck -CheckId 'whole_path_budget_uses_actual_custom_evidence_root_for_health_watchdog_stall_and_gate_artifacts' -Pass $customRootBudgetPass -Detail "The caller EvidenceRoot length was $($longGateCustomEvidenceRoot.Length); its download01-direct-output-hook shape reached synthetic ADB, the path budget covered the per-gate log/correlation and fixed-depth health/watchdog/stall layouts, all materialized evidence paths stayed below 260 characters, and synthetic PackageManager failure retained the existing device-health failure path."
+
+    $tooLongPadding = 'p' * ($longGateEvidenceRootPaddingLength + 25)
+    $tooLongEvidenceRoot = Join-Path (Join-Path $longGateEvidenceRootBase $tooLongPadding) $longGateEvidenceRootTail
+    $tooLongAdbCallLog = Join-Path $runRoot 'oversized-root-adb-calls.log'
+    $tooLongGradleMarker = Join-Path $runRoot 'oversized-root-gradle-started'
+    $tooLongResult = Invoke-ConnectedVerificationChild -Fixture $longGateFixture -Classes @($longClasses[0]) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $tooLongAdbCallLog -Name 'oversized-evidence-root-rejected' -EvidenceRootOverride $tooLongEvidenceRoot -GradleMarker $tooLongGradleMarker
+    $tooLongVerificationPath = Get-VerificationJsonPath -Result $tooLongResult
+    $tooLongEvidence = Get-Content -LiteralPath $tooLongVerificationPath -Raw | ConvertFrom-Json
+    $tooLongInfra = Get-Content -LiteralPath $tooLongEvidence.toolingInfrastructureBootstrap.failurePath -Raw | ConvertFrom-Json
+    $tooLongPass = (
+        $tooLongResult.exitCode -ne 0 -and
+        $tooLongEvidence.status -eq 'BLOCKED_BY_TOOLING_EVIDENCE_PATH_BUDGET' -and
+        $tooLongEvidence.evidencePathBudget.accepted -eq $false -and
+        $tooLongEvidence.evidencePathBudget.evidenceRoot -eq $tooLongEvidenceRoot -and
+        $tooLongEvidence.evidencePathBudget.evidenceRootLength -eq $tooLongEvidenceRoot.Length -and
+        $tooLongEvidence.evidencePathBudget.requiredMaximumPathLength -gt $tooLongEvidence.evidencePathBudget.maximumSupportedPathLength -and
+        $tooLongEvidence.toolingInfrastructureBootstrap.deviceProbeStarted -eq $false -and
+        $tooLongEvidence.toolingInfrastructureBootstrap.gradleStarted -eq $false -and
+        $tooLongEvidence.toolingInfrastructureBootstrap.zeroTests -eq $true -and
+        $tooLongInfra.deviceProbeStarted -eq $false -and
+        $tooLongInfra.gradleStarted -eq $false -and
+        $tooLongInfra.zeroTests -eq $true -and
+        $tooLongInfra.deviceHealthFailureObserved -eq $false -and
+        $tooLongInfra.scope.gateOrder[0] -eq $longGateIds[0] -and
+        -not (Test-Path -LiteralPath $tooLongAdbCallLog -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $tooLongGradleMarker -PathType Leaf)
+    )
+    Add-AcceptanceCheck -CheckId 'oversized_actual_evidence_root_rejected_with_explicit_zero_test_evidence_before_probe_or_gradle' -Pass $tooLongPass -Detail "The requested EvidenceRoot length was $($tooLongEvidenceRoot.Length) and required maximum path was $($tooLongEvidence.evidencePathBudget.requiredMaximumPathLength); the bounded fallback evidence records zero tests, gradleStarted=false, deviceProbeStarted=false, and neither synthetic ADB nor Gradle ran."
+
+    $sourceTokens = $null
+    $sourceParseErrors = $null
+    $verificationAst = [System.Management.Automation.Language.Parser]::ParseFile($script:verificationScript, [ref]$sourceTokens, [ref]$sourceParseErrors)
+    if ($sourceParseErrors.Count -gt 0) { throw 'Cannot inspect the production verifier path-exception classifier because its PowerShell AST has parse errors.' }
+    $classifierAst = $verificationAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-VerificationEvidencePathExceptionDetails' }, $true)
+    if ($null -eq $classifierAst) { throw 'The production verifier path-exception classifier function was not found.' }
+    . ([scriptblock]::Create($classifierAst.Extent.Text))
+    $missingParentPath = Join-Path (Join-Path $runRoot ('missing-path-parent-' + [Guid]::NewGuid().ToString('N'))) 'output.log'
+    $wrappedFileStreamException = $null
+    try {
+        New-Object System.IO.FileStream($missingParentPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None) | Out-Null
+    } catch {
+        $wrappedFileStreamException = $_.Exception
+    }
+    $wrappedPathDetails = if ($null -ne $wrappedFileStreamException) { Get-VerificationEvidencePathExceptionDetails -Exception $wrappedFileStreamException } else { $null }
+    $ordinaryAdbFailureDetails = Get-VerificationEvidencePathExceptionDetails -Exception (New-Object System.Exception('ADB executable could not be started.'))
+    $wrappedPathClassifierPass = (
+        $null -ne $wrappedFileStreamException -and
+        @($wrappedPathDetails.exceptionTypes | Where-Object { $_ -eq 'System.Management.Automation.MethodInvocationException' }).Count -gt 0 -and
+        @($wrappedPathDetails.exceptionTypes | Where-Object { $_ -eq 'System.IO.DirectoryNotFoundException' }).Count -gt 0 -and
+        $wrappedPathDetails.isEvidencePathFailure -eq $true -and
+        $wrappedPathDetails.classification -eq 'tooling_evidence_path_materialization_failure' -and
+        $ordinaryAdbFailureDetails.isEvidencePathFailure -eq $false
+    )
+    Add-AcceptanceCheck -CheckId 'wrapped_filestream_path_failure_classified_as_tooling_without_reclassifying_adb_start_failure' -Pass $wrappedPathClassifierPass -Detail "The extracted production classifier observed exception chain $(@($wrappedPathDetails.exceptionTypes) -join ' -> ') and returned $($wrappedPathDetails.classification); a plain ADB-start exception remained outside the evidence-path classification."
 
     $script:acceptanceEvidence.status = 'PASS'
     $script:acceptanceEvidence.endedUtc = Format-RemediationUtc (Get-RemediationUtcNow)

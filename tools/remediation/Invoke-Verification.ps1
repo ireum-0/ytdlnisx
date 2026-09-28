@@ -60,6 +60,88 @@ function Get-VerificationArtifactToken {
     return $readablePrefix + '-' + $digest
 }
 
+function Get-VerificationEvidencePathBudget {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryFullPath,
+        [Parameter(Mandatory)][string]$CandidateSha,
+        [string]$EvidenceRoot
+    )
+    $evidenceBase = if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+        Join-Path $RepositoryFullPath ('build\remediation-agent\' + $CandidateSha)
+    } else {
+        [System.IO.Path]::GetFullPath($EvidenceRoot)
+    }
+    $evidenceBaseFull = [System.IO.Path]::GetFullPath($evidenceBase).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+    $token = 'x' * 41
+    $stamp = 'x' * 10
+    $processLogSuffix = '-' + $stamp + '.stdout.log'
+    $relativePathTemplates = @(
+        ('g\' + $token + $processLogSuffix),
+        ('g\git-local-properties-ignore-before-bootstrap' + $processLogSuffix),
+        ('h\time-start-device-epoch' + $processLogSuffix),
+        ('w\watchdog-instrumentation-presence' + $processLogSuffix),
+        ('t\' + $token + '.s.tmp-' + ('x' * 32)),
+        ('t\' + $token + '\s-device-epoch' + $processLogSuffix),
+        ('t\' + $token + '\e-device-epoch' + $processLogSuffix),
+        ('stall-diagnostics\d-capture-pressure-psi-memory' + $processLogSuffix),
+        ('stall-diagnostics\d-bounded-logcat' + $processLogSuffix),
+        ('stall-diagnostics\d-guest-top' + $processLogSuffix),
+        ('stall-diagnostics\d-instrumentation-presence' + $processLogSuffix),
+        ('verification.json.tmp-' + ('x' * 32))
+    )
+    $maximumRelativeSuffixLength = 0
+    $maximumRelativeSuffix = ''
+    foreach ($template in $relativePathTemplates) {
+        $length = ([string]$template).Length
+        if ($length -gt $maximumRelativeSuffixLength) {
+            $maximumRelativeSuffixLength = $length
+            $maximumRelativeSuffix = [string]$template
+        }
+    }
+    $runIdMaximumLength = 28
+    $maximumPathLength = 259
+    $requiredMaximumPathLength = $evidenceBaseFull.Length + 1 + $runIdMaximumLength + 1 + $maximumRelativeSuffixLength
+    $rootComponents = @($evidenceBaseFull.Split([System.IO.Path]::DirectorySeparatorChar) | Where-Object { -not [string]::IsNullOrEmpty($_) })
+    $longestRootComponentLength = 0
+    foreach ($component in $rootComponents) { $longestRootComponentLength = [Math]::Max($longestRootComponentLength, ([string]$component).Length) }
+    return [pscustomobject][ordered]@{
+        policy = 'whole-evidence-path-budget-windows-max-path-259-v1'
+        evidenceRoot = $evidenceBaseFull
+        evidenceRootLength = $evidenceBaseFull.Length
+        runIdMaximumLength = $runIdMaximumLength
+        maximumRelativeArtifactSuffixLength = $maximumRelativeSuffixLength
+        maximumRelativeArtifactSuffix = $maximumRelativeSuffix
+        requiredMaximumPathLength = $requiredMaximumPathLength
+        maximumSupportedPathLength = $maximumPathLength
+        longestEvidenceRootComponentLength = $longestRootComponentLength
+        maximumSupportedComponentLength = 255
+        accepted = ($requiredMaximumPathLength -le $maximumPathLength -and $longestRootComponentLength -le 255)
+    }
+}
+
+function Get-VerificationEvidencePathExceptionDetails {
+    param([Parameter(Mandatory)][System.Exception]$Exception)
+    $exceptionTypes = New-Object System.Collections.Generic.List[string]
+    $messages = New-Object System.Collections.Generic.List[string]
+    $current = $Exception
+    $depth = 0
+    while ($null -ne $current -and $depth -lt 16) {
+        $exceptionTypes.Add($current.GetType().FullName)
+        if (-not [string]::IsNullOrWhiteSpace($current.Message)) { $messages.Add($current.Message) }
+        $current = $current.InnerException
+        $depth++
+    }
+    $messageText = $messages -join [Environment]::NewLine
+    $pathType = @($exceptionTypes.ToArray() | Where-Object { $_ -in @('System.IO.PathTooLongException', 'System.IO.DirectoryNotFoundException') }).Count -gt 0
+    $pathMessage = ($messageText -match '(?i)(could not find a part of the path|path.{0,40}(too long|invalid)|file.?name.{0,40}too long)')
+    return [pscustomobject][ordered]@{
+        isEvidencePathFailure = [bool]($pathType -or $pathMessage)
+        classification = $(if ($pathType -or $pathMessage) { 'tooling_evidence_path_materialization_failure' } else { 'not_evidence_path_failure' })
+        exceptionTypes = @($exceptionTypes.ToArray())
+        message = $messageText
+    }
+}
+
 function Get-DetachedLocalPropertiesState {
     param(
         [Parameter(Mandatory)][string]$MaterializationPath,
@@ -359,9 +441,144 @@ if ($ToolingDemoMode -and [string]::IsNullOrWhiteSpace($DemoResultRoot)) {
     throw 'ToolingDemoMode requires a relative DemoResultRoot under the invocation evidence directory.'
 }
 
+$gateSpecs = New-Object System.Collections.Generic.List[object]
+foreach ($className in $ConnectedTestClass) {
+    $gateSpecs.Add([pscustomobject]@{ kind = 'connected'; requestedClass = $className; task = ':app:connectedDebugAndroidTest'; gateId = 'connected:' + $className })
+}
+foreach ($className in $JvmTestClass) {
+    $gateSpecs.Add([pscustomobject]@{ kind = 'jvm'; requestedClass = $className; task = ':app:testDebugUnitTest'; gateId = 'jvm:' + $className })
+}
+foreach ($task in $CompileTask) {
+    $gateSpecs.Add([pscustomobject]@{ kind = 'compile'; requestedClass = $null; task = $task; gateId = 'compile:' + $task })
+}
+if ($RunDiffCheck) {
+    $gateSpecs.Add([pscustomobject]@{ kind = 'diff'; requestedClass = $null; task = 'git diff --check'; gateId = 'git_diff_check' })
+}
+$gateArtifactTokenOwners = @{}
+$gateArtifactTokens = New-Object System.Collections.Generic.List[object]
+foreach ($gate in $gateSpecs) {
+    $artifactToken = Get-VerificationArtifactToken -GateId $gate.gateId
+    if ($gateArtifactTokenOwners.ContainsKey($artifactToken) -and $gateArtifactTokenOwners[$artifactToken] -ne $gate.gateId) {
+        throw "Distinct semantic gate IDs produced the same bounded artifact token; refusing an ambiguous evidence path: $artifactToken"
+    }
+    $gateArtifactTokenOwners[$artifactToken] = $gate.gateId
+    $gate | Add-Member -NotePropertyName artifactToken -NotePropertyValue $artifactToken -Force
+    $gateArtifactTokens.Add([pscustomobject][ordered]@{ gateId = $gate.gateId; artifactToken = $artifactToken })
+}
+
+$evidencePathBudget = Get-VerificationEvidencePathBudget -RepositoryFullPath $repoFull -CandidateSha $ExpectedSha -EvidenceRoot $EvidenceRoot
+if (-not $evidencePathBudget.accepted) {
+    $repoPrefix = [System.IO.Path]::GetFullPath($repoFull).TrimEnd('\') + '\'
+    if (-not $evidencePathBudget.evidenceRoot.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Evidence path must remain inside the implementation repository.'
+    }
+    $requestedRelativeRoot = $evidencePathBudget.evidenceRoot.Substring($repoPrefix.Length).Replace('\', '/')
+    $bootstrapLogs = Join-Path $env:TEMP 'ytdlnisx-remediation-bootstrap'
+    $ignoreCheck = Invoke-RemediationGit -RepoPath $repoFull -ArgumentList @('check-ignore', '--quiet', '--', $requestedRelativeRoot) -LogDirectory $bootstrapLogs -Name 'evidence-path-budget-ignore-check'
+    if ($ignoreCheck.timedOut -or $ignoreCheck.exitCode -ne 0) {
+        throw "Evidence path is not ignored by Git: $requestedRelativeRoot"
+    }
+    $rejectionRoot = Join-Path $repoFull 'build\remediation-agent\path-budget-failures'
+    $rejectionRun = New-RemediationRunDirectory -RepoPath $repoFull -CandidateSha $ExpectedSha -EvidenceRoot $rejectionRoot
+    $rejectionLogDirectory = Join-Path $rejectionRun.evidenceDirectory 'g'
+    $rejectionStarted = Get-RemediationUtcNow
+    $observedHead = Get-RemediationHead -RepoPath $repoFull -LogDirectory $rejectionLogDirectory
+    $observedTree = Get-RemediationTreeSha -RepoPath $repoFull -CommitSha $observedHead -LogDirectory $rejectionLogDirectory
+    $observedTreeState = Get-RemediationTrackedTreeState -RepoPath $repoFull -CandidateSha $observedHead -LogDirectory $rejectionLogDirectory
+    $rejectionPath = Join-Path $rejectionRun.evidenceDirectory 'infra-failure.json'
+    $pathBudgetFailure = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        candidateSha = $observedHead
+        candidateTree = $observedTree
+        expectedCandidateSha = $ExpectedSha
+        eventKind = 'tooling_evidence_path_bootstrap_failure'
+        failureClassification = 'tooling_evidence_path_budget_rejected'
+        bootstrapStage = 'evidence_path_budget_preflight'
+        zeroTests = $true
+        gradleStarted = $false
+        deviceProbeStarted = $false
+        probeNotStartedEvidence = 'The computed maximum evidence path exceeded the supported Windows path contract before the requested run directory was created; no ADB/device-health or Gradle process was launched.'
+        deviceHealthObserved = $false
+        deviceHealthFailureObserved = $false
+        instrumentationStarted = $false
+        executedTests = 0
+        failureCount = 0
+        errorCount = 0
+        evidencePathBudget = $evidencePathBudget
+        scope = [pscustomobject][ordered]@{
+            connectedTestClasses = @($ConnectedTestClass)
+            jvmTestClasses = @($JvmTestClass)
+            compileTasks = @($CompileTask)
+            diffCheck = [bool]$RunDiffCheck
+            gateOrder = @($gateSpecs | ForEach-Object { $_.gateId })
+            gateArtifactTokens = @($gateArtifactTokens.ToArray())
+        }
+        actualCandidateMatchedRequest = ($observedHead -eq $ExpectedSha)
+        trackedTreeCleanBefore = $observedTreeState.clean
+        error = "EvidenceRoot requires a maximum path of $($evidencePathBudget.requiredMaximumPathLength) characters; supported maximum is $($evidencePathBudget.maximumSupportedPathLength), with longest root component $($evidencePathBudget.longestEvidenceRootComponentLength) characters."
+        createdUtc = Format-RemediationUtc (Get-RemediationUtcNow)
+    }
+    Write-RemediationJson -Path $rejectionPath -Value $pathBudgetFailure
+    $rejectionEnded = Get-RemediationUtcNow
+    $rejectionVerification = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        evidenceKind = $(if ($ToolingDemoMode) { 'tooling_demo' } else { 'exact_source_verification' })
+        runId = $rejectionRun.runId
+        status = 'BLOCKED_BY_TOOLING_EVIDENCE_PATH_BUDGET'
+        startedUtc = Format-RemediationUtc $rejectionStarted
+        startedKorea = Format-RemediationKoreaTime $rejectionStarted
+        endedUtc = Format-RemediationUtc $rejectionEnded
+        endedKorea = Format-RemediationKoreaTime $rejectionEnded
+        candidateSha = $observedHead
+        candidateTree = $observedTree
+        trackedTreeCleanBefore = $observedTreeState.clean
+        expectedCandidateSha = $ExpectedSha
+        expectedParentSha = $ExpectedParentSha
+        evidencePathBudget = $evidencePathBudget
+        scope = [pscustomobject][ordered]@{
+            connectedTestClasses = @($ConnectedTestClass)
+            jvmTestClasses = @($JvmTestClass)
+            compileTasks = @($CompileTask)
+            diffCheck = [bool]$RunDiffCheck
+            gateOrder = @($gateSpecs | ForEach-Object { $_.gateId })
+            artifactTokenPolicy = 'sanitized-prefix-8-plus-lowercase-sha256-128-v1'
+            artifactTokenMaximumLength = 41
+            gateArtifactTokens = @($gateArtifactTokens.ToArray())
+            scopeSource = 'explicit command parameters only'
+        }
+        gates = @()
+        toolingInfrastructureBootstrap = [pscustomobject][ordered]@{
+            failed = $true
+            failurePath = $rejectionPath
+            deviceHealthFailureObserved = $false
+            deviceProbeStarted = $false
+            gradleStarted = $false
+            zeroTests = $true
+        }
+        evidenceDirectory = $rejectionRun.evidenceDirectory
+        scopeWidening = $false
+        semanticVerdict = 'not_performed'
+        cleanVerdict = 'not_provided_by_verification_tool'
+    }
+    Write-RemediationJson -Path (Join-Path $rejectionRun.evidenceDirectory 'verification.json') -Value $rejectionVerification
+    Write-Output 'VERIFICATION_STATUS=BLOCKED_BY_TOOLING_EVIDENCE_PATH_BUDGET'
+    Write-Output ('INFRA_FAILURE_JSON=' + $rejectionPath)
+    Write-Output ('VERIFICATION_JSON=' + (Join-Path $rejectionRun.evidenceDirectory 'verification.json'))
+    Write-Output ('EVIDENCE_DIRECTORY=' + $rejectionRun.evidenceDirectory)
+    exit 1
+}
+
 $runDirectoryInfo = New-RemediationRunDirectory -RepoPath $repoFull -CandidateSha $ExpectedSha -EvidenceRoot $EvidenceRoot
 $runDirectory = $runDirectoryInfo.evidenceDirectory
-$logDirectory = Join-Path $runDirectory 'logs'
+$logDirectory = Join-Path $runDirectory 'g'
+$deviceLogDirectory = Join-Path $runDirectory 'h'
+$watchdogLogDirectory = Join-Path $runDirectory 'w'
+$timeCorrelationLogDirectory = Join-Path $runDirectory 't'
+$evidencePathBudget | Add-Member -NotePropertyName actualRunDirectoryLength -NotePropertyValue $runDirectory.Length -Force
+$evidencePathBudget | Add-Member -NotePropertyName actualMaximumPathLength -NotePropertyValue ($runDirectory.Length + 1 + [int]$evidencePathBudget.maximumRelativeArtifactSuffixLength) -Force
+if ($runDirectory.Length + 1 + [int]$evidencePathBudget.maximumRelativeArtifactSuffixLength -gt [int]$evidencePathBudget.maximumSupportedPathLength) {
+    throw 'The materialized run directory exceeded the preflight whole-path evidence budget; no verification gate was started.'
+}
 $verificationStarted = Get-RemediationUtcNow
 $head = Get-RemediationHead -RepoPath $repoFull -LogDirectory $runDirectory
 if ($head -ne $ExpectedSha) {
@@ -422,31 +639,6 @@ if (-not [string]::IsNullOrWhiteSpace($PriorInfrastructureEvidence)) {
     $priorRecovery = Read-PriorInfrastructureEvidence -Path $PriorInfrastructureEvidence -RepoFull $repoFull -CandidateSha $head -CandidateTree $treeSha -ExpectedClass $ConnectedTestClass[0]
 }
 
-$gateSpecs = New-Object System.Collections.Generic.List[object]
-foreach ($className in $ConnectedTestClass) {
-    $gateSpecs.Add([pscustomobject]@{ kind = 'connected'; requestedClass = $className; task = ':app:connectedDebugAndroidTest'; gateId = 'connected:' + $className })
-}
-foreach ($className in $JvmTestClass) {
-    $gateSpecs.Add([pscustomobject]@{ kind = 'jvm'; requestedClass = $className; task = ':app:testDebugUnitTest'; gateId = 'jvm:' + $className })
-}
-foreach ($task in $CompileTask) {
-    $gateSpecs.Add([pscustomobject]@{ kind = 'compile'; requestedClass = $null; task = $task; gateId = 'compile:' + $task })
-}
-if ($RunDiffCheck) {
-    $gateSpecs.Add([pscustomobject]@{ kind = 'diff'; requestedClass = $null; task = 'git diff --check'; gateId = 'git_diff_check' })
-}
-$gateArtifactTokenOwners = @{}
-$gateArtifactTokens = New-Object System.Collections.Generic.List[object]
-foreach ($gate in $gateSpecs) {
-    $artifactToken = Get-VerificationArtifactToken -GateId $gate.gateId
-    if ($gateArtifactTokenOwners.ContainsKey($artifactToken) -and $gateArtifactTokenOwners[$artifactToken] -ne $gate.gateId) {
-        throw "Distinct semantic gate IDs produced the same bounded artifact token; refusing an ambiguous evidence path: $artifactToken"
-    }
-    $gateArtifactTokenOwners[$artifactToken] = $gate.gateId
-    $gate | Add-Member -NotePropertyName artifactToken -NotePropertyValue $artifactToken -Force
-    $gateArtifactTokens.Add([pscustomobject][ordered]@{ gateId = $gate.gateId; artifactToken = $artifactToken })
-}
-
 $gateResults = New-Object System.Collections.Generic.List[object]
 $gateExecutionRecords = New-Object System.Collections.Generic.List[object]
 $phaseResults = New-Object System.Collections.Generic.List[object]
@@ -492,11 +684,16 @@ foreach ($gate in $gateSpecs) {
     }
 
     if ($gate.kind -eq 'connected') {
-        $deviceDirectory = Join-Path (Join-Path $runDirectory 'device-health') $gate.artifactToken
-        $gateCorrelationDirectory = Join-Path (Join-Path $runDirectory 'time-correlation') $gate.artifactToken
+        $deviceDirectory = $deviceLogDirectory
+        $gateCorrelationDirectory = Join-Path (Join-Path $runDirectory 't') $gate.artifactToken
+        $deviceProbeLogsBefore = @()
+        if (Test-Path -LiteralPath $deviceDirectory -PathType Container) {
+            $deviceProbeLogsBefore = @(Get-ChildItem -LiteralPath $deviceDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+        }
         $deviceHealthCollectionError = $null
         $deviceHealthCollectionStage = 'device_health_directory_materialization'
         $deviceHealthCollectionExceptionType = $null
+        $deviceHealthCollectionExceptionDetails = $null
         try {
             New-Item -ItemType Directory -Path $deviceDirectory -Force -ErrorAction Stop | Out-Null
             New-Item -ItemType Directory -Path $gateCorrelationDirectory -Force -ErrorAction Stop | Out-Null
@@ -505,19 +702,20 @@ foreach ($gate in $gateSpecs) {
         } catch {
             $deviceHealthCollectionError = $_.Exception.Message
             $deviceHealthCollectionExceptionType = $_.Exception.GetType().FullName
+            $deviceHealthCollectionExceptionDetails = Get-VerificationEvidencePathExceptionDetails -Exception $_.Exception
         }
         if ($null -ne $deviceHealthCollectionError) {
             $deviceProbeLogs = @()
             if (Test-Path -LiteralPath $deviceDirectory -PathType Container) {
-                $deviceProbeLogs = @(Get-ChildItem -LiteralPath $deviceDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+                $deviceProbeLogs = @(Get-ChildItem -LiteralPath $deviceDirectory -Filter 'adb-devices-*.stdout.log' -File -ErrorAction SilentlyContinue | Where-Object { $deviceProbeLogsBefore -notcontains $_.FullName } | ForEach-Object { $_.FullName })
             }
             $deviceProbeStarted = $null
             if ($deviceProbeLogs.Count -gt 0) { $deviceProbeStarted = $true }
             elseif ($deviceHealthCollectionStage -eq 'device_health_directory_materialization') { $deviceProbeStarted = $false }
-            $artifactPathFailure = ($deviceHealthCollectionStage -eq 'device_health_directory_materialization' -or $deviceHealthCollectionExceptionType -in @('System.IO.PathTooLongException', 'System.IO.DirectoryNotFoundException') -or $deviceHealthCollectionError -match '(?i)(path|directory|filename).{0,80}(too long|invalid|not found|unsupported)')
-            $preProbePathFailure = ($artifactPathFailure -and $deviceProbeStarted -ne $true)
-            $bootstrapStage = $(if ($preProbePathFailure) { 'evidence_path_materialization_before_adb_probe' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection' } else { 'adb_probe_start_or_collection' })
-            $bootstrapEventKind = $(if ($preProbePathFailure) { 'tooling_evidence_path_bootstrap_failure' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection_failure' } else { 'adb_probe_start_failure' })
+            $artifactPathFailure = ($deviceHealthCollectionStage -eq 'device_health_directory_materialization' -or $deviceHealthCollectionExceptionDetails.isEvidencePathFailure)
+            $preProbePathFailure = ($artifactPathFailure -and $deviceProbeStarted -eq $false)
+            $bootstrapStage = $(if ($preProbePathFailure) { 'evidence_path_materialization_before_adb_probe' } elseif ($artifactPathFailure) { 'evidence_path_materialization_during_probe_capture' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection' } else { 'adb_probe_start_or_collection' })
+            $bootstrapEventKind = $(if ($artifactPathFailure) { 'tooling_evidence_path_bootstrap_failure' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection_failure' } else { 'adb_probe_start_failure' })
             $failurePath = Join-Path $runDirectory 'infra-failure.json'
             $bootstrapFailure = [pscustomobject][ordered]@{
                 schemaVersion = 1
@@ -527,17 +725,20 @@ foreach ($gate in $gateSpecs) {
                 artifactToken = $gate.artifactToken
                 requestedTestClass = $gate.requestedClass
                 eventKind = $bootstrapEventKind
-                failureClassification = $(if ($preProbePathFailure) { 'tooling_infrastructure_bootstrap' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection_error' } else { 'adb_probe_start_failure' })
+                failureClassification = $(if ($artifactPathFailure) { 'tooling_infrastructure_bootstrap' } elseif ($deviceProbeStarted -eq $true) { 'device_health_probe_collection_error' } else { 'adb_probe_start_failure' })
                 bootstrapStage = $bootstrapStage
                 failingStage = $deviceHealthCollectionStage
                 exceptionType = $deviceHealthCollectionExceptionType
+                exceptionTypes = $(if ($null -ne $deviceHealthCollectionExceptionDetails) { @($deviceHealthCollectionExceptionDetails.exceptionTypes) } else { @() })
+                pathFailureClassification = $(if ($null -ne $deviceHealthCollectionExceptionDetails) { $deviceHealthCollectionExceptionDetails.classification } else { $null })
                 zeroTests = $true
                 gradleStarted = $false
                 deviceProbeStarted = $deviceProbeStarted
-                probeNotStartedEvidence = $(if ($deviceProbeStarted -eq $false) { 'The evidence-path directory could not be materialized before invoking the ADB health probe.' } elseif ($deviceProbeStarted -eq $true) { $null } else { 'No adb-devices stdout log was materialized; ADB process start was not independently confirmed.' })
+                probeNotStartedEvidence = $(if ($deviceProbeStarted -eq $false) { 'The evidence-path directory could not be materialized before invoking the ADB health probe.' } elseif ($deviceProbeStarted -eq $true) { $null } elseif ($artifactPathFailure) { 'A wrapped evidence FileStream path-materialization failure was classified; the process-start boundary may have been crossed, so probe start is unknown and no device-health verdict is assigned.' } else { 'No adb-devices stdout log was materialized; ADB process start was not independently confirmed.' })
                 deviceHealthObserved = $false
                 deviceHealthFailureObserved = $false
                 deviceProbeLogs = @($deviceProbeLogs)
+                evidencePathBudget = $evidencePathBudget
                 probes = @()
                 error = $deviceHealthCollectionError
                 createdUtc = Format-RemediationUtc (Get-RemediationUtcNow)
@@ -601,7 +802,12 @@ foreach ($gate in $gateSpecs) {
         Write-RemediationJson -Path (Join-Path $runDirectory 'device-health.json') -Value @($deviceHealthHistory.ToArray())
         if ($deviceHealth.PSObject.Properties.Name -notcontains 'correlationStart') { $deviceHealth | Add-Member -NotePropertyName correlationStart -NotePropertyValue $null }; if ($deviceHealth.PSObject.Properties.Name -notcontains 'correlationEnd') { $deviceHealth | Add-Member -NotePropertyName correlationEnd -NotePropertyValue $null }; if ($deviceHealth.PSObject.Properties.Name -notcontains 'deviceIdentity') { $deviceHealth | Add-Member -NotePropertyName deviceIdentity -NotePropertyValue $null }; if ($null -ne $deviceHealth.correlationStart) {
             $gateStartCorrelation = $deviceHealth.correlationStart
-            Write-RemediationJson -Path (Join-Path $gateCorrelationDirectory 'gate-start.json') -Value $gateStartCorrelation
+            $gateStartCorrelation | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+            $gateStartCorrelation | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+            $gateStartCorrelation | Add-Member -NotePropertyName boundary -NotePropertyValue 'gate_start' -Force
+            $gateStartCorrelationPath = Join-Path (Join-Path $runDirectory 't') ($gate.artifactToken + '.s')
+            $gateStartCorrelation | Add-Member -NotePropertyName evidenceJsonPath -NotePropertyValue $gateStartCorrelationPath -Force
+            Write-RemediationJson -Path $gateStartCorrelationPath -Value $gateStartCorrelation
         }
         if (-not $deviceHealth.healthy) {
             $preflightFailure = $true
@@ -612,7 +818,10 @@ foreach ($gate in $gateSpecs) {
             $preflightDiagnosticError = $null
             $preflightDiagnosticPath = Join-Path $runDirectory 'stall-diagnostics\device-pressure.json'
             try {
-                $preflightDiagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix ($gate.artifactToken + '-preflight') -WatchSample $deviceHealth -PreviousPressureSamples @() -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                $preflightDiagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'p' -WatchSample $deviceHealth -PreviousPressureSamples @() -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                $preflightDiagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                $preflightDiagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                $preflightDiagnostic | Add-Member -NotePropertyName capturePhase -NotePropertyValue 'connected_preflight' -Force
             } catch {
                 $preflightDiagnosticError = $_.Exception.Message
                 $hostSnapshot = Get-RemediationHostSnapshot -AvdName $(if ($null -ne $deviceHealth.deviceIdentity) { [string]$deviceHealth.deviceIdentity.avdName } else { '' })
@@ -632,6 +841,7 @@ foreach ($gate in $gateSpecs) {
                 deviceHealth = $deviceHealth
                 diagnosticOnly = $true
                 diagnosticPath = $preflightDiagnosticPath
+                diagnosticCapture = $preflightDiagnostic
                 diagnosticCaptureError = $preflightDiagnosticError
                 createdUtc = Format-RemediationUtc (Get-RemediationUtcNow)
                 nextConnectedGateAllowedWithoutMaterialRecovery = $false
@@ -684,7 +894,7 @@ foreach ($gate in $gateSpecs) {
             $watch.currentPhase = $phase
             $watch.lastPulseUtc = $now
             if ($gate.kind -eq 'connected' -and $now -ge $watch.nextDeviceProbeUtc) {
-                $sampleDirectory = Join-Path (Join-Path $runDirectory 'watchdog') $gate.artifactToken
+                $sampleDirectory = $watchdogLogDirectory
                 New-Item -ItemType Directory -Path $sampleDirectory -Force | Out-Null
                 try {
                     $sample = Get-RemediationDeviceHealth -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $sampleDirectory -ProbeTimeoutSeconds $ProbeTimeoutSeconds -MaxShellLatencySeconds $MaxShellLatencySeconds -MaxPackageManagerLatencySeconds $MaxPackageManagerLatencySeconds -Quick
@@ -699,6 +909,8 @@ foreach ($gate in $gateSpecs) {
                 $sampleRecord = [ordered]@{
                     sampledUtc = Format-RemediationUtc $now
                     sampledKorea = Format-RemediationKoreaTime $now
+                    gateId = $gate.gateId
+                    artifactToken = $gate.artifactToken
                     hardFailure = [bool]$sample.hardFailure
                     healthy = [bool]$sample.healthy
                     shellLatencySeconds = $sample.shellLatencySeconds
@@ -709,10 +921,19 @@ foreach ($gate in $gateSpecs) {
                     phase = $phase
                 }
                 $watch.lastDeviceSample = $sample
-                $pressure = Get-RemediationPressureSample -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $sampleDirectory -NamePrefix 'watchdog' -TimeoutSeconds ([Math]::Min(5, $ProbeTimeoutSeconds))
+                $pressure = @(Get-RemediationPressureSample -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $sampleDirectory -NamePrefix 'watchdog' -TimeoutSeconds ([Math]::Min(5, $ProbeTimeoutSeconds)))
+                foreach ($pressureRecord in $pressure) {
+                    $pressureRecord | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                    $pressureRecord | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                    $pressureRecord | Add-Member -NotePropertyName samplePhase -NotePropertyValue 'watchdog' -Force
+                }
+                $sample | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                $sample | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
                 $watch.pressureSamples.Add([pscustomobject][ordered]@{
                     sampledUtc = Format-RemediationUtc $now
                     sampledKorea = Format-RemediationKoreaTime $now
+                    gateId = $gate.gateId
+                    artifactToken = $gate.artifactToken
                     pressure = $pressure
                 })
                 $deviceHealthHistory.Add($sample); Write-RemediationJson -Path (Join-Path $runDirectory 'device-health.json') -Value @($deviceHealthHistory.ToArray())
@@ -748,7 +969,10 @@ foreach ($gate in $gateSpecs) {
                         $watch.diagnosticCaptured = $true
                         if ($sample.hardFailure) { $watch.hardFailureDiagnosticCaptured = $true }
                         try {
-                            $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix ($gate.artifactToken + $(if ($sample.hardFailure) { '-health-failure' } else { '-stall-signal' })) -WatchSample $sample -PreviousPressureSamples $priorPressureRecords -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                            $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'd' -WatchSample $sample -PreviousPressureSamples $priorPressureRecords -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                            $watch.diagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                            $watch.diagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                            $watch.diagnostic | Add-Member -NotePropertyName capturePhase -NotePropertyValue $(if ($sample.hardFailure) { 'watchdog_health_failure' } else { 'watchdog_stall_signal' }) -Force
                         } catch {
                             $watch.diagnosticError = $_.Exception.Message
                         }
@@ -785,18 +1009,23 @@ foreach ($gate in $gateSpecs) {
             $phaseDurations[$watch.currentPhase] = [double]($phaseDurations[$watch.currentPhase]) + [Math]::Max(0, ($now - $watch.lastPulseUtc).TotalSeconds)
             $watch.currentPhase = $phase
             if ($gate.kind -eq 'connected') {
-                $endHealthDirectory = Join-Path (Join-Path (Join-Path $runDirectory 'watchdog') $gate.artifactToken) 'gate-end'
+                $endHealthDirectory = $watchdogLogDirectory
                 New-Item -ItemType Directory -Path $endHealthDirectory -Force | Out-Null
                 try {
                     $endHealth = Get-RemediationDeviceHealth -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $endHealthDirectory -ProbeTimeoutSeconds $ProbeTimeoutSeconds -MaxShellLatencySeconds $MaxShellLatencySeconds -MaxPackageManagerLatencySeconds $MaxPackageManagerLatencySeconds -Quick
                 } catch {
                     $endHealth = [pscustomobject][ordered]@{ serial = $DeviceSerial; healthy = $false; hardFailure = $true; shellLatencySeconds = $null; packageManagerLatencySeconds = $null; probes = @(); deviceIdentity = $deviceHealth.deviceIdentity; error = $_.Exception.Message }
                 }
+                $endHealth | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                $endHealth | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                $endHealth | Add-Member -NotePropertyName samplePhase -NotePropertyValue 'gate_end' -Force
                 $deviceHealthHistory.Add($endHealth)
                 $endSampleUtc = Get-RemediationUtcNow
                 $endSampleRecord = [pscustomobject][ordered]@{
                     sampledUtc = Format-RemediationUtc $endSampleUtc
                     sampledKorea = Format-RemediationKoreaTime $endSampleUtc
+                    gateId = $gate.gateId
+                    artifactToken = $gate.artifactToken
                     hardFailure = [bool]$endHealth.hardFailure
                     healthy = [bool]$endHealth.healthy
                     shellLatencySeconds = $endHealth.shellLatencySeconds
@@ -812,11 +1041,19 @@ foreach ($gate in $gateSpecs) {
                     $watch.hardDeviceFailure = $true
                     if (-not $watch.diagnosticCaptured) {
                         $watch.diagnosticCaptured = $true
-                        $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix ($gate.artifactToken + '-gate-end') -WatchSample $endHealth -PreviousPressureSamples @($watch.pressureSamples.ToArray()) -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                        $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'e' -WatchSample $endHealth -PreviousPressureSamples @($watch.pressureSamples.ToArray()) -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                        $watch.diagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                        $watch.diagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                        $watch.diagnostic | Add-Member -NotePropertyName capturePhase -NotePropertyValue 'gate_end_health_failure' -Force
                     }
                 }
-                $gateEndCorrelation = Get-RemediationTimeCorrelationSample -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $gateCorrelationDirectory -NamePrefix 'gate-end' -TimeoutSeconds ([Math]::Min(5, $ProbeTimeoutSeconds))
-                Write-RemediationJson -Path (Join-Path $gateCorrelationDirectory 'gate-end.json') -Value $gateEndCorrelation
+                $gateEndCorrelation = Get-RemediationTimeCorrelationSample -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $gateCorrelationDirectory -NamePrefix 'e' -TimeoutSeconds ([Math]::Min(5, $ProbeTimeoutSeconds))
+                $gateEndCorrelation | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                $gateEndCorrelation | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                $gateEndCorrelation | Add-Member -NotePropertyName boundary -NotePropertyValue 'gate_end' -Force
+                $gateEndCorrelationPath = Join-Path (Join-Path $runDirectory 't') ($gate.artifactToken + '.e')
+                $gateEndCorrelation | Add-Member -NotePropertyName evidenceJsonPath -NotePropertyValue $gateEndCorrelationPath -Force
+                Write-RemediationJson -Path $gateEndCorrelationPath -Value $gateEndCorrelation
             }
         } catch {
             $errorText = $_.Exception.Message
@@ -968,6 +1205,13 @@ foreach ($gate in $gateSpecs) {
     $gateExecutionRecords.Add($executionGateRecord)
     $gateRecord = New-VerificationGateRecord -GateId $gate.gateId -ArtifactToken $gate.artifactToken -Kind $gate.kind -RequestedClass $gate.requestedClass -RequestedTask $gate.task -Status $status -Command $(if ($null -ne $processResult) { $processResult.command } else { '' }) -Arguments $arguments -CandidateSha $head -CandidateTree $treeSha -StartedUtc (Format-RemediationUtc $gateStart) -StartedKorea (Format-RemediationKoreaTime $gateStart) -EndedUtc (Format-RemediationUtc $ended) -EndedKorea (Format-RemediationKoreaTime $ended) -ExitCode $exitCode -TimedOut $timedOut -TestSummary $testSummary -InfrastructureSignals $infraSignals -InfrastructureStatus $infraStatus -PhaseMap (ConvertTo-RemediationPhaseMap $phaseDurations) -LogPaths $logPaths -FailureEvidencePath $failurePath -DeviceHealth $deviceHealth -ErrorText $errorText
     $gateRecord | Add-Member -NotePropertyName executionLifetime -NotePropertyValue $executionGateRecord
+    if ($gate.kind -eq 'connected') {
+        $gateRecord | Add-Member -NotePropertyName watchdogSamples -NotePropertyValue @($watch.samples.ToArray())
+        $gateRecord | Add-Member -NotePropertyName watchdogPressureSamples -NotePropertyValue @($watch.pressureSamples.ToArray())
+        $gateRecord | Add-Member -NotePropertyName stallDiagnostic -NotePropertyValue $watch.diagnostic
+        $gateRecord | Add-Member -NotePropertyName stallDiagnosticError -NotePropertyValue $watch.diagnosticError
+        $gateRecord | Add-Member -NotePropertyName gateCorrelationEvidenceDirectory -NotePropertyValue $gateCorrelationDirectory
+    }
     $gateResults.Add($gateRecord)
     $phaseResults.Add([pscustomobject][ordered]@{
         gateId = $gate.gateId
@@ -1020,6 +1264,7 @@ $verification = [pscustomobject][ordered]@{
     candidateSha = $head
     candidateTree = $treeSha
     trackedTreeCleanBefore = $treeState.clean
+    evidencePathBudget = $evidencePathBudget
     executionLifetime = $executionLifetime
     expectedParentSha = $ExpectedParentSha
     scope = [pscustomobject][ordered]@{
