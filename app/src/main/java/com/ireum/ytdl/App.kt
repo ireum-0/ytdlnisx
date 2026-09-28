@@ -25,6 +25,9 @@ import com.ireum.ytdl.work.TerminalExecutionRegistry
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
+import com.ireum.ytdl.util.runtime.BundledFfmpegInstallResult
+import com.ireum.ytdl.util.runtime.BundledFfmpegRequiredDependencyCopier
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeInstaller
 import com.ireum.ytdl.util.storage.CacheImportPlanner
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.yausername.aria2c.Aria2c
@@ -249,11 +252,12 @@ class App : Application() {
         Aria2c.getInstance().init(this)
     }
 
-    fun ensureRuntimeToolsInstalled() {
+    fun ensureRuntimeToolsInstalled(): BundledFfmpegInstallResult {
         synchronized(runtimeInstallLock) {
             ensureShellEnvironment()
-            installBundledFfmpegPayload()
+            val result = installBundledFfmpegPayload()
             installBundledSrv3Converter()
+            return result
         }
     }
 
@@ -310,94 +314,86 @@ class App : Application() {
         }
     }
 
-    private fun installBundledFfmpegPayload() {
+    private fun installBundledFfmpegPayload(): BundledFfmpegInstallResult {
         val abi = Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
         val supportedAbis = Build.SUPPORTED_ABIS.joinToString()
         val assetPath = "bin/$abi/ffmpeg_payload.zip"
         val payloadRoot = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
-        val revisionFile = File(payloadRoot, ".payload_revision")
-        val alreadyInstalled = BundledFfmpegRuntime.REQUIRED_PAYLOAD_RELATIVE_PATHS.all { rel ->
-            val file = File(payloadRoot, rel)
-            file.exists() && file.length() > 255L
-        } && revisionFile.exists() &&
-            revisionFile.readText(Charsets.UTF_8).trim() == BundledFfmpegRuntime.PAYLOAD_REVISION
-        if (alreadyInstalled) {
-            return
-        }
-
-        runCatching {
-            if (payloadRoot.exists()) payloadRoot.deleteRecursively()
-            payloadRoot.mkdirs()
-            val rootCanonical = payloadRoot.canonicalPath + File.separator
-
-            assets.open(assetPath).use { raw ->
-                ZipInputStream(BufferedInputStream(raw)).use { zis ->
-                    var entry = zis.nextEntry
-                    while (entry != null) {
-                        val outFile = File(payloadRoot, entry.name)
-                        val outCanonical = outFile.canonicalPath
-                        require(outCanonical.startsWith(rootCanonical)) {
-                            "Invalid zip entry outside target dir: ${entry.name}"
-                        }
-
-                        if (entry.isDirectory) {
-                            outFile.mkdirs()
-                        } else {
-                            outFile.parentFile?.mkdirs()
-                            outFile.outputStream().use { output -> zis.copyTo(output) }
-                            outFile.setReadable(true, true)
-                            if (outFile.parentFile?.name == "bin") {
-                                outFile.setExecutable(true, true)
-                            }
-                        }
-                        zis.closeEntry()
-                        entry = zis.nextEntry
-                    }
-                }
-            }
-            val payloadLibDir = File(payloadRoot, "usr/lib")
+        val result = BundledFfmpegRuntimeInstaller(
+            nativeLibraryDirectory = File(applicationInfo.nativeLibraryDir),
+            payloadRoot = payloadRoot,
+        ) { stagingRoot ->
+            extractBundledFfmpegPayload(stagingRoot, assetPath)
+            val payloadLibDir = File(stagingRoot, "usr/lib")
             materializeSharedLibraryLinks(payloadLibDir)
-            copyRequiredBundledRuntimeDependencies(payloadLibDir, abi)
-            copyBundledRuntimeDependencies(payloadLibDir, abi)
-            revisionFile.writeText(BundledFfmpegRuntime.PAYLOAD_REVISION, Charsets.UTF_8)
-            Log.i(TAG, "Installed bundled ffmpeg payload for ABI=$abi at ${payloadRoot.absolutePath}")
-        }.onFailure { error ->
-            val assetExists = runCatching { assets.open(assetPath).close(); true }.getOrDefault(false)
-            val payloadState = buildString {
-                append("payloadRoot=")
-                append(payloadRoot.absolutePath)
-                append(" exists=")
-                append(payloadRoot.exists())
-                append(" isDir=")
-                append(payloadRoot.isDirectory)
-                append(" canWrite=")
-                append(payloadRoot.canWrite())
-                append(" assetExists=")
-                append(assetExists)
-                append(" supportedAbis=")
-                append(supportedAbis)
+            BundledFfmpegRequiredDependencyCopier.copy(payloadLibDir) { name ->
+                assets.open("bin/$abi/$name")
             }
-            Log.e(TAG, "Bundled ffmpeg payload install failed ABI=$abi asset=$assetPath $payloadState", error)
+            copyBundledRuntimeDependencies(payloadLibDir, abi)
+        }.install()
+
+        when (result) {
+            is BundledFfmpegInstallResult.VerifiedCurrent -> {
+                Log.i(TAG, "Bundled ffmpeg payload already verified generation=${result.generation}")
+            }
+            is BundledFfmpegInstallResult.VerifiedNew -> {
+                Log.i(TAG, "Installed verified bundled ffmpeg payload generation=${result.generation} ABI=$abi")
+            }
+            is BundledFfmpegInstallResult.Failure -> {
+                val assetExists = runCatching { assets.open(assetPath).close(); true }.getOrDefault(false)
+                val payloadState = buildString {
+                    append("payloadRoot=")
+                    append(payloadRoot.absolutePath)
+                    append(" exists=")
+                    append(payloadRoot.exists())
+                    append(" isDir=")
+                    append(payloadRoot.isDirectory)
+                    append(" canWrite=")
+                    append(payloadRoot.canWrite())
+                    append(" assetExists=")
+                    append(assetExists)
+                    append(" supportedAbis=")
+                    append(supportedAbis)
+                }
+                Log.e(
+                    TAG,
+                    "Bundled ffmpeg payload install failed ABI=$abi asset=$assetPath $payloadState reason=${result.reason}",
+                    result.cause,
+                )
+            }
         }
+        return result
     }
 
+    private fun extractBundledFfmpegPayload(stagingRoot: File, assetPath: String) {
+        val rootCanonical = stagingRoot.canonicalPath + File.separator
+        assets.open(assetPath).use { raw ->
+            ZipInputStream(BufferedInputStream(raw)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val outFile = File(stagingRoot, entry.name)
+                    val outCanonical = outFile.canonicalPath
+                    require(outCanonical.startsWith(rootCanonical)) {
+                        "Invalid zip entry outside target dir: ${entry.name}"
+                    }
 
-
-    private fun copyRequiredBundledRuntimeDependencies(libDir: File, abi: String) {
-        if (!libDir.exists() || !libDir.isDirectory) return
-        val requiredAssets = BundledFfmpegRuntime.REQUIRED_COPIED_DEPENDENCIES
-        val assetLibDir = "bin/$abi"
-        requiredAssets.forEach { name ->
-            val target = File(libDir, name)
-            if (target.exists() && target.length() > 255L) return@forEach
-            runCatching {
-                assets.open("$assetLibDir/$name").use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
+                    if (entry.isDirectory) {
+                        check(outFile.isDirectory || outFile.mkdirs()) {
+                            "Could not create FFmpeg payload directory ${entry.name}"
+                        }
+                    } else {
+                        check(outFile.parentFile?.isDirectory == true || outFile.parentFile?.mkdirs() == true) {
+                            "Could not create FFmpeg payload parent for ${entry.name}"
+                        }
+                        outFile.outputStream().use { output -> zis.copyTo(output) }
+                        outFile.setReadable(true, true)
+                        if (outFile.parentFile?.name == "bin") {
+                            outFile.setExecutable(true, true)
+                        }
+                    }
+                    zis.closeEntry()
+                    entry = zis.nextEntry
                 }
-                target.setReadable(true, true)
-                Log.i(TAG, "Copied required bundled runtime dependency $name into ffmpeg payload")
-            }.onFailure {
-                Log.e(TAG, "Failed to copy required bundled runtime dependency $name", it)
             }
         }
     }

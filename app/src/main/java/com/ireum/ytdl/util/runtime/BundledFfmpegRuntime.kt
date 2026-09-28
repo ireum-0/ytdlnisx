@@ -3,12 +3,16 @@ package com.ireum.ytdl.util.runtime
 import android.content.Context
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.FileOutputStream
+import java.util.UUID
 
 sealed interface BundledFfmpegRuntimeResolution {
     data class Available(
         val ffmpegExecutable: File,
         val ffprobeExecutable: File,
         val payloadLibraryDirectory: File,
+        val generation: String?,
     ) : BundledFfmpegRuntimeResolution
 
     data class Unavailable(val reason: String) : BundledFfmpegRuntimeResolution
@@ -16,6 +20,9 @@ sealed interface BundledFfmpegRuntimeResolution {
 
 object BundledFfmpegRuntime {
     const val PAYLOAD_REVISION = "arm64-wrapper-libffmpeg-0.18.1-r12"
+    const val PAYLOAD_REVISION_FILE = ".payload_revision"
+    const val PAYLOAD_GENERATION_FILE = ".payload_generation"
+    internal const val MINIMUM_LIBRARY_BYTES = 255L
 
     val REQUIRED_PAYLOAD_RELATIVE_PATHS = listOf(
         "usr/lib/libavdevice.so.61",
@@ -41,29 +48,56 @@ object BundledFfmpegRuntime {
 
     fun resolve(
         context: Context,
-        ensureRuntimeInstalled: () -> Unit,
+        ensureRuntimeInstalled: () -> BundledFfmpegInstallResult,
     ): BundledFfmpegRuntimeResolution {
         resolutionForTesting?.let { return it(context) }
-        val installationFailure = runCatching(ensureRuntimeInstalled).exceptionOrNull()
-        val resolution = validate(
-            nativeLibraryDirectory = File(context.applicationInfo.nativeLibraryDir),
-            payloadRoot = File(
-                context.noBackupFilesDir,
-                "youtubedl-android/packages/ffmpeg",
+        val installation = runCatching(ensureRuntimeInstalled).getOrElse { error ->
+            BundledFfmpegInstallResult.Failure(
+                error.message ?: "FFmpeg runtime installation failed",
+                error,
+            )
+        }
+        return verifyInstalledGeneration(
+            installation,
+            validate(
+                nativeLibraryDirectory = File(context.applicationInfo.nativeLibraryDir),
+                payloadRoot = File(
+                    context.noBackupFilesDir,
+                    "youtubedl-android/packages/ffmpeg",
+                ),
             ),
         )
-        if (resolution !is BundledFfmpegRuntimeResolution.Unavailable || installationFailure == null) {
-            return resolution
+    }
+
+    internal fun verifyInstalledGeneration(
+        installation: BundledFfmpegInstallResult,
+        resolution: BundledFfmpegRuntimeResolution,
+    ): BundledFfmpegRuntimeResolution {
+        if (installation is BundledFfmpegInstallResult.Failure) {
+            return BundledFfmpegRuntimeResolution.Unavailable(
+                "FFmpeg runtime installation failed: ${installation.reason}",
+            )
         }
-        return resolution.copy(
-            reason = "${resolution.reason}; runtime installation failed: " +
-                (installationFailure.message ?: installationFailure.javaClass.simpleName),
-        )
+        val available = resolution as? BundledFfmpegRuntimeResolution.Available ?: return resolution
+        val expectedGeneration = when (installation) {
+            is BundledFfmpegInstallResult.VerifiedCurrent -> installation.generation
+            is BundledFfmpegInstallResult.VerifiedNew -> installation.generation
+            is BundledFfmpegInstallResult.Failure -> error("handled above")
+        }
+        return if (available.generation == expectedGeneration) {
+            available
+        } else {
+            BundledFfmpegRuntimeResolution.Unavailable(
+                "FFmpeg runtime generation changed after installation verification",
+            )
+        }
     }
 
     internal fun validate(
         nativeLibraryDirectory: File,
         payloadRoot: File,
+        expectedRevision: String = PAYLOAD_REVISION,
+        requireGeneration: Boolean = true,
         canExecute: (File) -> Boolean = File::canExecute,
     ): BundledFfmpegRuntimeResolution {
         val nativeDir = runCatching { nativeLibraryDirectory.canonicalFile }.getOrElse {
@@ -81,10 +115,21 @@ object BundledFfmpegRuntime {
         val canonicalPayloadRoot = runCatching { payloadRoot.canonicalFile }.getOrElse {
             return BundledFfmpegRuntimeResolution.Unavailable("FFmpeg payload root is unreadable")
         }
-        val revisionFile = File(canonicalPayloadRoot, ".payload_revision")
+        val expectedPayloadParent = runCatching { payloadRoot.absoluteFile.parentFile?.canonicalFile }.getOrNull()
+        if (expectedPayloadParent == null || canonicalPayloadRoot.parentFile != expectedPayloadParent || canonicalPayloadRoot.name != payloadRoot.name) {
+            return BundledFfmpegRuntimeResolution.Unavailable("FFmpeg payload root is outside its owned package directory")
+        }
+        val revisionFile = File(canonicalPayloadRoot, PAYLOAD_REVISION_FILE)
         val revision = runCatching { revisionFile.readText(Charsets.UTF_8).trim() }.getOrNull()
-        if (revision != PAYLOAD_REVISION) {
+        if (revision != expectedRevision) {
             return BundledFfmpegRuntimeResolution.Unavailable("FFmpeg payload revision is missing or unsupported")
+        }
+
+        val generation = runCatching {
+            File(canonicalPayloadRoot, PAYLOAD_GENERATION_FILE).readText(Charsets.UTF_8).trim()
+        }.getOrNull()?.takeIf { isGenerationId(it) }
+        if (requireGeneration && generation == null) {
+            return BundledFfmpegRuntimeResolution.Unavailable("FFmpeg payload generation provenance is missing or unsupported")
         }
 
         val payloadLibraryDirectory = runCatching {
@@ -101,7 +146,8 @@ object BundledFfmpegRuntime {
                 ?: return@firstOrNull true
             library.parentFile != payloadLibraryDirectory ||
                 !library.isFile ||
-                library.length() <= MINIMUM_LIBRARY_BYTES
+                library.length() <= MINIMUM_LIBRARY_BYTES ||
+                !hasElfHeader(library)
         }
         if (missingLibrary != null) {
             return BundledFfmpegRuntimeResolution.Unavailable(
@@ -113,6 +159,7 @@ object BundledFfmpegRuntime {
             ffmpegExecutable = ffmpeg,
             ffprobeExecutable = ffprobe,
             payloadLibraryDirectory = payloadLibraryDirectory,
+            generation = generation,
         )
     }
 
@@ -126,9 +173,10 @@ object BundledFfmpegRuntime {
         }.getOrNull() ?: return null
         if (
             executable.parentFile != nativeLibraryDirectory ||
-            executable.name != name ||
-            !executable.isFile ||
-            !canExecute(executable) ||
+                executable.name != name ||
+                !executable.isFile ||
+                executable.length() <= MINIMUM_LIBRARY_BYTES ||
+                !canExecute(executable) ||
             !hasElfHeader(executable)
         ) {
             return null
@@ -147,7 +195,46 @@ object BundledFfmpegRuntime {
         }
     }.getOrDefault(false)
 
-    private const val MINIMUM_LIBRARY_BYTES = 255L
+    private fun isGenerationId(value: String): Boolean =
+        runCatching { UUID.fromString(value).toString() == value }.getOrDefault(false)
+}
+
+/** Copies the four dependencies that the FFmpeg payload cannot run without. */
+internal object BundledFfmpegRequiredDependencyCopier {
+    fun copy(
+        libraryDirectory: File,
+        openAsset: (name: String) -> InputStream,
+    ) {
+        if (!libraryDirectory.exists() && !libraryDirectory.mkdirs()) {
+            throw IOException("Could not create required FFmpeg library directory")
+        }
+        if (!libraryDirectory.isDirectory) throw IOException("Required FFmpeg library path is not a directory")
+
+        BundledFfmpegRuntime.REQUIRED_COPIED_DEPENDENCIES.forEach { name ->
+            val target = File(libraryDirectory, name)
+            if (target.isFile && target.length() > BundledFfmpegRuntime.MINIMUM_LIBRARY_BYTES) return@forEach
+
+            val temporary = File(libraryDirectory, ".$name.${UUID.randomUUID()}.copying")
+            try {
+                FileOutputStream(temporary, false).use { output ->
+                    openAsset(name).use { input -> input.copyTo(output) }
+                    output.fd.sync()
+                }
+                temporary.setReadable(true, true)
+                if (!temporary.isFile || temporary.length() <= BundledFfmpegRuntime.MINIMUM_LIBRARY_BYTES) {
+                    throw IOException("Required FFmpeg dependency $name was copied incompletely")
+                }
+                if (target.exists() && !target.delete()) {
+                    throw IOException("Could not replace incomplete FFmpeg dependency $name")
+                }
+                if (!temporary.renameTo(target)) {
+                    throw IOException("Could not publish required FFmpeg dependency $name")
+                }
+            } finally {
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+    }
 }
 
 class FfmpegRuntimeUnavailableException(reason: String) : IOException(

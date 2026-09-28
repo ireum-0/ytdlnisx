@@ -5,6 +5,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.UUID
 
 class BundledFfmpegRuntimeTest {
     @Test
@@ -64,6 +65,47 @@ class BundledFfmpegRuntimeTest {
         )
     }
 
+    @Test
+    fun missingGenerationProvenanceIsUnavailable() = withRuntimeLayout { nativeDirectory, payloadRoot ->
+        File(payloadRoot, BundledFfmpegRuntime.PAYLOAD_GENERATION_FILE).delete()
+
+        val result = BundledFfmpegRuntime.validate(nativeDirectory, payloadRoot) { true }
+
+        assertTrue(result is BundledFfmpegRuntimeResolution.Unavailable)
+        assertTrue((result as BundledFfmpegRuntimeResolution.Unavailable).reason.contains("generation provenance"))
+    }
+
+    @Test
+    fun installerFailureCannotReturnAnOtherwiseAvailableRuntime() = withRuntimeLayout { nativeDirectory, payloadRoot ->
+        val available = BundledFfmpegRuntime.validate(nativeDirectory, payloadRoot) { true }
+
+        val result = BundledFfmpegRuntime.verifyInstalledGeneration(
+            BundledFfmpegInstallResult.Failure("injected install failure"),
+            available,
+        )
+
+        assertTrue(result is BundledFfmpegRuntimeResolution.Unavailable)
+        assertTrue((result as BundledFfmpegRuntimeResolution.Unavailable).reason.contains("injected install failure"))
+    }
+
+    @Test
+    fun consumerResolutionMustMatchTheExactInstallerGeneration() = withRuntimeLayout { nativeDirectory, payloadRoot ->
+        val available = BundledFfmpegRuntime.validate(nativeDirectory, payloadRoot) { true }
+            as BundledFfmpegRuntimeResolution.Available
+
+        val matching = BundledFfmpegRuntime.verifyInstalledGeneration(
+            BundledFfmpegInstallResult.VerifiedCurrent(requireNotNull(available.generation)),
+            available,
+        )
+        val stale = BundledFfmpegRuntime.verifyInstalledGeneration(
+            BundledFfmpegInstallResult.VerifiedNew(UUID.randomUUID().toString()),
+            available,
+        )
+
+        assertEquals(available, matching)
+        assertTrue(stale is BundledFfmpegRuntimeResolution.Unavailable)
+    }
+
     private fun withRuntimeLayout(block: (File, File) -> Unit) {
         val root = Files.createTempDirectory("bundled-ffmpeg-runtime-").toFile()
         try {
@@ -76,10 +118,11 @@ class BundledFfmpegRuntimeTest {
             BundledFfmpegRuntime.REQUIRED_PAYLOAD_RELATIVE_PATHS.forEach { relativePath ->
                 File(payloadRoot, relativePath).apply {
                     parentFile?.mkdirs()
-                    writeBytes(ByteArray(512))
+                    writeBytes(ELF_HEADER + ByteArray(508))
                 }
             }
             File(payloadRoot, ".payload_revision").writeText(BundledFfmpegRuntime.PAYLOAD_REVISION)
+            File(payloadRoot, BundledFfmpegRuntime.PAYLOAD_GENERATION_FILE).writeText(UUID.randomUUID().toString())
 
             block(nativeDirectory, payloadRoot)
         } finally {
