@@ -50,6 +50,8 @@ import com.ireum.ytdl.util.VideoQualityPolicy
 import com.ireum.ytdl.util.WebUrlInput
 import com.ireum.ytdl.util.SourceSnapshot
 import com.ireum.ytdl.util.SourceSnapshotAuthority
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeResolution
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
 import com.ireum.ytdl.util.process.ProcessQuiescence
 import com.ireum.ytdl.work.DownloadOutputProvenance
@@ -2795,20 +2797,17 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
     }
 
     private fun resolveYtDlpFfmpegLocation(): String? {
-        runCatching { App.instance.ensureRuntimeToolsInstalled() }
-            .onFailure { Log.w("YTDLPUtil", "Failed to ensure bundled runtime tools before ffmpeg resolution", it) }
-        val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir)
-        val ffmpeg = File(nativeLibraryDir, "libffmpeg.so")
-        val ffprobe = File(nativeLibraryDir, "libffprobe.so")
-        val payloadLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
-        if (
-            ffmpeg.exists() && ffmpeg.isFile && ffmpeg.canExecute() &&
-            ffprobe.exists() && ffprobe.isFile && ffprobe.canExecute() &&
-            payloadLibDir.exists() && payloadLibDir.isDirectory
+        return when (
+            val runtime = BundledFfmpegRuntime.resolve(context) {
+                App.instance.ensureRuntimeToolsInstalled()
+            }
         ) {
-            return ffmpeg.absolutePath
+            is BundledFfmpegRuntimeResolution.Available -> runtime.ffmpegExecutable.absolutePath
+            is BundledFfmpegRuntimeResolution.Unavailable -> {
+                Log.w("YTDLPUtil", "FFmpeg runtime unavailable: ${runtime.reason}")
+                null
+            }
         }
-        return null
     }
 
 

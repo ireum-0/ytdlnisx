@@ -19,6 +19,8 @@ import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.VideoFileQualityState
 import com.ireum.ytdl.util.VideoMediaQuality
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeResolution
 import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.ireum.ytdl.work.DownloadWorker
@@ -519,6 +521,90 @@ class DownloadOutputProductionWiringTest {
     }
 
     @Test
+    fun unavailableFfmpegRuntimeFailsHardSubBeforePublishingOutput() = runBlocking {
+        withCacheDownloads(false) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "hard-sub-runtime-unavailable").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "best",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = true),
+                ),
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            BundledFfmpegRuntime.resolutionForTesting = {
+                BundledFfmpegRuntimeResolution.Unavailable("test runtime is incomplete")
+            }
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    stagedOutput = File(outputDirectory, "hard-sub-unavailable.mp4").apply {
+                        writeBytes(byteArrayOf(1, 2, 3, 4))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            assertNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+            assertTrue(destination.listFiles().orEmpty().none { it.isFile })
+            assertFalse(requireNotNull(stagedOutput).exists())
+        }
+    }
+
+    @Test
+    fun unavailableFfmpegRuntimeDoesNotBlockIndependentVideoDownload() = runBlocking {
+        withCacheDownloads(false) {
+            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val destination = File(testRoot, "video-without-ffmpeg-runtime").apply { mkdirs() }
+            db.downloadDao.insertRaw(
+                download(
+                    id = downloadId,
+                    destination = destination.absolutePath,
+                    type = DownloadType.video,
+                    formatNote = "best",
+                    container = "mp4",
+                    videoPreferences = VideoPreferences(embedSubs = false, addChapters = false),
+                ),
+            )
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            BundledFfmpegRuntime.resolutionForTesting = {
+                BundledFfmpegRuntimeResolution.Unavailable("test runtime is incomplete")
+            }
+            var stagedOutput: File? = null
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
+                if (candidateId != downloadId) {
+                    null
+                } else {
+                    stagedOutput = File(outputDirectory, "independent-video.mp4").apply {
+                        writeBytes(byteArrayOf(5, 6, 7, 8))
+                    }
+                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedOutput).absolutePath}'"
+                }
+            }
+
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+
+            val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
+            assertEquals(1, history.downloadPath.size)
+            assertTrue(history.downloadPath.single().startsWith(destination.canonicalPath))
+            assertTrue(File(history.downloadPath.single()).isFile)
+            assertFalse(requireNotNull(stagedOutput).exists())
+        }
+    }
+
+    @Test
     fun realWorkerIgnoresShlexProtectedPathLookingValueForPublication() = runBlocking {
         withCacheDownloads(true) {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
@@ -973,6 +1059,7 @@ class DownloadOutputProductionWiringTest {
         DownloadWorkerEffectTestHooks.outputBaselineReaderForTesting = null
         DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = null
         DownloadWorkerEffectTestHooks.hardSubBurnForTesting = null
+        BundledFfmpegRuntime.resolutionForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaPublicationForTesting = null
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
     }

@@ -55,6 +55,9 @@ import com.ireum.ytdl.util.Extensions.isYoutubeURL
 import com.ireum.ytdl.util.Extensions.toStringDuration
 import com.ireum.ytdl.util.Extensions.toDurationSeconds
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeResolution
+import com.ireum.ytdl.util.runtime.FfmpegRuntimeUnavailableException
 import com.ireum.ytdl.util.DownloadQualityDecision
 import com.ireum.ytdl.util.DownloadQualityFallbackPolicy
 import com.ireum.ytdl.util.HistoryRedownloadMarker
@@ -8615,33 +8618,28 @@ class DownloadWorker(
     )
 
     private fun resolveFfmpegRuntime(excludedSources: Set<String> = emptySet()): FfmpegRuntime {
-        runCatching { App.instance.ensureRuntimeToolsInstalled() }
-            .onFailure { Log.w(TAG, "Failed to ensure bundled runtime tools before ffmpeg runtime resolution", it) }
-        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
-        val extractedLibDir = File(context.noBackupFilesDir, "youtubedl-android/packages/ffmpeg/usr/lib")
-        val executableCandidates = listOf(
-            File(nativeLibDir, "libffmpeg.so") to "wrapper-native-libffmpeg"
-        )
-
-        val selected = executableCandidates.firstOrNull { (file, source) ->
-            if (source in excludedSources || source in hardSubDisabledFfmpegSources) return@firstOrNull false
-            isUsableFfmpegExecutable(file)
-        } ?: executableCandidates.first()
-        val executable = selected.first
-        val source = selected.second
-
-        val libraryDirs = mutableListOf<String>()
-        if (extractedLibDir.exists() && extractedLibDir.isDirectory) {
-            libraryDirs.add(extractedLibDir.absolutePath)
+        val runtime = when (
+            val resolution = BundledFfmpegRuntime.resolve(context) {
+                App.instance.ensureRuntimeToolsInstalled()
+            }
+        ) {
+            is BundledFfmpegRuntimeResolution.Available -> resolution
+            is BundledFfmpegRuntimeResolution.Unavailable -> {
+                throw FfmpegRuntimeUnavailableException(resolution.reason)
+            }
         }
-        val preloadLibraryPath: String? = null
-        val linkerPath: String? = null
+        val source = "wrapper-native-libffmpeg"
+        if (source in excludedSources || source in hardSubDisabledFfmpegSources) {
+            throw FfmpegRuntimeUnavailableException(
+                "no validated FFmpeg alternative is available after excluding $source",
+            )
+        }
         return FfmpegRuntime(
-            executablePath = executable.absolutePath,
-            linkerPath = linkerPath,
-            libraryPath = libraryDirs.distinct().joinToString(":").ifBlank { null },
-            preloadLibraryPath = preloadLibraryPath,
-            source = source
+            executablePath = runtime.ffmpegExecutable.absolutePath,
+            linkerPath = null,
+            libraryPath = runtime.payloadLibraryDirectory.absolutePath,
+            preloadLibraryPath = null,
+            source = source,
         )
     }
 
@@ -8875,27 +8873,6 @@ class DownloadWorker(
         return null
     }
 
-    private fun isUsableFfmpegExecutable(file: File): Boolean {
-        if (!file.exists() || !file.isFile) return false
-        if (!file.canExecute()) return false
-        if (!file.name.endsWith(".so")) return true
-        return hasElfHeader(file)
-    }
-
-    private fun hasElfHeader(file: File): Boolean {
-        return runCatching {
-            file.inputStream().use { input ->
-                val header = ByteArray(4)
-                val read = input.read(header)
-                read == 4 &&
-                    header[0] == 0x7F.toByte() &&
-                    header[1] == 'E'.code.toByte() &&
-                    header[2] == 'L'.code.toByte() &&
-                    header[3] == 'F'.code.toByte()
-            }
-        }.getOrDefault(false)
-    }
-
     private fun isLikelyInvalidFfmpegBinaryOutput(output: String): Boolean {
         val lowered = output.lowercase(Locale.US)
         return lowered.contains("exec format error") ||
@@ -9085,6 +9062,20 @@ class DownloadWorker(
         if (!important) return false
         if (lastLoggedAt == 0L) return true
         return (now - lastLoggedAt) >= 1200L
+    }
+
+    private fun hasElfHeader(file: File): Boolean {
+        return runCatching {
+            file.inputStream().use { input ->
+                val header = ByteArray(4)
+                val read = input.read(header)
+                read == 4 &&
+                    header[0] == 0x7F.toByte() &&
+                    header[1] == 'E'.code.toByte() &&
+                    header[2] == 'L'.code.toByte() &&
+                    header[3] == 'F'.code.toByte()
+            }
+        }.getOrDefault(false)
     }
 
     private fun patchMissingRuntimeLibrary(missingLibName: String): Boolean {

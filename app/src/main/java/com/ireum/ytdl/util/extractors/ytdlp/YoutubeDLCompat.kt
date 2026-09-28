@@ -2,12 +2,15 @@
 
 import android.content.Context
 import android.util.Log
+import com.ireum.ytdl.App
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDL.CanceledException
 import com.yausername.youtubedl_android.YoutubeDLException
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.yausername.youtubedl_android.YoutubeDLResponse
 import com.ireum.ytdl.util.process.ProcessQuiescence
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeResolution
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -847,31 +850,14 @@ sys.exit(exit_code)
     }
 
     private fun resolveValidFfmpegLocation(context: Context): String? {
-        return runCatching {
-            val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir).canonicalFile
-            val ffmpeg = File(nativeLibraryDir, "libffmpeg.so").canonicalFile
-            val ffprobe = File(nativeLibraryDir, "libffprobe.so").canonicalFile
-            val payloadLibDir = File(
-                context.noBackupFilesDir,
-                "$BASE_NAME/$PACKAGES_ROOT/$FFMPEG_DIR_NAME/usr/lib"
-            ).canonicalFile
-
-            if (
-                ffmpeg.parentFile == nativeLibraryDir &&
-                ffmpeg.name == "libffmpeg.so" &&
-                ffmpeg.isFile &&
-                ffmpeg.canExecute() &&
-                ffprobe.parentFile == nativeLibraryDir &&
-                ffprobe.name == "libffprobe.so" &&
-                ffprobe.isFile &&
-                ffprobe.canExecute() &&
-                payloadLibDir.isDirectory
-            ) {
-                ffmpeg.absolutePath
-            } else {
-                null
+        return when (
+            val runtime = BundledFfmpegRuntime.resolve(context) {
+                App.instance.ensureRuntimeToolsInstalled()
             }
-        }.getOrNull()
+        ) {
+            is BundledFfmpegRuntimeResolution.Available -> runtime.ffmpegExecutable.absolutePath
+            is BundledFfmpegRuntimeResolution.Unavailable -> null
+        }
     }
 
 

@@ -24,6 +24,7 @@ import com.ireum.ytdl.work.TerminalExecutionRecovery
 import com.ireum.ytdl.work.TerminalExecutionRegistry
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
 import com.ireum.ytdl.util.storage.CacheImportPlanner
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.yausername.aria2c.Aria2c
@@ -315,29 +316,11 @@ class App : Application() {
         val assetPath = "bin/$abi/ffmpeg_payload.zip"
         val payloadRoot = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
         val revisionFile = File(payloadRoot, ".payload_revision")
-        val expectedRevision = "arm64-wrapper-libffmpeg-0.18.1-r12"
-        val requiredLibs = listOf(
-            "usr/lib/libavdevice.so.61",
-            "usr/lib/libavfilter.so.10",
-            "usr/lib/libavformat.so.61",
-            "usr/lib/libavcodec.so.61",
-            "usr/lib/libavutil.so.59"
-        )
-
-        val requiredCopiedDeps = listOf(
-            "usr/lib/libc++_shared.so",
-            "usr/lib/libexpat.so.1",
-            "usr/lib/libcrypto.so.3",
-            "usr/lib/libssl.so.3"
-        )
-        val alreadyInstalled = requiredLibs.all { rel ->
-            val file = File(payloadRoot, rel)
-            file.exists() && file.length() > 255L
-        } && requiredCopiedDeps.all { rel ->
+        val alreadyInstalled = BundledFfmpegRuntime.REQUIRED_PAYLOAD_RELATIVE_PATHS.all { rel ->
             val file = File(payloadRoot, rel)
             file.exists() && file.length() > 255L
         } && revisionFile.exists() &&
-            revisionFile.readText(Charsets.UTF_8).trim() == expectedRevision
+            revisionFile.readText(Charsets.UTF_8).trim() == BundledFfmpegRuntime.PAYLOAD_REVISION
         if (alreadyInstalled) {
             return
         }
@@ -376,7 +359,7 @@ class App : Application() {
             materializeSharedLibraryLinks(payloadLibDir)
             copyRequiredBundledRuntimeDependencies(payloadLibDir, abi)
             copyBundledRuntimeDependencies(payloadLibDir, abi)
-            revisionFile.writeText(expectedRevision, Charsets.UTF_8)
+            revisionFile.writeText(BundledFfmpegRuntime.PAYLOAD_REVISION, Charsets.UTF_8)
             Log.i(TAG, "Installed bundled ffmpeg payload for ABI=$abi at ${payloadRoot.absolutePath}")
         }.onFailure { error ->
             val assetExists = runCatching { assets.open(assetPath).close(); true }.getOrDefault(false)
@@ -402,12 +385,7 @@ class App : Application() {
 
     private fun copyRequiredBundledRuntimeDependencies(libDir: File, abi: String) {
         if (!libDir.exists() || !libDir.isDirectory) return
-        val requiredAssets = listOf(
-            "libc++_shared.so",
-            "libexpat.so.1",
-            "libcrypto.so.3",
-            "libssl.so.3"
-        )
+        val requiredAssets = BundledFfmpegRuntime.REQUIRED_COPIED_DEPENDENCIES
         val assetLibDir = "bin/$abi"
         requiredAssets.forEach { name ->
             val target = File(libDir, name)
@@ -504,21 +482,11 @@ class App : Application() {
         val payloadRoot = File(noBackupFilesDir, "youtubedl-android/packages/ffmpeg")
         val revisionFile = File(payloadRoot, ".payload_revision")
         val payloadLibDir = File(payloadRoot, "usr/lib")
-        val probeNames = listOf(
-            "libavdevice.so.61",
-            "libavfilter.so.10",
-            "libavformat.so.61",
-            "libavcodec.so.61",
-            "libavutil.so.59",
-            "libc++_shared.so",
-            "libexpat.so.1",
-            "libcrypto.so.3",
-            "libssl.so.3"
-        )
+        val probeNames = BundledFfmpegRuntime.REQUIRED_PAYLOAD_RELATIVE_PATHS.map { it.substringAfterLast('/') }
         return buildString {
             appendLine("ffmpegPayload:")
             appendLine(" root=${payloadRoot.absolutePath} exists=${payloadRoot.exists()} isDir=${payloadRoot.isDirectory}")
-            appendLine(" revision=${revisionFile.takeIf { it.exists() }?.readText(Charsets.UTF_8)?.trim() ?: "<missing>"}")
+            appendLine(" revision=${revisionFile.takeIf { it.exists() }?.readText(Charsets.UTF_8)?.trim() ?: "<missing>"} expected=${BundledFfmpegRuntime.PAYLOAD_REVISION}")
             probeNames.forEach { name ->
                 val file = File(payloadLibDir, name)
                 appendLine(" lib=$name exists=${file.exists()} size=${if (file.exists()) file.length() else -1L}")
