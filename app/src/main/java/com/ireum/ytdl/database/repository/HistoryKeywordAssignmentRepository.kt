@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.models.HistoryReplacementBarrier
 import com.ireum.ytdl.database.models.DownloadPrimarySuccessAuthority
 import com.ireum.ytdl.database.models.HistoryUndoSnapshot
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
+import com.ireum.ytdl.util.HistoryDuplicateIdentity
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.HistoryReplacementSourceIdentity
 import com.ireum.ytdl.util.LocalAddStorageIdentityPolicy
@@ -331,8 +332,85 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
             if (copied.isNotEmpty()) dao.insertAssignments(copied)
             materializeInTransaction(toHistoryItemId)
         }
-    }
         }
+    }
+
+    /**
+     * Deletes only rows that remain duplicates within the candidate groups
+     * discovered by the caller. Candidate IDs are hints; current History
+     * rows and their identities are reread and regrouped under the same
+     * relationship lock and Room transaction as assignment and relationship
+     * mutation.
+     */
+    suspend fun deleteDuplicateHistoryGroups(candidateGroups: List<List<Long>>): Int {
+        val candidates = candidateGroups
+            .map { group -> group.filter { it > 0L }.distinct() }
+            .filter { it.size > 1 }
+        if (candidates.isEmpty()) return 0
+
+        return HistoryReferenceMutationCoordinator.withLock {
+            db.withTransaction {
+                var removedCount = 0
+                candidates.forEach { candidateIds ->
+                    val currentGroups = candidateIds
+                        .mapNotNull(db.historyDao::getNullableItem)
+                        .mapNotNull { item ->
+                            HistoryDuplicateIdentity.key(item.type, item.url)?.let { key -> key to item }
+                        }
+                        .groupBy(
+                            keySelector = { (key, _) -> key },
+                            valueTransform = { (_, item) -> item },
+                        )
+                        .values
+                        .filter { it.size > 1 }
+
+                    currentGroups.forEach { currentGroup ->
+                        val ordered = currentGroup.sortedWith(
+                            compareBy<HistoryItem> { it.time }.thenBy { it.id },
+                        )
+                        val retainedId = ordered.first().id
+                        ordered.drop(1).forEach duplicateLoop@{ candidate ->
+                            val retained = db.historyDao.getNullableItem(retainedId) ?: return@duplicateLoop
+                            val duplicate = db.historyDao.getNullableItem(candidate.id) ?: return@duplicateLoop
+                            val retainedKey = HistoryDuplicateIdentity.key(retained.type, retained.url)
+                                ?: return@duplicateLoop
+                            val duplicateKey = HistoryDuplicateIdentity.key(duplicate.type, duplicate.url)
+                                ?: return@duplicateLoop
+                            if (retainedKey != duplicateKey) return@duplicateLoop
+
+                            val copiedAssignments = dao.getAssignmentsRaw(duplicate.id).map { assignment ->
+                                assignment.copy(historyItemId = retained.id)
+                            }
+                            if (copiedAssignments.isNotEmpty()) dao.insertAssignments(copiedAssignments)
+                            materializeInTransaction(retained.id)
+
+                            db.playlistDao.deletePlaylistItemsByHistoryIds(listOf(duplicate.id))
+                            dao.deleteAssignmentsForHistory(duplicate.id)
+
+                            // Recheck immediately before deletion; any unexpected in-transaction change rolls back
+                            // the assignment and relationship mutations with the History deletion.
+                            val deletionRetained = checkNotNull(db.historyDao.getNullableItem(retained.id)) {
+                                "Retained History row disappeared during duplicate cleanup"
+                            }
+                            val deletionDuplicate = checkNotNull(db.historyDao.getNullableItem(duplicate.id)) {
+                                "Duplicate History row disappeared during duplicate cleanup"
+                            }
+                            check(
+                                HistoryDuplicateIdentity.key(deletionRetained.type, deletionRetained.url) == retainedKey &&
+                                    HistoryDuplicateIdentity.key(deletionDuplicate.type, deletionDuplicate.url) == retainedKey,
+                            ) {
+                                "History duplicate identity changed during cleanup"
+                            }
+
+                            db.historyDao.deleteWithIds(listOf(duplicate.id))
+                            removedCount += 1
+                        }
+                    }
+                }
+                removedCount
+            }
+        }
+    }
 
     suspend fun insertHistory(item: HistoryItem): Long =
         HistoryReferenceMutationCoordinator.withLock {

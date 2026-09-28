@@ -1893,14 +1893,8 @@ class HistoryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteDuplicates() = viewModelScope.launch(Dispatchers.IO) {
-        val duplicateGroups = repository.getDuplicateGroups()
-        duplicateGroups.forEach { group ->
-            val retained = group.first()
-            group.drop(1).forEach { duplicate ->
-                keywordAssignments.mergeHistoryAssignments(duplicate.id, retained.id)
-            }
-        }
-        keywordAssignments.deleteHistoryRecords(duplicateGroups.flatMap { it.drop(1) }.map { it.id })
+        val candidateGroups = repository.getDuplicateGroups().map { group -> group.map { it.id } }
+        keywordAssignments.deleteDuplicateHistoryGroups(candidateGroups)
         invalidateCachedIds(triggerRefresh = true)
     }
 
