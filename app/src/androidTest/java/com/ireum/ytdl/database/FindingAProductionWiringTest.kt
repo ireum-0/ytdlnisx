@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.core.content.ContextCompat
+import androidx.preference.PreferenceManager
 import com.ireum.ytdl.database.dao.DownloadClaimTestHooks
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
@@ -41,6 +42,8 @@ import com.ireum.ytdl.work.persistHistoryReplacementTerminalStateWithOwnedExecut
 import com.ireum.ytdl.work.YtdlpProcessIdentity
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +51,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.greenrobot.eventbus.EventBus
 import org.greenrobot.eventbus.Subscribe
@@ -2061,6 +2065,209 @@ class FindingAProductionWiringTest {
             DownloadRepository.userStopWriteFailureForTesting = null
             DownloadExecutionRecovery.cancelRecoveryJobForTesting(failingId)
         }
+    }
+
+    @Test
+    fun pauseAllLeavesLateProductionAdmissionRunningOutsideItsTargetSnapshot() = runBlocking(Dispatchers.Main) {
+        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val hadConcurrentLimit = preferences.contains("concurrent_downloads")
+        val previousConcurrentLimit = preferences.getInt("concurrent_downloads", 1)
+        val hadMeteredPreference = preferences.contains("metered_networks")
+        val previousMeteredPreference = preferences.getBoolean("metered_networks", true)
+        val executionId = "pause-all-snapshot-A-E1"
+        val activeId = db.downloadDao.insertRaw(
+            download().copy(
+                url = "https://example.com/pause-all-snapshot-target",
+                status = DownloadRepository.Status.Active.name,
+                executionId = executionId,
+            ),
+        )
+        val lateQueuedId = db.downloadDao.insertRaw(
+            download().copy(
+                url = "https://example.com/pause-all-late-sibling",
+                status = DownloadRepository.Status.Queued.name,
+                executionId = "",
+            ),
+        )
+        val processId = YtdlpProcessIdentity.download(activeId, executionId)
+        val targetProcess = PauseAllHeldProcess()
+        val lateClaimPublished = CountDownLatch(1)
+        val releaseLateClaim = CountDownLatch(1)
+        val lateWorkerAtStopGate = CountDownLatch(1)
+        val releaseLateWorker = CountDownLatch(1)
+        var lateWorkId: UUID? = null
+        var pauseAll: kotlinx.coroutines.Deferred<Unit>? = null
+        val workManager = WorkManager.getInstance(context)
+        val existingDownloadWorkIds = withContext(Dispatchers.IO) {
+            workManager.getWorkInfosByTag("download").get(20, TimeUnit.SECONDS).map { it.id }.toSet()
+        }
+        val viewModel = DownloadViewModel(context, db, true)
+        val previousDestroyOverride = YoutubeDLCompat.destroyProcessOverrideForTesting
+
+        try {
+            preferences.edit()
+                .putInt("concurrent_downloads", 2)
+                .putBoolean("metered_networks", true)
+                .commit()
+            YoutubeDLCompat.destroyProcessOverrideForTesting = null
+            YoutubeDLCompat.registerProcessForTesting(processId, targetProcess)
+            assertTrue(DownloadWorkerProcessOwners.claim(activeId, executionId))
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = { item ->
+                if (item.id == lateQueuedId) {
+                    lateClaimPublished.countDown()
+                    check(releaseLateClaim.await(20, TimeUnit.SECONDS)) {
+                        "late execution claim was not released"
+                    }
+                }
+            }
+            DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = { targetId, boundary ->
+                if (targetId == lateQueuedId && boundary == "stop_gate") {
+                    lateWorkerAtStopGate.countDown()
+                    check(releaseLateWorker.await(15, TimeUnit.SECONDS)) {
+                        "late sibling worker was not released for cleanup"
+                    }
+                }
+            }
+
+            val pause = async { viewModel.pauseAllDownloads() }
+            pauseAll = pause
+            assertTrue(
+                "Pause All did not reach A's exact native-quiescence boundary",
+                withContext(Dispatchers.IO) { targetProcess.destroyRequested.await(15, TimeUnit.SECONDS) },
+            )
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(activeId)?.status,
+            )
+
+            val queuedSibling = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
+            val admitted = withContext(Dispatchers.IO) {
+                DownloadRepository(db).startDownloadWorker(
+                    queuedItems = listOf(queuedSibling),
+                    context = context,
+                    awaitAcceptance = true,
+                )
+            }
+            assertTrue("late sibling was not admitted by the production path", admitted.isSuccess)
+            assertTrue(
+                "late sibling did not claim a fresh execution after A's snapshot",
+                withContext(Dispatchers.IO) { lateClaimPublished.await(20, TimeUnit.SECONDS) },
+            )
+            val lateExecution = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
+            assertEquals(DownloadRepository.Status.Active.name, lateExecution.status)
+            assertTrue(
+                "late sibling must own a fresh execution",
+                lateExecution.executionId.isNotBlank() && lateExecution.executionId != queuedSibling.executionId,
+            )
+            releaseLateClaim.countDown()
+            assertTrue(
+                "late sibling worker did not reach the stop gate after claim",
+                withContext(Dispatchers.IO) { lateWorkerAtStopGate.await(20, TimeUnit.SECONDS) },
+            )
+            val runningLateWork = withContext(Dispatchers.IO) {
+                workManager.getWorkInfosByTag("download")
+                    .get(20, TimeUnit.SECONDS)
+                    .firstOrNull { info ->
+                        info.state == WorkInfo.State.RUNNING &&
+                            info.id !in existingDownloadWorkIds
+                    }
+            }
+            assertNotNull("late sibling must have a running tagged carrier", runningLateWork)
+            lateWorkId = requireNotNull(runningLateWork).id
+
+            targetProcess.release()
+            pause.await()
+
+            assertEquals(
+                DownloadRepository.Status.Paused.name,
+                db.downloadDao.getNullableDownloadById(activeId)?.status,
+            )
+            val lateAfterPause = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
+            assertEquals(DownloadRepository.Status.Active.name, lateAfterPause.status)
+            assertEquals(lateExecution.executionId, lateAfterPause.executionId)
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(activeId))
+            val workAfterPause = withContext(Dispatchers.IO) {
+                workManager.getWorkInfoById(requireNotNull(lateWorkId))
+                    .get(20, TimeUnit.SECONDS)
+            }
+            assertEquals(
+                "Pause All must not cancel a carrier outside its exact target snapshot",
+                WorkInfo.State.RUNNING,
+                workAfterPause?.state,
+            )
+        } finally {
+            targetProcess.release()
+            releaseLateClaim.countDown()
+            val discoveredLateWorkId = lateWorkId ?: runCatching {
+                withContext(Dispatchers.IO) {
+                    workManager.getWorkInfosByTag("download")
+                        .get(10, TimeUnit.SECONDS)
+                        .firstOrNull {
+                            it.id !in existingDownloadWorkIds
+                        }?.id
+                }
+            }.getOrNull()
+            val cancelLateWork = discoveredLateWorkId?.let(workManager::cancelWorkById)
+            releaseLateWorker.countDown()
+            DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = null
+            DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = null
+            DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+            if (cancelLateWork != null) {
+                runCatching { cancelLateWork.result.get(10, TimeUnit.SECONDS) }
+            }
+            runCatching { withTimeout(20_000L) { pauseAll?.await() } }
+            YoutubeDLCompat.clearProcessForTesting(processId)
+            DownloadWorkerProcessOwners.release(activeId, executionId)
+            DownloadExecutionRecovery.cancelRecoveryJobForTesting(activeId)
+            YoutubeDLCompat.destroyProcessOverrideForTesting = previousDestroyOverride
+            preferences.edit().also { editor ->
+                if (hadConcurrentLimit) editor.putInt("concurrent_downloads", previousConcurrentLimit)
+                else editor.remove("concurrent_downloads")
+                if (hadMeteredPreference) editor.putBoolean("metered_networks", previousMeteredPreference)
+                else editor.remove("metered_networks")
+            }.commit()
+        }
+    }
+
+    private class PauseAllHeldProcess : Process() {
+        val destroyRequested = CountDownLatch(1)
+        private val released = CountDownLatch(1)
+
+        fun release() {
+            released.countDown()
+        }
+
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        override fun getInputStream(): InputStream = ByteArrayInputStream(byteArrayOf())
+        override fun getErrorStream(): InputStream = ByteArrayInputStream(byteArrayOf())
+
+        override fun waitFor(): Int {
+            released.await()
+            return 0
+        }
+
+        override fun waitFor(timeout: Long, unit: TimeUnit): Boolean {
+            released.await()
+            return true
+        }
+
+        override fun exitValue(): Int {
+            check(released.count == 0L) { "process is still running" }
+            return 0
+        }
+
+        override fun destroy() {
+            destroyRequested.countDown()
+        }
+
+        override fun destroyForcibly(): Process {
+            destroy()
+            return this
+        }
+
+        override fun isAlive(): Boolean = released.count > 0L
     }
 
     @Test

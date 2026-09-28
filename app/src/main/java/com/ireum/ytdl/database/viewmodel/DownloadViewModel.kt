@@ -4030,7 +4030,6 @@ class DownloadViewModel private constructor(
                 )
             }
         }
-        WorkManager.getInstance(application).cancelAllWorkByTag("download")
         delay(1000)
         isPausingResuming = false
         pausedAllDownloads.value = if (
