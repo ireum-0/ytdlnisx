@@ -25,6 +25,7 @@ import com.ireum.ytdl.work.HistoryReplacementPersistenceResult
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.work.DownloadProducerRecovery
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerEffectTestHooks
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
@@ -35,6 +36,7 @@ import com.ireum.ytdl.work.observeQueuedDownloadsAfterRecovery
 import com.ireum.ytdl.work.claimDownloadThroughProductionAdmission
 import com.ireum.ytdl.work.cleanupStoppedDownloadExecution
 import com.ireum.ytdl.work.persistHistoryReplacementTerminalState
+import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -172,12 +174,12 @@ class DownloadWorkerCleanupProductionWiringTest {
     }
 
     @Test
-    fun realWorkerUnreadableStopAndCleanupRetainExactOwnerThroughFailedCarrierWrite() = runBlocking {
+    fun realWorkerUnreadableStopAndCleanupUseExactProducerRecoveryAfterCarrierFailure() = runBlocking {
         exerciseUnreadableAuthority(DownloadRepository.Status.Active.name, true, true)
     }
 
     @Test
-    fun realWorkerPostProcessingUnreadableCleanupRetainsExactOwner() = runBlocking {
+    fun realWorkerPostProcessingUnreadableCleanupUsesExactProducerRecovery() = runBlocking {
         exerciseUnreadableAuthority(DownloadRepository.Status.PostProcessing.name, true, true)
     }
 
@@ -188,6 +190,7 @@ class DownloadWorkerCleanupProductionWiringTest {
     ) {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         cancelStaleRealWorkerRequests(context)
+        YtdlpNativeProcessBarrier.configure(context)
         val failedId = insertQueuedDownload("authority-read-failure")
         val siblingId = insertQueuedDownload("authority-readable-sibling")
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
@@ -199,6 +202,12 @@ class DownloadWorkerCleanupProductionWiringTest {
         val carrierFailures = AtomicInteger(0)
         val terminalAttempts = AtomicInteger(0)
         val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
+        val exactOperation = java.util.concurrent.atomic.AtomicReference<String>()
+        val exactProducerAtNativeBoundary =
+            java.util.concurrent.atomic.AtomicReference<DownloadProducerRecovery.Record?>()
+        val workerOwnerAtNativeBoundary = AtomicBoolean(false)
+        val processOwnerAtNativeBoundary =
+            java.util.concurrent.atomic.AtomicReference<String?>()
         try {
             assertTrue(preferences.edit().putInt("concurrent_downloads", 2).commit())
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
@@ -206,6 +215,14 @@ class DownloadWorkerCleanupProductionWiringTest {
                 if (id == failedId) {
                     val current = requireNotNull(db.downloadDao.getNullableDownloadById(id))
                     exactExecution.set(current.executionId)
+                    exactOperation.set(current.operationId)
+                    exactProducerAtNativeBoundary.set(
+                        producerRecoveryRecord(context, id, current.executionId),
+                    )
+                    workerOwnerAtNativeBoundary.set(
+                        DownloadWorkerExecutionOwners.isOwnedBy(id, current.executionId),
+                    )
+                    processOwnerAtNativeBoundary.set(DownloadWorkerProcessOwners.ownerOf(id))
                     db.downloadDao.updateMultipleRaw(listOf(current.copy(status = status)))
                 }
                 throw IOException("bounded producer failure reaches real repeated stop gate")
@@ -233,22 +250,58 @@ class DownloadWorkerCleanupProductionWiringTest {
             assertEquals(failCleanup, failedCleanup.get())
             assertEquals(if (failCleanup) 2 else 1, roomReadFailures.get())
             assertEquals(0, terminalAttempts.get())
+            val executionId = requireNotNull(exactExecution.get())
+            val producerAtNativeBoundary = requireNotNull(exactProducerAtNativeBoundary.get())
+            assertEquals(failedId, producerAtNativeBoundary.downloadId)
+            assertEquals(executionId, producerAtNativeBoundary.executionId)
+            assertEquals(requireNotNull(exactOperation.get()), producerAtNativeBoundary.operationId)
+            assertEquals(DownloadProducerRecovery.Phase.RUNNING, producerAtNativeBoundary.phase)
+            assertTrue(workerOwnerAtNativeBoundary.get())
+            assertNull(processOwnerAtNativeBoundary.get())
             assertEquals(DownloadRepository.Status.Error.name,
                 db.downloadDao.getNullableDownloadById(siblingId)?.status)
             if (failFirstCarrier) {
                 awaitAuthorityCondition { carrierFailures.get() > 0 }
-                assertEquals(status, db.downloadDao.getNullableDownloadById(failedId)?.status)
-                assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(failedId, exactExecution.get()))
-                assertTrue(DownloadExecutionRecovery.hasRetiringAttempt(failedId, exactExecution.get()))
-                assertTrue(DownloadExecutionRecovery.isRecoveryJobActiveForTesting(failedId))
+                val exactProducer = producerRecoveryRecord(context, failedId, executionId)
+                if (exactProducer != null) {
+                    assertEquals(failedId, exactProducer.downloadId)
+                    assertEquals(executionId, exactProducer.executionId)
+                    assertEquals(
+                        producerAtNativeBoundary.generationId,
+                        exactProducer.generationId,
+                    )
+                    assertTrue(
+                        exactProducer.phase in setOf(
+                            DownloadProducerRecovery.Phase.RUNNING,
+                            DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN,
+                            DownloadProducerRecovery.Phase.SUPERSEDED,
+                        ),
+                    )
+                } else {
+                    // The same-process retry may already have completed the
+                    // exact native-quiescence and unpublished-producer
+                    // retirement before this observer runs.
+                    assertNull(DownloadWorkerExecutionOwners.ownerOf(failedId))
+                    assertNull(DownloadWorkerProcessOwners.ownerOf(failedId))
+                    assertFalse(
+                        YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(
+                            failedId,
+                            executionId,
+                        ),
+                    )
+                }
                 rejectCarrier.set(false)
             }
             awaitAuthorityCondition {
                 db.downloadDao.getNullableDownloadById(failedId)?.status == DownloadRepository.Status.Queued.name &&
-                    !DownloadExecutionRecovery.hasRetiringAttempt(failedId, exactExecution.get()) &&
-                    !DownloadExecutionRecovery.isRecoveryJobActiveForTesting(failedId)
+                    db.downloadDao.getNullableDownloadById(failedId)?.executionId.isNullOrBlank() &&
+                    !DownloadExecutionRecovery.hasRetiringAttempt(failedId, executionId) &&
+                    !DownloadExecutionRecovery.isRecoveryJobActiveForTesting(failedId) &&
+                    producerRecoveryRecord(context, failedId, executionId) == null &&
+                    !YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(failedId, executionId)
             }
             assertNull(DownloadWorkerExecutionOwners.ownerOf(failedId))
+            assertNull(DownloadWorkerProcessOwners.ownerOf(failedId))
             assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(failedId))
         } finally {
             rejectCarrier.set(false)
@@ -259,6 +312,131 @@ class DownloadWorkerCleanupProductionWiringTest {
             if (hadConcurrency) editor.putInt("concurrent_downloads", previousConcurrency)
             else editor.remove("concurrent_downloads")
             assertTrue(editor.commit())
+        }
+    }
+
+    @Test
+    fun abandonedRunningProducerRecoveryFencesE2UntilStartupReconciliation() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        cancelStaleRealWorkerRequests(context)
+        YtdlpNativeProcessBarrier.configure(context)
+        val downloadId = realWorkerTestDownloadIds.getAndIncrement()
+        val operationId = "authority-recovery-$downloadId-${UUID.randomUUID()}"
+        val e1 = "abandoned-e1-${UUID.randomUUID()}"
+        val e1Item = download().copy(
+            id = downloadId,
+            operationId = operationId,
+            executionId = e1,
+            status = DownloadRepository.Status.Active.name,
+        )
+        val cacheRoot = File(context.cacheDir, "p2-producer-recovery-$downloadId")
+        val outputRoot = File(cacheRoot, downloadId.toString())
+        var admittedItem: DownloadItem? = null
+        try {
+            DownloadCacheOwnership.ensureMarker(cacheRoot, e1Item)
+            val prepared = requireNotNull(
+                DownloadProducerRecovery.prepare(
+                    context = context,
+                    downloadId = downloadId,
+                    operationId = operationId,
+                    executionId = e1,
+                    semanticFingerprint = "authority-recovery-$downloadId",
+                    outputRoot = outputRoot,
+                ),
+            )
+            assertTrue(DownloadProducerRecovery.markRunning(context, prepared))
+            db.downloadDao.insertRaw(
+                e1Item.copy(
+                    status = DownloadRepository.Status.Queued.name,
+                    executionId = "",
+                    downloadStartTime = 0L,
+                ),
+            )
+
+            val queued = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertEquals(DownloadRepository.Status.Queued.name, queued.status)
+            assertEquals("", queued.executionId)
+            assertEquals(
+                e1,
+                producerRecoveryRecord(context, downloadId, e1)?.executionId,
+            )
+            assertTrue(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
+
+            val blockedClaim = claimDownloadThroughProductionAdmission(
+                context = context,
+                dbManager = db,
+                candidate = queued,
+                concurrentDownloadLimit = 1,
+            )
+            admittedItem = blockedClaim
+            assertNull("RUNNING E1 producer recovery must fence E2 admission", blockedClaim)
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+            assertEquals(DownloadRepository.Status.Queued.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status)
+
+            // No process-local owner survives this boundary. Startup
+            // reconciliation must use only the exact durable producer record
+            // and native marker observation before allowing a new claim.
+            DownloadWorkerExecutionOwners.clearForTesting()
+            DownloadWorkerProcessOwners.clearForTesting()
+            val recoveredQueue = observeQueuedDownloadsAfterRecovery(
+                context = context,
+                dbManager = db,
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+            )
+            assertFalse(recoveredQueue.recovery.deferredDownloadIds.contains(downloadId))
+            assertNull(producerRecoveryRecord(context, downloadId, e1))
+            assertFalse(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
+            assertFalse(DownloadCacheOwnership.markerFile(cacheRoot, downloadId).exists())
+            assertFalse(YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId, e1))
+
+            val queueSnapshot = recoveredQueue.queuedItems.first()
+            val currentQueued = requireNotNull(queueSnapshot.singleOrNull { it.id == downloadId })
+            val admission = admitQueuedDownloadsThroughProductionPath(
+                dbManager = db,
+                items = listOf(currentQueued),
+                priorityItemIds = emptyList(),
+                currentTimeMillis = System.currentTimeMillis() + 10_000L,
+                concurrentDownloadLimit = 1,
+                continueAfterPriorityItems = true,
+                claim = { candidate ->
+                    claimDownloadThroughProductionAdmission(
+                        context = context,
+                        dbManager = db,
+                        candidate = candidate,
+                        concurrentDownloadLimit = 1,
+                    )
+                },
+            )
+            val e2 = requireNotNull(admission.claimedItems.singleOrNull())
+            admittedItem = e2
+            assertEquals(downloadId, e2.id)
+            assertNotEquals(e1, e2.executionId)
+            assertEquals(DownloadRepository.Status.Active.name, e2.status)
+            assertEquals(e2.executionId, DownloadWorkerExecutionOwners.ownerOf(downloadId))
+
+            assertEquals(
+                DownloadRepository.RunningDownloadRequeueResult.REQUEUED,
+                DownloadRepository(db).requeueRunningDownload(downloadId, e2.executionId),
+            )
+            DownloadWorkerExecutionOwners.release(downloadId, e2.executionId)
+            admittedItem = null
+            assertEquals("", db.downloadDao.getNullableDownloadById(downloadId)?.executionId)
+        } finally {
+            admittedItem?.let { claimed ->
+                DownloadWorkerExecutionOwners.release(downloadId, claimed.executionId)
+                DownloadWorkerProcessOwners.release(downloadId, claimed.executionId)
+                runCatching {
+                    DownloadRepository(db).requeueRunningDownload(downloadId, claimed.executionId)
+                }
+            }
+            producerRecoveryRecord(context, downloadId, e1)?.let { record ->
+                runCatching {
+                    DownloadProducerRecovery.retireUnpublishedAfterQuiescence(context, record)
+                }
+            }
+            cacheRoot.deleteRecursively()
         }
     }
 
@@ -1089,13 +1267,16 @@ class DownloadWorkerCleanupProductionWiringTest {
         cancelStaleRealWorkerRequests(context)
         val downloadId = insertQueuedDownload("first-error-exception")
         val enteredYtdlp = AtomicBoolean(false)
+        val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
         val terminalAttempts = AtomicInteger(0)
         val notificationAttempts = AtomicInteger(0)
+        var workerRequest: androidx.work.OneTimeWorkRequest? = null
 
         DownloadWorkerEffectTestHooks.dbManagerForTesting = db
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
             if (candidateId == downloadId) {
                 enteredYtdlp.set(true)
+                exactExecution.set(db.downloadDao.getNullableDownloadById(candidateId)?.executionId)
                 throw IOException("injected ordinary yt-dlp failure")
             }
         }
@@ -1110,16 +1291,57 @@ class DownloadWorkerCleanupProductionWiringTest {
             if (candidateId == downloadId) notificationAttempts.incrementAndGet()
         }
 
-        val workInfo = enqueueAndAwaitDownloadWorker(context)
-        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        try {
+            val request = enqueueDownloadWorker(context)
+            workerRequest = request
+            val workInfo = awaitDownloadWorkerCondition(context, request.id) {
+                val e1 = exactExecution.get()
+                    val current = db.downloadDao.getNullableDownloadById(downloadId)
+                    val producer = e1?.let { producerRecoveryRecord(context, downloadId, it) }
+                enteredYtdlp.get() &&
+                    terminalAttempts.get() >= 2 &&
+                    notificationAttempts.get() == 1 &&
+                    current?.status == DownloadRepository.Status.Error.name &&
+                    current.executionId == e1 &&
+                    e1 != null &&
+                    producer?.executionId == e1 &&
+                    producer?.phase == DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN &&
+                    DownloadWorkerExecutionOwners.ownerOf(downloadId) == null &&
+                    DownloadWorkerProcessOwners.ownerOf(downloadId) == null &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).none { it == downloadId }
+            }
+            val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            val e1 = requireNotNull(exactExecution.get())
+            val producer = requireNotNull(producerRecoveryRecord(context, downloadId, e1))
 
-        assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
-        assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
-        assertEquals(1, notificationAttempts.get())
-        assertEquals(DownloadRepository.Status.Error.name, current.status)
-        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
-        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
-        assertTrue(workInfo.state.isFinished)
+            assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
+            assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
+            assertEquals(1, notificationAttempts.get())
+            assertEquals(DownloadRepository.Status.Error.name, current.status)
+            assertEquals(e1, current.executionId)
+            assertEquals(e1, producer.executionId)
+            assertEquals(DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN, producer.phase)
+            assertTrue(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+            assertNull(DownloadWorkerProcessOwners.ownerOf(downloadId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertTrue(DownloadExecutionRecovery.hasRecoveryResponsibility(context, db))
+            assertFalse("producer recovery keeps the queue worker alive", workInfo.state.isFinished)
+            cancelAndAwaitWorker(context, request.id)
+            workerRequest = null
+            val recovery = DownloadExecutionRecovery.reconcile(context, db)
+            assertFalse(recovery.deferredDownloadIds.contains(downloadId))
+            assertNull(producerRecoveryRecord(context, downloadId, e1))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            workerRequest?.let { cancelAndAwaitWorker(context, it.id) }
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+            DownloadWorkerEffectTestHooks.failureTerminalPersistenceForTesting = null
+            DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
+        }
     }
 
     @Test
@@ -1128,13 +1350,16 @@ class DownloadWorkerCleanupProductionWiringTest {
         cancelStaleRealWorkerRequests(context)
         val downloadId = insertQueuedDownload("first-error-no-op")
         val enteredYtdlp = AtomicBoolean(false)
+        val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
         val terminalAttempts = AtomicInteger(0)
         val notificationAttempts = AtomicInteger(0)
+        var workerRequest: androidx.work.OneTimeWorkRequest? = null
 
         DownloadWorkerEffectTestHooks.dbManagerForTesting = db
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = { candidateId ->
             if (candidateId == downloadId) {
                 enteredYtdlp.set(true)
+                exactExecution.set(db.downloadDao.getNullableDownloadById(candidateId)?.executionId)
                 throw IOException("injected ordinary yt-dlp failure")
             }
         }
@@ -1145,16 +1370,57 @@ class DownloadWorkerCleanupProductionWiringTest {
             if (candidateId == downloadId) notificationAttempts.incrementAndGet()
         }
 
-        val workInfo = enqueueAndAwaitDownloadWorker(context)
-        val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+        try {
+            val request = enqueueDownloadWorker(context)
+            workerRequest = request
+            val workInfo = awaitDownloadWorkerCondition(context, request.id) {
+                val e1 = exactExecution.get()
+                val current = db.downloadDao.getNullableDownloadById(downloadId)
+                val producer = e1?.let { producerRecoveryRecord(context, downloadId, it) }
+                enteredYtdlp.get() &&
+                    terminalAttempts.get() >= 2 &&
+                    notificationAttempts.get() == 1 &&
+                    current?.status == DownloadRepository.Status.Error.name &&
+                    current.executionId == e1 &&
+                    e1 != null &&
+                    producer?.executionId == e1 &&
+                    producer?.phase == DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN &&
+                    DownloadWorkerExecutionOwners.ownerOf(downloadId) == null &&
+                    DownloadWorkerProcessOwners.ownerOf(downloadId) == null &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).none { it == downloadId }
+            }
+            val current = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            val e1 = requireNotNull(exactExecution.get())
+            val producer = requireNotNull(producerRecoveryRecord(context, downloadId, e1))
 
-        assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
-        assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
-        assertEquals(1, notificationAttempts.get())
-        assertEquals(DownloadRepository.Status.Error.name, current.status)
-        assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
-        assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
-        assertTrue(workInfo.state.isFinished)
+            assertTrue("the real item execution boundary was not reached", enteredYtdlp.get())
+            assertTrue("the real terminal writer was not retried", terminalAttempts.get() >= 2)
+            assertEquals(1, notificationAttempts.get())
+            assertEquals(DownloadRepository.Status.Error.name, current.status)
+            assertEquals(e1, current.executionId)
+            assertEquals(e1, producer.executionId)
+            assertEquals(DownloadProducerRecovery.Phase.OUTPUT_UNPROVEN, producer.phase)
+            assertTrue(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
+            assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
+            assertNull(DownloadWorkerProcessOwners.ownerOf(downloadId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
+            assertTrue(DownloadExecutionRecovery.hasRecoveryResponsibility(context, db))
+            assertFalse("producer recovery keeps the queue worker alive", workInfo.state.isFinished)
+            cancelAndAwaitWorker(context, request.id)
+            workerRequest = null
+            val recovery = DownloadExecutionRecovery.reconcile(context, db)
+            assertFalse(recovery.deferredDownloadIds.contains(downloadId))
+            assertNull(producerRecoveryRecord(context, downloadId, e1))
+            assertEquals(
+                DownloadRepository.Status.Error.name,
+                db.downloadDao.getNullableDownloadById(downloadId)?.status,
+            )
+        } finally {
+            workerRequest?.let { cancelAndAwaitWorker(context, it.id) }
+            DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
+            DownloadWorkerEffectTestHooks.failureTerminalPersistenceNoOpForTesting = null
+            DownloadWorkerEffectTestHooks.beforeUnexpectedErrorNotificationForTesting = null
+        }
     }
 
     @Test
@@ -1232,6 +1498,8 @@ class DownloadWorkerCleanupProductionWiringTest {
         val downloadId = realWorkerTestDownloadIds.getAndIncrement()
         val outputPaths = AtomicInteger(0)
         val finalizationFailures = AtomicInteger(0)
+        val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
+        var workerRequest: androidx.work.OneTimeWorkRequest? = null
 
         try {
             assertTrue(preferences.edit().putBoolean("cache_downloads", false).commit())
@@ -1254,6 +1522,9 @@ class DownloadWorkerCleanupProductionWiringTest {
                 if (candidateId != downloadId) {
                     null
                 } else {
+                    exactExecution.set(
+                        db.downloadDao.getNullableDownloadById(candidateId)?.executionId,
+                    )
                     rawTempDirectory.mkdirs()
                     val output = File(rawTempDirectory, "replacement.m4a")
                     output.writeBytes(byteArrayOf(1, 2, 3))
@@ -1270,18 +1541,50 @@ class DownloadWorkerCleanupProductionWiringTest {
                 }
             }
 
-            val workInfo = enqueueAndAwaitDownloadWorker(context)
+            val request = enqueueDownloadWorker(context)
+            workerRequest = request
+            val workInfo = awaitDownloadWorkerCondition(context, request.id) {
+                val e1 = exactExecution.get()
+                val replaced = db.historyDao.getNullableItem(historyId)
+                val producer = e1?.let { producerRecoveryRecord(context, downloadId, it) }
+                outputPaths.get() == 1 &&
+                    finalizationFailures.get() == 1 &&
+                    replaced?.title == "replacement" &&
+                    replaced.downloadId == downloadId &&
+                    db.downloadDao.getNullableDownloadById(downloadId) == null &&
+                    e1 != null &&
+                    producer?.phase == DownloadProducerRecovery.Phase.COMPLETE &&
+                    DownloadWorkerExecutionOwners.ownerOf(downloadId) == null &&
+                    DownloadWorkerProcessOwners.ownerOf(downloadId) == null &&
+                    DownloadExecutionRecovery.pendingDownloadIds(context).none { it == downloadId }
+            }
             val replaced = requireNotNull(db.historyDao.getNullableItem(historyId))
+            val e1 = requireNotNull(exactExecution.get())
+            val producer = requireNotNull(producerRecoveryRecord(context, downloadId, e1))
 
             assertEquals(1, outputPaths.get())
             assertEquals(1, finalizationFailures.get())
             assertEquals("replacement", replaced.title)
             assertEquals(downloadId, replaced.downloadId)
             assertNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertEquals(e1, producer.executionId)
+            assertEquals(DownloadProducerRecovery.Phase.COMPLETE, producer.phase)
+            assertFalse(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
             assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(downloadId))
             assertNull(DownloadWorkerExecutionOwners.ownerOf(downloadId))
-            assertTrue(workInfo.state.isFinished)
+            assertNull(DownloadWorkerProcessOwners.ownerOf(downloadId))
+            assertTrue(DownloadExecutionRecovery.hasRecoveryResponsibility(context, db))
+            assertFalse("completed producer finality keeps the queue worker alive", workInfo.state.isFinished)
+            cancelAndAwaitWorker(context, request.id)
+            workerRequest = null
+            producerRecoveryRecord(context, downloadId, e1)?.let { retained ->
+                assertTrue(DownloadProducerRecovery.retire(context, retained))
+            }
+            assertNull(producerRecoveryRecord(context, downloadId, e1))
         } finally {
+            workerRequest?.let { cancelAndAwaitWorker(context, it.id) }
+            DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
+            DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
             val editor = preferences.edit()
             if (hadCacheSetting) {
                 editor.putBoolean("cache_downloads", previousCacheSetting)
@@ -1338,6 +1641,84 @@ class DownloadWorkerCleanupProductionWiringTest {
             }
             error("Timed out waiting for real DownloadWorker ${request.id}")
         }
+    }
+
+    private fun enqueueDownloadWorker(
+        context: android.content.Context,
+    ): androidx.work.OneTimeWorkRequest {
+        val request = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .addTag("finding-a-a2-real-worker")
+            .build()
+        WorkManager.getInstance(context).enqueue(request)
+        return request
+    }
+
+    private suspend fun awaitDownloadWorkerCondition(
+        context: android.content.Context,
+        workId: UUID,
+        condition: () -> Boolean,
+    ): WorkInfo = withContext(Dispatchers.IO) {
+        val workManager = WorkManager.getInstance(context)
+        var lastState: WorkInfo.State? = null
+        repeat(240) {
+            val workInfo = runCatching {
+                workManager.getWorkInfoById(workId).get(1, TimeUnit.SECONDS)
+            }.getOrNull()
+            lastState = workInfo?.state
+            if (workInfo?.state?.isFinished == true) {
+                error(
+                    "Real DownloadWorker $workId finished as ${workInfo.state} " +
+                        "before its durable producer condition converged",
+                )
+            }
+            if (workInfo != null && condition()) return@withContext workInfo
+            Thread.sleep(250L)
+        }
+        error(
+            "Timed out waiting for real DownloadWorker $workId durable producer condition; " +
+                "last WorkInfo state=$lastState",
+        )
+    }
+
+    private suspend fun cancelAndAwaitWorker(
+        context: android.content.Context,
+        workId: UUID,
+    ) {
+        val workManager = WorkManager.getInstance(context)
+        workManager.cancelWorkById(workId).result.get(10, TimeUnit.SECONDS)
+        val finished = withContext(Dispatchers.IO) {
+            repeat(240) {
+                val workInfo = runCatching {
+                    workManager.getWorkInfoById(workId).get(1, TimeUnit.SECONDS)
+                }.getOrNull()
+                if (workInfo?.state?.isFinished == true) return@withContext workInfo
+                Thread.sleep(250L)
+            }
+            error("Timed out joining canceled real DownloadWorker $workId")
+        }
+        assertTrue(finished.state.isFinished)
+    }
+
+    private fun producerRecoveryRecord(
+        context: android.content.Context,
+        downloadId: Long,
+        executionId: String,
+    ): DownloadProducerRecovery.Record? = when (val discovery = DownloadProducerRecovery.discover(context)) {
+        is DownloadProducerRecovery.DiscoveryResult.Healthy -> {
+            val exact = discovery.records.filter {
+                it.downloadId == downloadId && it.executionId == executionId
+            }
+            check(exact.size <= 1) {
+                "Multiple producer recovery generations claim $downloadId/$executionId"
+            }
+            exact.singleOrNull()
+        }
+        is DownloadProducerRecovery.DiscoveryResult.Unavailable -> error(
+            "Producer recovery namespace unavailable: ${discovery.reason}",
+        )
+        is DownloadProducerRecovery.DiscoveryResult.Opaque -> error(
+            "Producer recovery namespace contains opaque records: ${discovery.opaqueFiles}",
+        )
     }
 
     private fun isAliveCompat(process: Process): Boolean = try {
