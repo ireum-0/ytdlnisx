@@ -166,10 +166,20 @@ class AppCacheManager(private val context: Context) {
                     skipped += category
                     return@forEach
                 }
+                if (
+                    category == AppCacheCategory.TERMINAL_CACHE &&
+                    !TerminalCacheProtectionClassifier.recoveryNamespacesHealthy(context)
+                ) {
+                    // Unknown durable ownership anywhere in either recovery
+                    // namespace prevents the Terminal category from being
+                    // reported as an empty/complete clear.
+                    skipped += category
+                    return@forEach
+                }
                 val entries = collectEntries(target)
                     .sortedByDescending { it.toPath().nameCount }
                 entries.forEach { entry ->
-                    if (isLiveOwnedEntry(target.root, entry)) {
+                    if (isLiveOwnedEntry(target, entry)) {
                         // A live owner is an honest incomplete deletion: the
                         // exact entry remains protected until that owner
                         // exits and a later maintenance pass can retry it.
@@ -217,6 +227,18 @@ class AppCacheManager(private val context: Context) {
                     skippedCategories = setOf(snapshot.category),
                 )
             }
+            if (
+                snapshot.category == AppCacheCategory.TERMINAL_CACHE &&
+                !TerminalCacheProtectionClassifier.recoveryNamespacesHealthy(context)
+            ) {
+                return@withMaintenanceWindow AppCacheDeletionResult(
+                    requestedCategories = setOf(snapshot.category),
+                    deletedBytes = 0L,
+                    deletedFiles = 0,
+                    failedEntries = 0,
+                    skippedCategories = setOf(snapshot.category),
+                )
+            }
 
             var deletedBytes = 0L
             var deletedFiles = 0
@@ -237,7 +259,7 @@ class AppCacheManager(private val context: Context) {
                     return@forEach
                 }
                 if (!candidate.exists()) return@forEach
-                if (!candidate.isFile || isLiveOwnedEntry(root, candidate)) {
+                if (!candidate.isFile || isLiveOwnedEntry(target, candidate)) {
                     failedEntries++
                     return@forEach
                 }
@@ -268,17 +290,26 @@ class AppCacheManager(private val context: Context) {
             )
         }
 
-    private fun isLiveOwnedEntry(targetRoot: File, entry: File): Boolean {
+    private fun isLiveOwnedEntry(target: Target, entry: File): Boolean {
+        val targetRoot = target.root
         val root = runCatching { targetRoot.canonicalFile }.getOrNull() ?: return true
         val canonical = runCatching { entry.canonicalFile }.getOrNull() ?: return true
         var current: File? = canonical
         while (current != null && current != root) {
             if (DownloadCacheOwnership.isLiveOwnedMarker(root, current)) return true
             if (DownloadCacheOwnership.isLiveOwnedRoot(root, current)) return true
-            if (TerminalCacheOwnership.isLiveOwnedRoot(current)) return true
+            if (
+                target.category != AppCacheCategory.TERMINAL_CACHE &&
+                TerminalCacheOwnership.isLiveOwnedRoot(current)
+            ) return true
             current = current.parentFile
         }
-        return false
+        return if (target.category == AppCacheCategory.TERMINAL_CACHE) {
+            TerminalCacheProtectionClassifier.classify(context, root, canonical) !=
+                TerminalCacheProtectionClassifier.Decision.REMOVABLE
+        } else {
+            false
+        }
     }
 
     /**

@@ -31,6 +31,18 @@ internal object TerminalCacheOwnership {
         val phase: String,
     )
 
+    sealed interface MarkerInspection {
+        data object Absent : MarkerInspection
+        data class Valid(val taskToken: String) : MarkerInspection
+        data class Opaque(val reason: String) : MarkerInspection
+    }
+
+    sealed interface RecoveryCarrierInspection {
+        data object Absent : RecoveryCarrierInspection
+        data class Valid(val recovery: RecoveryRoot) : RecoveryCarrierInspection
+        data class Opaque(val reason: String) : RecoveryCarrierInspection
+    }
+
     /** Recovery namespace health must not be collapsed into an empty list. */
     sealed interface RecoveryDiscovery {
         val roots: List<RecoveryRoot>
@@ -52,6 +64,106 @@ internal object TerminalCacheOwnership {
     fun artifactManifestFile(directory: File): File = File(directory, ARTIFACT_MANIFEST_NAME)
 
     fun recoveryCarrierFile(directory: File): File = File(directory, RECOVERY_CARRIER_NAME)
+
+    /** Read exact root ownership without collapsing malformed state into absence. */
+    fun inspectMarker(directory: File): MarkerInspection {
+        val root = runCatching { directory.canonicalFile }.getOrElse {
+            return MarkerInspection.Opaque("Terminal root path is unreadable")
+        }
+        val marker = markerFile(root)
+        val exists = runCatching { marker.exists() }.getOrElse {
+            return MarkerInspection.Opaque("Terminal marker existence is unreadable")
+        }
+        if (!exists) return MarkerInspection.Absent
+        if (!runCatching { marker.isFile }.getOrDefault(false)) {
+            return MarkerInspection.Opaque("Terminal marker is not a regular file")
+        }
+        val canonicalMarker = runCatching { marker.canonicalFile }.getOrElse {
+            return MarkerInspection.Opaque("Terminal marker path is unreadable")
+        }
+        if (canonicalMarker.parentFile != root) {
+            return MarkerInspection.Opaque("Terminal marker escapes its exact root")
+        }
+        val text = runCatching { marker.readText(Charsets.UTF_8) }.getOrElse {
+            return MarkerInspection.Opaque("Terminal marker is unreadable")
+        }
+        val lines = text.lineSequence().toList()
+        val fields = strictFields(lines.drop(1))
+            ?: return MarkerInspection.Opaque("Terminal marker fields are malformed")
+        val taskToken = fields["taskToken"].orEmpty()
+        if (
+            lines.firstOrNull() != "ytdlnisx-terminal-owner" ||
+            fields.keys != setOf("version", "taskToken") ||
+            fields["version"] != VERSION ||
+            taskToken.isBlank() || taskToken != root.name
+        ) {
+            return MarkerInspection.Opaque("Terminal marker identity is malformed or unsupported")
+        }
+        return MarkerInspection.Valid(taskToken)
+    }
+
+    /** Inspect a recovery-only carrier at its exact task root. */
+    fun inspectRecoveryCarrier(directory: File): RecoveryCarrierInspection {
+        val root = runCatching { directory.canonicalFile }.getOrElse {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery root path is unreadable")
+        }
+        val carrier = recoveryCarrierFile(root)
+        val exists = runCatching { carrier.exists() }.getOrElse {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier existence is unreadable")
+        }
+        if (!exists) return RecoveryCarrierInspection.Absent
+        if (!runCatching { carrier.isFile }.getOrDefault(false)) {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier is not a regular file")
+        }
+        val canonicalCarrier = runCatching { carrier.canonicalFile }.getOrElse {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier path is unreadable")
+        }
+        if (canonicalCarrier.parentFile != root) {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier escapes its exact root")
+        }
+        val payload = runCatching {
+            gson.fromJson(carrier.readText(Charsets.UTF_8), RecoveryPayload::class.java)
+        }.getOrNull() ?: return RecoveryCarrierInspection.Opaque("Terminal recovery carrier is unreadable")
+        val taskToken = payload.taskToken
+        val remainingRaw = payload.remainingSourcePaths
+        val publishedRaw = payload.publishedDestinationPaths
+        if (
+            payload.version != VERSION || taskToken.isNullOrBlank() ||
+            taskToken != root.name ||
+            payload.sourceRoot != root.absolutePath || payload.phase.isNullOrBlank() ||
+            remainingRaw == null || publishedRaw == null ||
+            runCatching { markerFile(root).exists() }.getOrDefault(true)
+        ) {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier identity is inconsistent")
+        }
+        val pathSetsAreValid = runCatching {
+            remainingRaw.all(String::isNotBlank) && remainingRaw.distinct().size == remainingRaw.size &&
+                publishedRaw.all(String::isNotBlank) && publishedRaw.distinct().size == publishedRaw.size
+        }.getOrDefault(false)
+        if (!pathSetsAreValid) {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier path set is malformed")
+        }
+        val remaining = remainingRaw.mapNotNull { raw ->
+            runCatching {
+                File(raw).canonicalFile.takeIf { it.isFile && isInside(it, root) }?.absolutePath
+            }.getOrNull()
+        }
+        if (remaining.size != remainingRaw.size) {
+            return RecoveryCarrierInspection.Opaque("Terminal recovery carrier source set is incomplete")
+        }
+        val published = publishedRaw
+        return RecoveryCarrierInspection.Valid(
+            RecoveryRoot(
+                directory = root,
+                carrier = carrier.canonicalFile,
+                taskToken = taskToken,
+                subjectId = payload.subjectId,
+                remainingSourcePaths = remaining,
+                publishedDestinationPaths = published,
+                phase = payload.phase,
+            ),
+        )
+    }
 
     /** Remove the exact-output manifest after its entries have been consumed. */
     fun removeArtifactManifest(directory: File): Boolean {
@@ -447,6 +559,18 @@ internal object TerminalCacheOwnership {
             if (separator <= 0) null else line.substring(0, separator) to line.substring(separator + 1)
         }
         .toMap()
+
+    private fun strictFields(lines: List<String>): Map<String, String>? {
+        val result = linkedMapOf<String, String>()
+        lines.filter(String::isNotBlank).forEach { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) return null
+            val key = line.substring(0, separator)
+            if (key in result) return null
+            result[key] = line.substring(separator + 1)
+        }
+        return result
+    }
 
     private fun pruneEmptyDirectories(root: File) {
         root.walkBottomUp()

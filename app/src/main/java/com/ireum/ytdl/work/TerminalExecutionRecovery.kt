@@ -243,6 +243,9 @@ internal object TerminalExecutionRecovery {
     internal fun readAll(context: Context): List<Record> =
         readAll(File(context.filesDir, DIRECTORY_NAME))
 
+    internal fun discover(context: Context): DiscoveryResult =
+        discover(File(context.filesDir, DIRECTORY_NAME))
+
     internal fun readAll(storageDirectory: File): List<Record> {
         return discover(storageDirectory).records
     }
