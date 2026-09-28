@@ -64,6 +64,29 @@ if (-not [string]::IsNullOrWhiteSpace($control)) {
 $workingDirectory = (Get-Location).Path
 $behaviorPath = Join-Path $workingDirectory 'behavior.cfg'
 $behavior = [System.IO.File]::ReadAllText($behaviorPath)
+$bootstrapCapturePath = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_BOOTSTRAP_CAPTURE')
+if (-not [string]::IsNullOrWhiteSpace($bootstrapCapturePath)) {
+    $bootstrapFile = Join-Path $workingDirectory 'local.properties'
+    $bootstrapExists = Test-Path -LiteralPath $bootstrapFile -PathType Leaf
+    $bootstrapByteCount = $null
+    if ($bootstrapExists) { $bootstrapByteCount = [long](Get-Item -LiteralPath $bootstrapFile).Length }
+    $git = Get-Command git.exe -ErrorAction Stop
+    & $git.Source -C $workingDirectory check-ignore --quiet -- local.properties 2>$null
+    $bootstrapIgnoreExitCode = $LASTEXITCODE
+    $candidateHead = (& $git.Source -C $workingDirectory rev-parse HEAD).Trim()
+    $candidateTree = (& $git.Source -C $workingDirectory rev-parse 'HEAD^{tree}').Trim()
+    $bootstrapRecord = [pscustomobject]@{
+        behavior = $behavior
+        workingDirectory = $workingDirectory
+        behaviorPath = $behaviorPath
+        candidateHead = $candidateHead
+        candidateTree = $candidateTree
+        detachedLocalPropertiesExists = [bool]$bootstrapExists
+        detachedLocalPropertiesByteCount = $bootstrapByteCount
+        detachedLocalPropertiesIgnoreExitCode = [int]$bootstrapIgnoreExitCode
+    }
+    [System.IO.File]::WriteAllText($bootstrapCapturePath, (ConvertTo-Json -InputObject $bootstrapRecord -Compress), (New-Object System.Text.UTF8Encoding($false)))
+}
 if (-not [string]::IsNullOrWhiteSpace($control)) {
     $record = [pscustomobject]@{ behavior = $behavior; workingDirectory = $workingDirectory; behaviorPath = $behaviorPath }
     [System.IO.File]::WriteAllText((Join-Path $control 'consumed.json'), (ConvertTo-Json -InputObject $record -Compress), (New-Object System.Text.UTF8Encoding($false)))
@@ -614,6 +637,90 @@ try {
     $invalidComplete = Invoke-CompleteChild -Fixture $transientFixture -VerificationPath $missingProofPath -Name 'missing-lifetime-completion-rejection'
     $invalidCompletePass = ($invalidComplete.result.exitCode -ne 0 -and $null -ne $invalidComplete.finalize -and $invalidComplete.finalize.status -notin @('CHECK_PASS', 'PUSHED_AND_VERIFIED', 'ALREADY_PUSHED_EXACT_SHA'))
     Add-AcceptanceCheck -CheckId 'completion_requires_exact_lifetime_provenance' -Pass ($validCompletePass -and $invalidCompletePass) -Detail 'Complete-Wave accepted exact passing lifetime evidence for its tested SHA/tree and rejected a copy with the lifetime proof removed.'
+
+    $bootstrapFixture = New-ToolingFixture -Name 'detached-empty-local-properties-bootstrap'
+    $bootstrapSourceSentinel = 'synthetic-source-local-properties-sentinel-never-emit'
+    Write-ToolingUtf8 -Path (Join-Path $bootstrapFixture.path 'local.properties') -Content ($bootstrapSourceSentinel + "`n")
+    $bootstrapCapturePath = Join-Path $runRoot 'detached-bootstrap-gate-observation.json'
+    $bootstrapResult = Invoke-VerificationChild -Fixture $bootstrapFixture -Environment @{ YTDLNISX_TOOLING_ACCEPTANCE_BOOTSTRAP_CAPTURE = $bootstrapCapturePath } -Name 'detached-empty-local-properties-bootstrap'
+    $bootstrapVerificationPath = Get-VerificationJsonPath -Result $bootstrapResult
+    $bootstrapVerification = Get-Content -LiteralPath $bootstrapVerificationPath -Raw | ConvertFrom-Json
+    $bootstrapGateObservation = Get-Content -LiteralPath $bootstrapCapturePath -Raw | ConvertFrom-Json
+    $bootstrapProof = $bootstrapVerification.executionLifetime.detachedLocalPropertiesBootstrap
+    $bootstrapGateProof = $bootstrapVerification.gates[0].executionLifetime
+    $bootstrapRunId = Split-Path -Leaf $bootstrapVerification.evidenceDirectory
+    $bootstrapMaterialization = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $bootstrapFixture.path 'build\remediation-worktrees') $bootstrapRunId))
+    $bootstrapComplete = Invoke-CompleteChild -Fixture $bootstrapFixture -VerificationPath $bootstrapVerificationPath -Name 'detached-empty-local-properties-bootstrap-completion'
+
+    $bootstrapOldContractPath = Join-Path (Split-Path -Parent $bootstrapVerificationPath) 'verification-old-local-properties-provenance.json'
+    $bootstrapOldContract = Get-Content -LiteralPath $bootstrapVerificationPath -Raw | ConvertFrom-Json
+    $bootstrapOldContract.executionLifetime.contract = 'exact_candidate_execution_lifetime_v1'
+    $bootstrapOldContract.executionLifetime | Add-Member -NotePropertyName localProperties -NotePropertyValue 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.' -Force
+    $bootstrapOldContract.executionLifetime.PSObject.Properties.Remove('sourceLocalProperties')
+    $bootstrapOldContract.executionLifetime.PSObject.Properties.Remove('detachedLocalPropertiesBootstrap')
+    Write-ToolingUtf8 -Path $bootstrapOldContractPath -Content (ConvertTo-Json -InputObject $bootstrapOldContract -Depth 50)
+    $bootstrapOldContractCompletion = Invoke-CompleteChild -Fixture $bootstrapFixture -VerificationPath $bootstrapOldContractPath -Name 'detached-bootstrap-old-provenance-rejection'
+
+    $bootstrapIncompletePath = Join-Path (Split-Path -Parent $bootstrapVerificationPath) 'verification-incomplete-local-properties-bootstrap.json'
+    $bootstrapIncomplete = Get-Content -LiteralPath $bootstrapVerificationPath -Raw | ConvertFrom-Json
+    $bootstrapIncomplete.executionLifetime.detachedLocalPropertiesBootstrap.generatedEmpty = $false
+    Write-ToolingUtf8 -Path $bootstrapIncompletePath -Content (ConvertTo-Json -InputObject $bootstrapIncomplete -Depth 50)
+    $bootstrapIncompleteCompletion = Invoke-CompleteChild -Fixture $bootstrapFixture -VerificationPath $bootstrapIncompletePath -Name 'detached-bootstrap-incomplete-provenance-rejection'
+
+    $bootstrapEvidenceFiles = @(
+        Get-ChildItem -LiteralPath $bootstrapVerification.evidenceDirectory -File -Recurse -Force
+        Get-ChildItem -LiteralPath $bootstrapFixture.evidenceRoot -File -Recurse -Force
+        Get-ChildItem -LiteralPath $script:processEvidenceRoot -File -Recurse -Force
+        Get-Item -LiteralPath $bootstrapCapturePath
+    )
+    $bootstrapSentinelEmitted = $false
+    foreach ($evidenceFile in $bootstrapEvidenceFiles) {
+        if (@('.json', '.log', '.txt', '.bat', '.ps1', '.cfg') -contains $evidenceFile.Extension.ToLowerInvariant()) {
+            if ([System.IO.File]::ReadAllText($evidenceFile.FullName).Contains($bootstrapSourceSentinel)) { $bootstrapSentinelEmitted = $true; break }
+        }
+    }
+    $bootstrapGateWorkingDirectory = [System.IO.Path]::GetFullPath([string]$bootstrapGateObservation.workingDirectory)
+    $bootstrapPass = (
+        $bootstrapResult.exitCode -eq 0 -and
+        $bootstrapVerification.status -eq 'PASS' -and
+        $bootstrapVerification.candidateSha -eq $bootstrapFixture.sha -and
+        $bootstrapVerification.candidateTree -eq $bootstrapFixture.tree -and
+        $bootstrapVerification.executionLifetime.contract -eq 'exact_candidate_execution_lifetime_v2' -and
+        $bootstrapVerification.executionLifetime.status -eq 'PASS' -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.inspected -eq $false -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.read -eq $false -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.copied -eq $false -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.serialized -eq $false -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.hashed -eq $false -and
+        $bootstrapVerification.executionLifetime.sourceLocalProperties.derived -eq $false -and
+        $bootstrapProof.generated -eq $true -and
+        $bootstrapProof.generatedEmpty -eq $true -and
+        $bootstrapProof.byteCount -eq 0 -and
+        $bootstrapProof.ignored -eq $true -and
+        $bootstrapProof.sourceValuesUsed -eq $false -and
+        $bootstrapProof.materializationRunId -eq $bootstrapRunId -and
+        [string]::Equals([string]$bootstrapProof.materializationPath, $bootstrapMaterialization, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $bootstrapGateObservation.behavior.TrimEnd("`r", "`n") -eq 'committed-candidate-value' -and
+        $bootstrapGateObservation.candidateHead -eq $bootstrapFixture.sha -and
+        $bootstrapGateObservation.candidateTree -eq $bootstrapFixture.tree -and
+        $bootstrapGateObservation.detachedLocalPropertiesExists -eq $true -and
+        $bootstrapGateObservation.detachedLocalPropertiesByteCount -eq 0 -and
+        $bootstrapGateObservation.detachedLocalPropertiesIgnoreExitCode -eq 0 -and
+        [string]::Equals($bootstrapGateWorkingDirectory, $bootstrapMaterialization, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $bootstrapGateProof.provenancePass -eq $true -and
+        $bootstrapGateProof.detachedLocalPropertiesBootstrapPass -eq $true -and
+        $bootstrapComplete.result.exitCode -eq 0 -and
+        $null -ne $bootstrapComplete.finalize -and
+        $bootstrapComplete.finalize.status -eq 'CHECK_PASS' -and
+        $bootstrapOldContractCompletion.result.exitCode -ne 0 -and
+        $null -ne $bootstrapOldContractCompletion.finalize -and
+        $bootstrapOldContractCompletion.finalize.status -notin @('CHECK_PASS', 'PUSHED_AND_VERIFIED', 'ALREADY_PUSHED_EXACT_SHA') -and
+        $bootstrapIncompleteCompletion.result.exitCode -ne 0 -and
+        $null -ne $bootstrapIncompleteCompletion.finalize -and
+        $bootstrapIncompleteCompletion.finalize.status -notin @('CHECK_PASS', 'PUSHED_AND_VERIFIED', 'ALREADY_PUSHED_EXACT_SHA') -and
+        -not $bootstrapSentinelEmitted
+    )
+    Add-AcceptanceCheck -CheckId 'detached_empty_local_properties_bootstrap_non_exposure' -Pass $bootstrapPass -Detail 'The exact-candidate gate consumed the committed candidate from its run-bound detached worktree with a generated zero-byte ignored local.properties; no synthetic source sentinel appeared in evidence, completion accepted the v2 proof, and rejected old/incomplete proofs.'
 
     $invalidPolicyPath = Join-Path (Split-Path -Parent $transientEvidencePath) 'verification-with-invalid-lifetime-policy.json'
     $invalidPolicyEvidence = Get-Content -LiteralPath $transientEvidencePath -Raw | ConvertFrom-Json

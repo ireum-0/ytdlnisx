@@ -45,7 +45,8 @@ function Test-ExactSourceExecutionLifetime {
         [Parameter(Mandatory)][string]$VerificationPath,
         [Parameter(Mandatory)][string]$RepoFull,
         [Parameter(Mandatory)][string]$CandidateSha,
-        [Parameter(Mandatory)][string]$CandidateTree
+        [Parameter(Mandatory)][string]$CandidateTree,
+        [Parameter(Mandatory)][string]$LogDirectory
     )
     $failures = New-Object System.Collections.Generic.List[string]
     $proof = $Verification.executionLifetime
@@ -66,18 +67,69 @@ function Test-ExactSourceExecutionLifetime {
         $executedLauncher = ''
         try { $requestedLauncher = [System.IO.Path]::GetFullPath([string]$proof.requestedCanonicalLauncherPath) } catch {}
         try { $executedLauncher = [System.IO.Path]::GetFullPath([string]$proof.executedCanonicalLauncherPath) } catch {}
-        if ($proof.contract -ne 'exact_candidate_execution_lifetime_v1') { $failures.Add('execution-lifetime contract identifier is missing or unsupported') }
+        if ($proof.contract -ne 'exact_candidate_execution_lifetime_v2') { $failures.Add('execution-lifetime contract identifier is missing or unsupported') }
         if ($proof.mechanism -ne 'git_detached_candidate_worktree') { $failures.Add('execution-lifetime mechanism is not the detached exact-candidate worktree') }
         if ($proof.lifecycle -ne 'retained_in_ignored_run_scoped_worktree_no_cleanup') { $failures.Add('execution-lifetime materialization lifecycle or no-cleanup policy is absent') }
         if ($proof.materializationRunId -ne $evidenceRunId) { $failures.Add('execution-lifetime worktree is not bound to the verification evidence run ID') }
         if ($proof.allowedWritableOutputs -ne 'Git-ignored outputs within the materialization; wrapper evidence remains outside it.') { $failures.Add('execution-lifetime allowed writable output policy is absent or unsupported') }
-        if ($proof.localProperties -ne 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.') { $failures.Add('execution-lifetime local.properties non-exposure policy is absent or unsupported') }
+        $sourcePropertiesPolicy = $proof.sourceLocalProperties
+        $sourcePolicyPass = (
+            $null -ne $sourcePropertiesPolicy -and
+            $sourcePropertiesPolicy.policy -eq 'source_local_properties_never_observed_or_used_v1' -and
+            $sourcePropertiesPolicy.inspected -eq $false -and
+            $sourcePropertiesPolicy.read -eq $false -and
+            $sourcePropertiesPolicy.copied -eq $false -and
+            $sourcePropertiesPolicy.serialized -eq $false -and
+            $sourcePropertiesPolicy.hashed -eq $false -and
+            $sourcePropertiesPolicy.parsed -eq $false -and
+            $sourcePropertiesPolicy.compared -eq $false -and
+            $sourcePropertiesPolicy.derived -eq $false
+        )
+        if (-not $sourcePolicyPass) { $failures.Add('execution-lifetime source local.properties non-exposure policy is absent or unsupported') }
+        $bootstrap = $proof.detachedLocalPropertiesBootstrap
+        $expectedBootstrapFile = Join-Path $expectedMaterialization 'local.properties'
+        $bootstrapFileExists = Test-Path -LiteralPath $expectedBootstrapFile -PathType Leaf
+        $bootstrapFileLength = $null
+        if ($bootstrapFileExists) { $bootstrapFileLength = [long](Get-Item -LiteralPath $expectedBootstrapFile).Length }
+        $bootstrapIgnorePass = $false
+        try {
+            $bootstrapIgnore = Invoke-RemediationGit -RepoPath $expectedMaterialization -ArgumentList @('check-ignore', '--quiet', '--', 'local.properties') -LogDirectory $LogDirectory -Name 'git-completion-local-properties-ignore' -TimeoutSeconds 30
+            $bootstrapIgnorePass = (-not $bootstrapIgnore.timedOut -and $bootstrapIgnore.exitCode -eq 0)
+        } catch {
+            $failures.Add('completion could not independently prove detached local.properties remains Git-ignored')
+        }
+        $bootstrapPass = (
+            $null -ne $bootstrap -and
+            $bootstrap.policy -eq 'detached_empty_ignored_local_properties_bootstrap_v1' -and
+            $bootstrap.generated -eq $true -and
+            $bootstrap.generatedEmpty -eq $true -and
+            $bootstrap.byteCount -eq 0 -and
+            $bootstrap.ignored -eq $true -and
+            $bootstrap.sourceValuesUsed -eq $false -and
+            $bootstrap.materializationRunId -eq $evidenceRunId -and
+            [string]::Equals([string]$bootstrap.materializationPath, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $null -ne $bootstrap.beforeCreationIgnoreProof -and
+            $bootstrap.beforeCreationIgnoreProof.ignored -eq $true -and
+            $bootstrap.beforeCreationIgnoreProof.ignoreExitCode -eq 0 -and
+            $bootstrap.beforeCreationIgnoreProof.ignoreTimedOut -eq $false -and
+            $null -ne $bootstrap.afterCreationState -and
+            $bootstrap.afterCreationState.exists -eq $true -and
+            $bootstrap.afterCreationState.byteCount -eq 0 -and
+            $bootstrap.afterCreationState.ignored -eq $true -and
+            $bootstrapFileExists -and
+            $bootstrapFileLength -eq 0 -and
+            $bootstrapIgnorePass
+        )
+        if (-not $bootstrapPass) { $failures.Add('execution-lifetime detached empty local.properties bootstrap is incomplete, changed, or not independently ignored') }
         if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('execution-lifetime proof permits gate execution from the mutable source worktree') }
         if ($proof.status -ne 'PASS') { $failures.Add('execution-lifetime proof did not PASS') }
         if (-not [string]::Equals($recordedSourceRoot, [System.IO.Path]::GetFullPath($RepoFull), [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('execution-lifetime source repository does not match the completion repository') }
         if ($proof.candidateSha -ne $CandidateSha -or $proof.materializedHead -ne $CandidateSha) { $failures.Add('materialized HEAD does not bind to the tested candidate SHA') }
         if ($proof.candidateTree -ne $CandidateTree -or $proof.materializedTree -ne $CandidateTree) { $failures.Add('materialized tree does not bind to the tested candidate tree') }
-        if (-not $proof.identityPass -or -not $proof.stateBeforeGates.clean -or -not $proof.materializationStateAfterAllGates.clean) { $failures.Add('materialization identity or clean boundary did not PASS') }
+        if (-not $proof.identityPass -or -not $proof.stateBeforeGates.clean -or -not $proof.stateAfterBootstrap.clean -or -not $proof.materializationStateAfterAllGates.clean) { $failures.Add('materialization identity or clean boundary did not PASS') }
+        if ($proof.materializedHeadAfterBootstrap -ne $CandidateSha -or $proof.materializedTreeAfterBootstrap -ne $CandidateTree) { $failures.Add('post-bootstrap candidate HEAD/tree do not match the tested candidate') }
+        $finalBootstrapState = $proof.detachedLocalPropertiesBootstrapAfterAllGates
+        if ($null -eq $finalBootstrapState -or $finalBootstrapState.exists -ne $true -or $finalBootstrapState.byteCount -ne 0 -or $finalBootstrapState.ignored -ne $true) { $failures.Add('detached local.properties bootstrap did not remain empty and ignored after all gates') }
         if ($null -eq $proof.materializationCreation -or $proof.materializationCreation.exitCode -ne 0 -or $proof.materializationCreation.timedOut -ne $false -or [string]::IsNullOrWhiteSpace([string]$proof.materializationCreation.command)) { $failures.Add('exact candidate worktree creation evidence is incomplete') }
         if ($proof.sourceWorktreeUsedForGateExecution -ne $false) { $failures.Add('gate execution was not isolated from the source worktree') }
         if (-not [string]::Equals($actualMaterialization, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase)) { $failures.Add('materialization path is not the run-owned ignored worktree directory') }
@@ -99,6 +151,31 @@ function Test-ExactSourceExecutionLifetime {
                 }
                 $gateProof = $gate.executionLifetime
                 $lifetimeGate = $matches[0]
+                $gateSourcePolicy = $gateProof.sourceLocalProperties
+                $gateSourcePolicyPass = (
+                    $null -ne $gateSourcePolicy -and
+                    $gateSourcePolicy.policy -eq $sourcePropertiesPolicy.policy -and
+                    $gateSourcePolicy.inspected -eq $false -and
+                    $gateSourcePolicy.read -eq $false -and
+                    $gateSourcePolicy.copied -eq $false -and
+                    $gateSourcePolicy.serialized -eq $false -and
+                    $gateSourcePolicy.hashed -eq $false -and
+                    $gateSourcePolicy.parsed -eq $false -and
+                    $gateSourcePolicy.compared -eq $false -and
+                    $gateSourcePolicy.derived -eq $false
+                )
+                $gateBootstrap = $gateProof.detachedLocalPropertiesBootstrap
+                $gateBootstrapPass = (
+                    $null -ne $gateBootstrap -and
+                    $gateBootstrap.policy -eq $bootstrap.policy -and
+                    $gateBootstrap.generated -eq $true -and
+                    $gateBootstrap.generatedEmpty -eq $true -and
+                    $gateBootstrap.byteCount -eq 0 -and
+                    $gateBootstrap.ignored -eq $true -and
+                    $gateBootstrap.sourceValuesUsed -eq $false -and
+                    $gateBootstrap.materializationRunId -eq $evidenceRunId -and
+                    [string]::Equals([string]$gateBootstrap.materializationPath, $expectedMaterialization, [System.StringComparison]::OrdinalIgnoreCase)
+                )
                 $gatePass = (
                     $gate.status -eq 'PASS' -and
                     $gate.candidateSha -eq $CandidateSha -and
@@ -113,6 +190,16 @@ function Test-ExactSourceExecutionLifetime {
                     $gateProof.workingDirectory -eq $expectedMaterialization -and
                     $gateProof.sourceWorktreeUsedForGateExecution -eq $false -and
                     $gateProof.materializationStateAfterGate.clean -eq $true -and
+                    $gateSourcePolicyPass -and
+                    $gateBootstrapPass -and
+                    $gateProof.detachedLocalPropertiesBootstrapPass -eq $true -and
+                    $null -ne $gateProof.detachedLocalPropertiesBootstrapAfterGate -and
+                    $gateProof.detachedLocalPropertiesBootstrapAfterGate.exists -eq $true -and
+                    $gateProof.detachedLocalPropertiesBootstrapAfterGate.byteCount -eq 0 -and
+                    $gateProof.detachedLocalPropertiesBootstrapAfterGate.ignored -eq $true -and
+                    $gateProof.detachedLocalPropertiesBootstrap.policy -eq $bootstrap.policy -and
+                    $gateProof.detachedLocalPropertiesBootstrap.generatedEmpty -eq $true -and
+                    $gateProof.sourceLocalProperties.policy -eq $sourcePropertiesPolicy.policy -and
                     -not [string]::IsNullOrWhiteSpace([string]$gateProof.startedUtc) -and
                     -not [string]::IsNullOrWhiteSpace([string]$gateProof.endedUtc) -and
                     $lifetimeGate.provenancePass -eq $true -and
@@ -123,7 +210,11 @@ function Test-ExactSourceExecutionLifetime {
                     $lifetimeGate.candidateTree -eq $CandidateTree -and
                     $lifetimeGate.materializationPath -eq $expectedMaterialization -and
                     $lifetimeGate.workingDirectory -eq $expectedMaterialization -and
-                    $lifetimeGate.materializationStateAfterGate.clean -eq $true
+                    $lifetimeGate.materializationStateAfterGate.clean -eq $true -and
+                    $lifetimeGate.detachedLocalPropertiesBootstrapPass -eq $true -and
+                    $lifetimeGate.detachedLocalPropertiesBootstrapAfterGate.exists -eq $true -and
+                    $lifetimeGate.detachedLocalPropertiesBootstrapAfterGate.byteCount -eq 0 -and
+                    $lifetimeGate.detachedLocalPropertiesBootstrapAfterGate.ignored -eq $true
                 )
                 if ($gate.kind -ne 'diff') {
                     $gatePass = $gatePass -and [string]::Equals([string]$gateProof.launcherPath, $expectedExecutionLauncher, [System.StringComparison]::OrdinalIgnoreCase)
@@ -303,9 +394,9 @@ try {
 
     $verificationPath=Assert-IgnoredEvidencePath -RepoFull $repoFull -Path $VerificationEvidencePath -LogDirectory $runDirectory -Name 'VerificationEvidencePath'
     $verification=Get-Content -LiteralPath $verificationPath -Raw | ConvertFrom-Json
-    $executionLifetimeCheck=Test-ExactSourceExecutionLifetime -Verification $verification -VerificationPath $verificationPath -RepoFull $repoFull -CandidateSha $TestedSha -CandidateTree $tree
+    $executionLifetimeCheck=Test-ExactSourceExecutionLifetime -Verification $verification -VerificationPath $verificationPath -RepoFull $repoFull -CandidateSha $TestedSha -CandidateTree $tree -LogDirectory $runDirectory
     $executionLifetimePass=[bool]$executionLifetimeCheck.pass
-    $checks.Add([pscustomobject]@{ name='execution_lifetime_provenance_binding'; contract='exact_candidate_execution_lifetime_v1'; pass=$executionLifetimePass; failures=@($executionLifetimeCheck.failures) })
+    $checks.Add([pscustomobject]@{ name='execution_lifetime_provenance_binding'; contract='exact_candidate_execution_lifetime_v2'; pass=$executionLifetimePass; failures=@($executionLifetimeCheck.failures) })
     if(-not $executionLifetimePass){$errors.Add('verification evidence does not satisfy the execution-lifetime exact-tree provenance contract')}
     $verificationPass=($verification.evidenceKind -eq 'exact_source_verification' -and $verification.status -eq 'PASS' -and $verification.candidateSha -eq $TestedSha -and $verification.candidateTree -eq $tree -and $verification.scopeWidening -eq $false -and $executionLifetimePass)
     $checks.Add([pscustomobject]@{ name='verification_evidence_binding'; path=$verificationPath; evidenceKind=$verification.evidenceKind; status=$verification.status; candidateSha=$verification.candidateSha; candidateTree=$verification.candidateTree; pass=$verificationPass })

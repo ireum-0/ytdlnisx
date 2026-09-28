@@ -45,6 +45,27 @@ function Get-VerificationLogPaths {
     return @($ProcessResult.stdoutPath, $ProcessResult.stderrPath)
 }
 
+function Get-DetachedLocalPropertiesState {
+    param(
+        [Parameter(Mandatory)][string]$MaterializationPath,
+        [Parameter(Mandatory)][string]$LogDirectory,
+        [Parameter(Mandatory)][string]$Name
+    )
+    $path = Join-Path $MaterializationPath 'local.properties'
+    $exists = Test-Path -LiteralPath $path -PathType Leaf
+    $byteCount = $null
+    if ($exists) { $byteCount = [long](Get-Item -LiteralPath $path).Length }
+    $ignoreResult = Invoke-RemediationGit -RepoPath $MaterializationPath -ArgumentList @('check-ignore', '--quiet', '--', 'local.properties') -LogDirectory $LogDirectory -Name $Name -TimeoutSeconds 30
+    return [pscustomobject][ordered]@{
+        exists = [bool]$exists
+        byteCount = $byteCount
+        ignored = [bool](-not $ignoreResult.timedOut -and $ignoreResult.exitCode -eq 0)
+        ignoreCommand = $ignoreResult.command
+        ignoreExitCode = [int]$ignoreResult.exitCode
+        ignoreTimedOut = [bool]$ignoreResult.timedOut
+    }
+}
+
 function Read-PriorInfrastructureEvidence {
     param(
         [string]$Path,
@@ -156,9 +177,79 @@ function New-ExactCandidateExecutionTree {
     $materializedHead = Get-RemediationHead -RepoPath $executionPath -LogDirectory $LogDirectory
     $materializedTree = Get-RemediationTreeSha -RepoPath $executionPath -CommitSha $materializedHead -LogDirectory $LogDirectory
     $materializedState = Get-RemediationTrackedTreeState -RepoPath $executionPath -CandidateSha $CandidateSha -LogDirectory $LogDirectory
-    $identityPass = ($materializedHead -eq $CandidateSha -and $materializedTree -eq $CandidateTree -and $materializedState.clean)
+    $preBootstrapIdentityPass = ($materializedHead -eq $CandidateSha -and $materializedTree -eq $CandidateTree -and $materializedState.clean)
+    $sourcePolicy = [pscustomobject][ordered]@{
+        policy = 'source_local_properties_never_observed_or_used_v1'
+        inspected = $false
+        read = $false
+        copied = $false
+        serialized = $false
+        hashed = $false
+        parsed = $false
+        compared = $false
+        derived = $false
+    }
+    $detachedPropertiesPath = Join-Path $executionPath 'local.properties'
+    $detachedPropertiesInitiallyPresent = Test-Path -LiteralPath $detachedPropertiesPath -PathType Leaf
+    $initialIgnoreProof = $null
+    $bootstrapCreated = $false
+    $bootstrapError = $null
+    $initialPropertiesState = $null
+    if ($preBootstrapIdentityPass) {
+        $initialPropertiesState = Get-DetachedLocalPropertiesState -MaterializationPath $executionPath -LogDirectory $LogDirectory -Name 'git-local-properties-ignore-before-bootstrap'
+        $initialIgnoreProof = $initialPropertiesState
+    }
+    if ($preBootstrapIdentityPass -and $initialPropertiesState.ignored -and -not $detachedPropertiesInitiallyPresent) {
+        $emptyFileStream = $null
+        try {
+            $emptyFileStream = [System.IO.File]::Open($detachedPropertiesPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $emptyFileStream.Dispose()
+            $emptyFileStream = $null
+            $bootstrapCreated = $true
+        } catch {
+            $bootstrapError = $_.Exception.Message
+        } finally {
+            if ($null -ne $emptyFileStream) { $emptyFileStream.Dispose() }
+        }
+    } elseif (-not $preBootstrapIdentityPass) {
+        $bootstrapError = 'The detached worktree failed its initial candidate identity/clean-state check.'
+    } elseif (-not $initialPropertiesState.ignored) {
+        $bootstrapError = 'The detached candidate does not prove local.properties is Git-ignored.'
+    } elseif ($detachedPropertiesInitiallyPresent) {
+        $bootstrapError = 'The unique detached run worktree already contains local.properties; refusing to inspect or replace it.'
+    }
+    $propertiesStateAfterBootstrap = Get-DetachedLocalPropertiesState -MaterializationPath $executionPath -LogDirectory $LogDirectory -Name 'git-local-properties-ignore-after-bootstrap'
+    $postBootstrapHead = Get-RemediationHead -RepoPath $executionPath -LogDirectory $LogDirectory
+    $postBootstrapTree = Get-RemediationTreeSha -RepoPath $executionPath -CommitSha $postBootstrapHead -LogDirectory $LogDirectory
+    $postBootstrapState = Get-RemediationTrackedTreeState -RepoPath $executionPath -CandidateSha $CandidateSha -LogDirectory $LogDirectory
+    $bootstrapPass = (
+        $bootstrapCreated -and
+        $propertiesStateAfterBootstrap.exists -and
+        $propertiesStateAfterBootstrap.byteCount -eq 0 -and
+        $propertiesStateAfterBootstrap.ignored -and
+        $postBootstrapHead -eq $CandidateSha -and
+        $postBootstrapTree -eq $CandidateTree -and
+        $postBootstrapState.clean
+    )
+    if (-not $bootstrapPass -and [string]::IsNullOrWhiteSpace($bootstrapError)) {
+        $bootstrapError = 'The detached local.properties bootstrap did not remain empty, ignored, and isolated from the exact candidate tree.'
+    }
+    $detachedBootstrap = [pscustomobject][ordered]@{
+        policy = 'detached_empty_ignored_local_properties_bootstrap_v1'
+        generated = [bool]$bootstrapCreated
+        generatedEmpty = [bool]($bootstrapCreated -and $propertiesStateAfterBootstrap.exists -and $propertiesStateAfterBootstrap.byteCount -eq 0)
+        byteCount = $propertiesStateAfterBootstrap.byteCount
+        ignored = [bool]$propertiesStateAfterBootstrap.ignored
+        beforeCreationIgnoreProof = $initialIgnoreProof
+        afterCreationState = $propertiesStateAfterBootstrap
+        materializationRunId = $materializationRunId
+        materializationPath = $executionPath
+        sourceValuesUsed = $false
+        failure = $bootstrapError
+    }
+    $identityPass = ($preBootstrapIdentityPass -and $bootstrapPass -and $postBootstrapHead -eq $CandidateSha -and $postBootstrapTree -eq $CandidateTree -and $postBootstrapState.clean)
     $record = [pscustomobject][ordered]@{
-        contract = 'exact_candidate_execution_lifetime_v1'
+        contract = 'exact_candidate_execution_lifetime_v2'
         mechanism = 'git_detached_candidate_worktree'
         lifecycle = 'retained_in_ignored_run_scoped_worktree_no_cleanup'
         materializationRunId = $materializationRunId
@@ -178,15 +269,19 @@ function New-ExactCandidateExecutionTree {
         materializedHead = $materializedHead
         materializedTree = $materializedTree
         stateBeforeGates = $materializedState
+        stateAfterBootstrap = $postBootstrapState
+        materializedHeadAfterBootstrap = $postBootstrapHead
+        materializedTreeAfterBootstrap = $postBootstrapTree
         identityPass = [bool]$identityPass
         sourceWorktreeUsedForGateExecution = $false
         allowedWritableOutputs = 'Git-ignored outputs within the materialization; wrapper evidence remains outside it.'
-        localProperties = 'Not inspected, copied, or serialized by the wrapper; ignored source-worktree file remains outside the candidate tree.'
+        sourceLocalProperties = $sourcePolicy
+        detachedLocalPropertiesBootstrap = $detachedBootstrap
         createdUtc = Format-RemediationUtc (Get-RemediationUtcNow)
     }
     if (-not $identityPass) {
         Write-RemediationJson -Path (Join-Path $EvidenceDirectory 'execution-lifetime.json') -Value $record
-        throw 'Exact candidate materialization failed HEAD/tree/clean-state verification; no verification gate was started.'
+        throw "Exact candidate materialization failed candidate identity or detached empty local.properties bootstrap verification; no verification gate was started. $bootstrapError"
     }
     return $record
 }
@@ -702,6 +797,17 @@ foreach ($gate in $gateSpecs) {
     if ($gate.kind -eq 'diff' -and ($null -eq $processResult -or $processResult.exitCode -ne 0 -or $timedOut)) { $status = 'FAILED_DIFF_CHECK'; $haltAll = $true }
 
     $afterState = Get-RemediationTrackedTreeState -RepoPath $executionRepoFull -CandidateSha $head -LogDirectory $logDirectory
+    $bootstrapAfterGate = $null
+    $bootstrapAfterGatePass = [bool]$ToolingDemoMode
+    if (-not $ToolingDemoMode) {
+        $bootstrapAfterGate = Get-DetachedLocalPropertiesState -MaterializationPath $executionRepoFull -LogDirectory $logDirectory -Name 'git-local-properties-after-gate'
+        $bootstrapAfterGatePass = ($bootstrapAfterGate.exists -and $bootstrapAfterGate.byteCount -eq 0 -and $bootstrapAfterGate.ignored)
+        if (-not $bootstrapAfterGatePass) {
+            $haltAll = $true
+            $status = 'FAILED_EXECUTION_LOCAL_PROPERTIES_BOOTSTRAP_CHANGED'
+            $errorText = 'The detached local.properties bootstrap was missing, non-empty, or no longer Git-ignored after gate execution.'
+        }
+    }
     if (-not $afterState.clean) {
         $haltAll = $true
         $status = $(if ($ToolingDemoMode) { 'FAILED_TRACKED_TREE_CHANGED' } else { 'FAILED_EXECUTION_TREE_CHANGED' })
@@ -713,11 +819,15 @@ foreach ($gate in $gateSpecs) {
         candidateTree = $treeSha
         mechanism = $executionLifetime.mechanism
         status = $(if (-not $executionStarted) { 'not_started' } elseif ($status -eq 'PASS') { 'PASS' } else { 'FAIL' })
-        provenancePass = [bool](-not $ToolingDemoMode -and $executionStarted -and $status -eq 'PASS' -and $executionLifetime.identityPass -and $afterState.clean)
+        provenancePass = [bool](-not $ToolingDemoMode -and $executionStarted -and $status -eq 'PASS' -and $executionLifetime.identityPass -and $afterState.clean -and $bootstrapAfterGatePass)
         materializationPath = $(if ($ToolingDemoMode) { $null } else { $executionRepoFull })
         workingDirectory = $(if ($executionStarted) { $executionRepoFull } else { $null })
         launcherPath = $(if ($executionStarted -and $gate.kind -ne 'diff') { $executionGradlePath } else { $null })
         launcherPolicy = $executionLifetime.launcherPolicy
+        sourceLocalProperties = $(if ($ToolingDemoMode) { $null } else { $executionLifetime.sourceLocalProperties })
+        detachedLocalPropertiesBootstrap = $(if ($ToolingDemoMode) { $null } else { $executionLifetime.detachedLocalPropertiesBootstrap })
+        detachedLocalPropertiesBootstrapAfterGate = $bootstrapAfterGate
+        detachedLocalPropertiesBootstrapPass = [bool]$bootstrapAfterGatePass
         sourceWorktreeUsedForGateExecution = [bool]$ToolingDemoMode
         startedUtc = $(if ($null -ne $executionStartUtc) { Format-RemediationUtc $executionStartUtc } else { $null })
         endedUtc = $(if ($null -ne $executionEndUtc) { Format-RemediationUtc $executionEndUtc } else { $null })
@@ -749,11 +859,14 @@ foreach ($gate in $gateSpecs) {
 $passed = (@($gateResults | Where-Object { $_.status -ne 'PASS' }).Count -eq 0 -and $gateResults.Count -eq $gateSpecs.Count)
 if (-not $ToolingDemoMode) {
     $materializationFinalState = Get-RemediationTrackedTreeState -RepoPath $executionRepoFull -CandidateSha $head -LogDirectory $logDirectory
+    $propertiesFinalState = Get-DetachedLocalPropertiesState -MaterializationPath $executionRepoFull -LogDirectory $logDirectory -Name 'git-local-properties-ignore-after-all-gates'
+    $propertiesFinalPass = ($propertiesFinalState.exists -and $propertiesFinalState.byteCount -eq 0 -and $propertiesFinalState.ignored)
     $executionLifetime | Add-Member -NotePropertyName materializationStateAfterAllGates -NotePropertyValue $materializationFinalState
+    $executionLifetime | Add-Member -NotePropertyName detachedLocalPropertiesBootstrapAfterAllGates -NotePropertyValue $propertiesFinalState
     $executionLifetime | Add-Member -NotePropertyName gates -NotePropertyValue @($gateExecutionRecords.ToArray())
     $executionLifetime | Add-Member -NotePropertyName startedUtc -NotePropertyValue (Format-RemediationUtc $verificationStarted)
     $executionLifetime | Add-Member -NotePropertyName endedUtc -NotePropertyValue (Format-RemediationUtc (Get-RemediationUtcNow))
-    $lifetimePass = ($executionLifetime.identityPass -and $materializationFinalState.clean -and $gateExecutionRecords.Count -eq $gateSpecs.Count -and @($gateExecutionRecords | Where-Object { -not $_.provenancePass }).Count -eq 0)
+    $lifetimePass = ($executionLifetime.identityPass -and $materializationFinalState.clean -and $propertiesFinalPass -and $gateExecutionRecords.Count -eq $gateSpecs.Count -and @($gateExecutionRecords | Where-Object { -not $_.provenancePass }).Count -eq 0)
     $executionLifetime | Add-Member -NotePropertyName status -NotePropertyValue $(if ($lifetimePass) { 'PASS' } else { 'FAIL' })
     if (-not $lifetimePass) { $passed = $false }
 } else {
