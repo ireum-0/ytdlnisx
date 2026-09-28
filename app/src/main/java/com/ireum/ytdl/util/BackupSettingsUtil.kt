@@ -26,6 +26,9 @@ object BackupSettingsUtil {
         // Cache roots are destination-local.  A raw path or SAF-backed value
         // from another installation is not portable native-cache authority.
         "cache_path",
+        // SAF command destinations are destination-local authority. A backup
+        // may not recreate the locator without the destination's persisted grant.
+        "command_path",
         // Re-emitted by the youtuber-data payload where old group IDs can be
         // explicitly remapped to destination group IDs.
         "history_visible_child_youtuber_groups",

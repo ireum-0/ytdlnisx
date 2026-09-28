@@ -27,6 +27,8 @@ import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
+import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.work.CleanUpLeftoverDownloads
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import com.ireum.ytdl.work.CleanupSchedulePolicy
@@ -967,6 +969,68 @@ class BackupResetTransactionProductionWiringTest {
                 .get(20, TimeUnit.SECONDS)
                 .none { !it.state.isFinished },
         )
+    }
+
+    @Test
+    fun resetPreservesOnlyTheDestinationCommandPathAndNeverImportsOne() = runBlocking {
+        val hadCommandPath = preferences.contains("command_path")
+        val previousCommandPath = preferences.getString("command_path", null)
+        val hadUseCookies = preferences.contains("use_cookies")
+        val previousUseCookies = preferences.getBoolean("use_cookies", false)
+        val destinationTree =
+            "content://com.android.externalstorage.documents/tree/primary%3AFolderSettings"
+        val importedTree =
+            "content://com.android.externalstorage.documents/tree/primary%3AImportedBackup"
+        val importedRawPath = File(context.filesDir, "backup11-reset-imported-native-path").absolutePath
+        val legacyPlans = listOf(importedTree, importedRawPath).map { importedValue ->
+            BackupRestoreParser.parse(
+                """{"app":"YTDLnisX_backup","backup_format_version":4,"settings":[{"key":"command_path","value":"$importedValue","type":"String"}]}""",
+            )
+        }
+
+        try {
+            preferences.edit().putBoolean("use_cookies", false).commit()
+            legacyPlans.forEach { legacyPlan ->
+                preferences.edit().putString("command_path", destinationTree).commit()
+                val preserved = SettingsViewModel(context as Application)
+                    .restorePlan(legacyPlan, context, resetData = true)
+                assertTrue("reset should complete: $preserved", preserved is RestoreOutcome.Completed)
+                assertEquals(destinationTree, preferences.getString("command_path", null))
+            }
+
+            val cacheRoot = File(context.cacheDir, "backup11-reset-${System.nanoTime()}")
+                .apply { mkdirs() }
+            try {
+                val terminalPlan = TerminalCommandPlanFactory.create(
+                    context = context,
+                    preferences = preferences,
+                    command = "https://example.com/backup11-reset",
+                    taskId = "backup11-reset",
+                    cacheRoot = cacheRoot,
+                )
+                assertEquals(destinationTree, terminalPlan.downloadLocation)
+                assertTrue("preserved provider output must remain staged", terminalPlan.usesAppCache)
+            } finally {
+                cacheRoot.deleteRecursively()
+            }
+
+            preferences.edit().remove("command_path").commit()
+            val absent = SettingsViewModel(context as Application)
+                .restorePlan(legacyPlans.first(), context, resetData = true)
+            assertTrue("reset without a local destination should complete: $absent", absent is RestoreOutcome.Completed)
+            assertFalse("reset must not recreate the imported locator", preferences.contains("command_path"))
+            assertEquals(
+                FileUtil.getDefaultCommandPath(),
+                TerminalCommandPlanFactory.configuredDestination(preferences),
+            )
+        } finally {
+            val editor = preferences.edit()
+            if (hadCommandPath) editor.putString("command_path", previousCommandPath)
+            else editor.remove("command_path")
+            if (hadUseCookies) editor.putBoolean("use_cookies", previousUseCookies)
+            else editor.remove("use_cookies")
+            editor.commit()
+        }
     }
 
     @Test

@@ -63,6 +63,7 @@ class BackupSettingsUtilTest {
         )
 
         assertFalse(BackupSettingsUtil.isPortablePreferenceKey("cache_path"))
+        assertFalse(BackupSettingsUtil.isPortablePreferenceKey("command_path"))
         coordinatorKeys.forEach { key ->
             assertFalse(
                 "coordinator key must remain destination-local: $key",

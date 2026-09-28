@@ -9,6 +9,11 @@ import com.google.gson.JsonParser
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
+import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.FileUtil
+import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
+import java.io.File
+import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -56,6 +61,8 @@ class BackupPreferenceProductionWiringTest {
         "history_visible_child_youtuber_groups",
         "player_playback_position_f7",
         "cache_path",
+        "command_path",
+        "use_cookies",
         "backup_path",
     ) + coordinatorKeys
     private val originalValues = mutableMapOf<String, Any?>()
@@ -191,6 +198,75 @@ class BackupPreferenceProductionWiringTest {
 
         val excluded = coordinatorKeys + "cache_path"
         assertTrue(items.none { it.key in excluded })
+    }
+
+    @Test
+    fun commandPathIsOmittedAndLegacyMergeKeepsDestinationAuthority() = runBlocking {
+        val destinationTree =
+            "content://com.android.externalstorage.documents/tree/primary%3AFolderSettings"
+        val importedTree =
+            "content://com.android.externalstorage.documents/tree/primary%3AImportedBackup"
+        val importedRawPath = File(context.filesDir, "backup11-imported-native-path").absolutePath
+        preferences.edit().putString("command_path", destinationTree).commit()
+
+        val backup = SettingsViewModel(context as android.app.Application)
+            .backup(listOf("settings"))
+        assertTrue(backup.exceptionOrNull()?.message ?: "settings backup failed", backup.isSuccess)
+        publishedBackup = backup.getOrThrow()
+        val backedUpItems = Gson().fromJson(
+            JsonParser.parseString(
+                BackupPublicationTestSupport.readText(context, publishedBackup!!),
+            ).asJsonObject.getAsJsonArray("settings"),
+            Array<BackupSettingsItem>::class.java,
+        ).toList()
+        assertFalse("new backups must omit destination-local command_path", backedUpItems.any { it.key == "command_path" })
+
+        preferences.edit().putString("command_path", importedRawPath).commit()
+        val rawPathBackup = BackupSettingsUtil.backupSettings(preferences).getOrThrow()
+        assertFalse("raw command_path must also be omitted", rawPathBackup.any {
+            it.asJsonObject.get("key")?.asString == "command_path"
+        })
+        preferences.edit().putString("command_path", destinationTree).commit()
+
+        val importedValues = listOf(importedTree, importedRawPath)
+        val legacyPlans = importedValues.map { importedValue ->
+            BackupRestoreParser.parse(
+                """{"app":"YTDLnisX_backup","backup_format_version":4,"settings":[{"key":"command_path","value":"$importedValue","type":"String"}]}""",
+            ).also { plan ->
+                assertTrue(plan.data.settings.orEmpty().none { it.key == "command_path" })
+            }
+        }
+        legacyPlans.forEach { legacyPlan ->
+            val merge = SettingsViewModel(context as android.app.Application)
+                .restorePlan(legacyPlan, context)
+            assertTrue("legacy merge should complete: $merge", merge is RestoreOutcome.Completed)
+            assertEquals(destinationTree, preferences.getString("command_path", null))
+        }
+
+        val cacheRoot = File(context.cacheDir, "backup11-merge-${UUID.randomUUID()}")
+            .apply { mkdirs() }
+        try {
+            val terminalPlan = TerminalCommandPlanFactory.create(
+                context = context,
+                preferences = preferences,
+                command = "https://example.com/backup11-merge",
+                taskId = "backup11-merge",
+                cacheRoot = cacheRoot,
+            )
+            assertEquals(destinationTree, terminalPlan.downloadLocation)
+            assertTrue("provider output must remain staged for provider publication", terminalPlan.usesAppCache)
+        } finally {
+            cacheRoot.deleteRecursively()
+        }
+
+        preferences.edit().remove("command_path").commit()
+        legacyPlans.forEach { legacyPlan ->
+            val mergeWithoutDestination = SettingsViewModel(context as android.app.Application)
+                .restorePlan(legacyPlan, context)
+            assertTrue("legacy merge without a destination should complete: $mergeWithoutDestination", mergeWithoutDestination is RestoreOutcome.Completed)
+            assertFalse("an imported locator must not be installed without a destination grant", preferences.contains("command_path"))
+        }
+        assertEquals(FileUtil.getDefaultCommandPath(), TerminalCommandPlanFactory.configuredDestination(preferences))
     }
 
     @Test
