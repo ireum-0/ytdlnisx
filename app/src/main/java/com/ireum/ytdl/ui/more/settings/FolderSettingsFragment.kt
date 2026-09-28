@@ -13,12 +13,10 @@ import android.os.Build.VERSION
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
-import android.webkit.MimeTypeMap
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.findNavController
@@ -35,7 +33,6 @@ import androidx.work.WorkManager
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.DBManager
-import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
 import com.ireum.ytdl.util.FileUtil
@@ -47,15 +44,13 @@ import com.ireum.ytdl.util.storage.AppCacheManager
 import com.ireum.ytdl.util.storage.AppCacheScan
 import com.ireum.ytdl.util.storage.DownloadCacheOwnership
 import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
+import com.ireum.ytdl.util.storage.HistoryVideoFolderMigration
 import com.ireum.ytdl.work.MoveCacheFilesWorker
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.util.Locale
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
@@ -656,164 +651,20 @@ class FolderSettingsFragment : BaseSettingsFragment() {
         return DownloadCacheOwnership.captureEffectiveRootBeforePreferenceMutation(requireContext())
     }
 
-    private data class VideoFolderMigrationResult(
-        val movedFiles: Int,
-        val updatedCards: Int,
-        val failedFiles: Int
-    )
-
     private suspend fun migrateDefaultVideoFolderInternal(
         onProgress: suspend (done: Int, total: Int) -> Unit
-    ): VideoFolderMigrationResult = withContext(Dispatchers.IO) {
-        HistoryReferenceMutationCoordinator.withLock {
-        val db = DBManager.getInstance(requireContext())
-        val historyDao = db.historyDao
-        val sourceRoot = File(FileUtil.getDefaultVideoPath())
-        if (!sourceRoot.exists() || !sourceRoot.isDirectory) {
-            return@withLock VideoFolderMigrationResult(0, 0, 0)
-        }
-
+    ): HistoryVideoFolderMigration.Result {
+        val context = requireContext().applicationContext
         val destinationRoot = preferences.getString("video_path", FileUtil.getDefaultVideoPath())
             ?: FileUtil.getDefaultVideoPath()
-        val sourceNormalized = sourceRoot.absolutePath.replace('\\', '/')
-        val destinationNormalized = destinationRoot.replace('\\', '/')
-        if (destinationNormalized.equals(sourceNormalized, ignoreCase = true)) {
-            return@withLock VideoFolderMigrationResult(0, 0, 0)
-        }
-
-        val historyItems = historyDao.getAll().filter { it.type == DownloadType.video }
-        val candidates = historyItems
-            .flatMap { item -> item.downloadPath }
-            .filter { oldPath ->
-                if (oldPath.startsWith("content://")) return@filter false
-                val oldFile = File(oldPath)
-                if (!oldFile.exists()) return@filter false
-                val oldParent = oldFile.parentFile?.absolutePath?.replace('\\', '/') ?: return@filter false
-                oldParent.equals(sourceNormalized, ignoreCase = true)
-            }
-        val totalCandidates = candidates.size
-        onProgress(0, totalCandidates)
-
-        var movedFiles = 0
-        var updatedCards = 0
-        var failedFiles = 0
-        val movedPathMap = linkedMapOf<String, String>()
-        var processed = 0
-
-        historyItems.forEach { item ->
-            var changed = false
-            val updatedPaths = item.downloadPath.map { oldPath ->
-                movedPathMap[oldPath]?.let {
-                    changed = true
-                    processed += 1
-                    onProgress(processed, totalCandidates)
-                    return@map it
-                }
-                if (oldPath.startsWith("content://")) return@map oldPath
-                val oldFile = File(oldPath)
-                if (!oldFile.exists()) return@map oldPath
-                val oldParent = oldFile.parentFile?.absolutePath?.replace('\\', '/') ?: return@map oldPath
-                if (!oldParent.equals(sourceNormalized, ignoreCase = true)) return@map oldPath
-
-                val movedPath = moveFileToDestination(oldFile, destinationRoot)
-                if (movedPath != null) {
-                    movedPathMap[oldPath] = movedPath
-                    movedFiles += 1
-                    changed = true
-                    processed += 1
-                    onProgress(processed, totalCandidates)
-                    movedPath
-                } else {
-                    failedFiles += 1
-                    processed += 1
-                    onProgress(processed, totalCandidates)
-                    oldPath
-                }
-            }
-            if (changed && updatedPaths != item.downloadPath) {
-                historyDao.updateDownloadPathById(item.id, updatedPaths)
-                updatedCards += 1
-            }
-        }
-
-        VideoFolderMigrationResult(movedFiles, updatedCards, failedFiles)
-        }
-    }
-
-    private fun moveFileToDestination(sourceFile: File, destinationRoot: String): String? {
-        return if (destinationRoot.startsWith("content://")) {
-            moveFileToContentTree(sourceFile, destinationRoot)
-        } else {
-            moveFileToFileDirectory(sourceFile, destinationRoot)
-        }
-    }
-
-    private fun moveFileToFileDirectory(sourceFile: File, destinationRoot: String): String? {
-        val destinationDir = File(destinationRoot)
-        if (!destinationDir.exists() && !destinationDir.mkdirs()) return null
-        val destinationFile = resolveUniqueFile(destinationDir, sourceFile.name)
-        if (sourceFile.absolutePath.equals(destinationFile.absolutePath, ignoreCase = true)) {
-            return sourceFile.absolutePath
-        }
-        val renamed = runCatching { sourceFile.renameTo(destinationFile) }.getOrDefault(false)
-        if (renamed) return destinationFile.absolutePath
-        return runCatching {
-            FileInputStream(sourceFile).use { input ->
-                FileOutputStream(destinationFile).use { output ->
-                    input.copyTo(output)
-                }
-            }
-            if (!sourceFile.delete()) return null
-            destinationFile.absolutePath
-        }.getOrNull()
-    }
-
-    private fun moveFileToContentTree(sourceFile: File, destinationRoot: String): String? {
-        val tree = DocumentFile.fromTreeUri(requireContext(), Uri.parse(destinationRoot)) ?: return null
-        val destinationName = resolveUniqueNameForTree(tree, sourceFile.name)
-        val mimeType = mimeTypeForName(destinationName)
-        val created = tree.createFile(mimeType, destinationName) ?: return null
-        return runCatching {
-            requireContext().contentResolver.openOutputStream(created.uri)?.use { output ->
-                FileInputStream(sourceFile).use { input ->
-                    input.copyTo(output)
-                }
-            } ?: return null
-            if (!sourceFile.delete()) return null
-            created.uri.toString()
-        }.getOrNull()
-    }
-
-    private fun resolveUniqueFile(directory: File, filename: String): File {
-        val dot = filename.lastIndexOf('.')
-        val base = if (dot > 0) filename.substring(0, dot) else filename
-        val ext = if (dot > 0) filename.substring(dot) else ""
-        var candidate = File(directory, filename)
-        var index = 1
-        while (candidate.exists()) {
-            candidate = File(directory, "$base ($index)$ext")
-            index += 1
-        }
-        return candidate
-    }
-
-    private fun resolveUniqueNameForTree(tree: DocumentFile, filename: String): String {
-        val dot = filename.lastIndexOf('.')
-        val base = if (dot > 0) filename.substring(0, dot) else filename
-        val ext = if (dot > 0) filename.substring(dot) else ""
-        var candidate = filename
-        var index = 1
-        while (tree.findFile(candidate) != null) {
-            candidate = "$base ($index)$ext"
-            index += 1
-        }
-        return candidate
-    }
-
-    private fun mimeTypeForName(filename: String): String {
-        val ext = filename.substringAfterLast('.', "").lowercase(Locale.getDefault())
-        if (ext.isBlank()) return "application/octet-stream"
-        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+        return HistoryVideoFolderMigration(
+            context = context,
+            database = DBManager.getInstance(context),
+        ).migrate(
+            sourceRoot = File(FileUtil.getDefaultVideoPath()),
+            destinationRoot = destinationRoot,
+            onProgress = onProgress,
+        )
     }
 
 
