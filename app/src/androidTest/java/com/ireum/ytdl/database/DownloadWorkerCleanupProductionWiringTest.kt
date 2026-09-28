@@ -1496,12 +1496,18 @@ class DownloadWorkerCleanupProductionWiringTest {
             )
         )
         val downloadId = realWorkerTestDownloadIds.getAndIncrement()
+        val destinationDirectory = File(
+            requireNotNull(context.externalCacheDir),
+            "history-finalization-${UUID.randomUUID()}",
+        )
         val outputPaths = AtomicInteger(0)
         val finalizationFailures = AtomicInteger(0)
         val exactExecution = java.util.concurrent.atomic.AtomicReference<String>()
         var workerRequest: androidx.work.OneTimeWorkRequest? = null
 
         try {
+            assertTrue(destinationDirectory.mkdirs())
+            assertTrue(destinationDirectory.canWrite())
             assertTrue(preferences.edit().putBoolean("cache_downloads", false).commit())
             db.downloadDao.insertRaw(
                 download().copy(
@@ -1510,7 +1516,7 @@ class DownloadWorkerCleanupProductionWiringTest {
                     type = DownloadType.audio,
                     format = Format(container = "m4a"),
                     container = "m4a",
-                    downloadPath = context.cacheDir.absolutePath,
+                    downloadPath = destinationDirectory.absolutePath,
                     playlistURL = com.ireum.ytdl.util.HistoryRedownloadMarker.regular(historyId),
                     status = DownloadRepository.Status.Queued.name,
                     executionId = "",
@@ -1600,6 +1606,8 @@ class DownloadWorkerCleanupProductionWiringTest {
             workerRequest?.let { cancelAndAwaitWorker(context, it.id) }
             DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
             DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
+            File(destinationDirectory, "replacement.m4a").delete()
+            destinationDirectory.delete()
             val editor = preferences.edit()
             if (hadCacheSetting) {
                 editor.putBoolean("cache_downloads", previousCacheSetting)
