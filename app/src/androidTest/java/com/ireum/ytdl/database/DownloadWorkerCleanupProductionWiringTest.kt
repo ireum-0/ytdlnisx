@@ -1524,20 +1524,21 @@ class DownloadWorkerCleanupProductionWiringTest {
                 )
             )
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
-            DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = { candidateId, rawTempDirectory ->
-                if (candidateId != downloadId) {
-                    null
-                } else {
-                    exactExecution.set(
-                        db.downloadDao.getNullableDownloadById(candidateId)?.executionId,
-                    )
-                    rawTempDirectory.mkdirs()
-                    val output = File(rawTempDirectory, "replacement.m4a")
-                    output.writeBytes(byteArrayOf(1, 2, 3))
-                    outputPaths.incrementAndGet()
-                    "[download] Destination: ${output.absolutePath}"
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting =
+                { candidateId, _, outputDirectory ->
+                    if (candidateId != downloadId) {
+                        null
+                    } else {
+                        exactExecution.set(
+                            db.downloadDao.getNullableDownloadById(candidateId)?.executionId,
+                        )
+                        outputDirectory.mkdirs()
+                        val output = File(outputDirectory, "replacement.m4a")
+                        output.writeBytes(byteArrayOf(1, 2, 3))
+                        outputPaths.incrementAndGet()
+                        "[download] Destination: ${output.absolutePath}"
+                    }
                 }
-            }
             DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = { candidateId ->
                 if (
                     candidateId == downloadId &&
@@ -1604,7 +1605,7 @@ class DownloadWorkerCleanupProductionWiringTest {
             assertNull(producerRecoveryRecord(context, downloadId, e1))
         } finally {
             workerRequest?.let { cancelAndAwaitWorker(context, it.id) }
-            DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
+            DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = null
             DownloadWorkerEffectTestHooks.beforeCommittedHistoryFinalizationForTesting = null
             File(destinationDirectory, "replacement.m4a").delete()
             destinationDirectory.delete()
