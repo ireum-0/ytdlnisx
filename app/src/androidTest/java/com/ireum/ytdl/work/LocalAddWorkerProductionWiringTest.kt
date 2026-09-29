@@ -167,7 +167,7 @@ class LocalAddWorkerProductionWiringTest {
     @Test
     fun openedOlderPendingSessionRemainsDiscoverableAfterNewWorkerPublishes() = runBlocking {
         val workManager = WorkManager.getInstance(context)
-        suspend fun publish(path: String): String {
+        suspend fun publish(path: String, excludedSessionIds: Set<String> = emptySet()): String {
             val request = OneTimeWorkRequestBuilder<LocalAddWorker>()
                 .setInputData(workDataOf(
                     LocalAddWorker.KEY_ENTRIES_JSON to Gson().toJson(listOf(LocalAddEntryDto(path, null))),
@@ -176,13 +176,19 @@ class LocalAddWorkerProductionWiringTest {
                 .build()
             workManager.enqueue(request)
             assertEquals(WorkInfo.State.SUCCEEDED, awaitFinished(workManager, request.id).state)
-            return awaitNewPendingSession()
+            return awaitNewPendingSession(excludedSessionIds)
         }
 
         val firstId = publish("content://provider/document/open-before-second")
         assertEquals(1, LocalAddStorage.loadPending(context, firstId).size)
-        val secondId = publish("content://provider/document/second-session")
-        assertEquals(setOf(firstId, secondId),
+        val secondId = publish(
+            "content://provider/document/second-session",
+            excludedSessionIds = setOf(firstId),
+        )
+        assertTrue("second publication must select a distinct session ID", firstId != secondId)
+        val expectedIds = setOf(firstId, secondId)
+        assertEquals(2, expectedIds.size)
+        assertEquals(expectedIds,
             LocalAddStorage.loadPendingSessionIds(context).filterNot(previousPendingSessionIds::contains).toSet())
 
         LocalAddStorage.clearPending(context, firstId)
@@ -246,10 +252,11 @@ class LocalAddWorkerProductionWiringTest {
         assertFalse(LocalAddStorage.loadPendingSessionIds(context).contains(missingId))
     }
 
-    private suspend fun awaitNewPendingSession(): String = withContext(Dispatchers.IO) {
+    private suspend fun awaitNewPendingSession(excludedSessionIds: Set<String> = emptySet()): String =
+        withContext(Dispatchers.IO) {
         repeat(100) {
             val session = LocalAddStorage.loadPendingSessionIds(context)
-                .firstOrNull { it !in previousPendingSessionIds }
+                .firstOrNull { it !in previousPendingSessionIds && it !in excludedSessionIds }
             if (session != null) return@withContext session
             Thread.sleep(100L)
         }
