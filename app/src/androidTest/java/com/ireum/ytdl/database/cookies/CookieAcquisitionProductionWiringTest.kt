@@ -17,7 +17,9 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.viewmodel.CookieViewModel
 import com.ireum.ytdl.util.extractors.ytdlp.YTDLPUtil
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeMediaAccessProfile
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpCommandTokenizer
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -100,9 +102,13 @@ class CookieAcquisitionProductionWiringTest {
         assertEquals(content, row.content)
         assertTrue(row.enabled)
         val file = CookieProjectionCoordinator.requireUsableFile(context)
+        val projectedText = file.readText()
+        assertTrue(projectedText.startsWith("# Netscape HTTP Cookie File\n"))
         assertEquals(
-            "$COOKIE_HEADER\n${cookieLine("SID", "fresh-session")}\n${httpOnlyCookieLine("HTTP", "http-only-session")}\n",
-            file.readText(),
+            listOf(cookieLine("SID", "fresh-session"), httpOnlyCookieLine("HTTP", "http-only-session")),
+            projectedText.lineSequence()
+                .filter { it.isNotBlank() && (!it.startsWith("#") || it.startsWith("#HttpOnly_")) }
+                .toList(),
         )
         assertTrue(CookieAcquisitionHandoff.matches(requestId, receipt.requestId, receipt.projectionGeneration))
     }
@@ -257,29 +263,38 @@ class CookieAcquisitionProductionWiringTest {
         )
         val ytdlp = YTDLPUtil(context, database.commandTemplateDao)
 
-        val missing = runCatching {
-            ytdlp.buildYoutubeDLRequest(
-                downloadItem = item,
-                mediaAccessProfile = YoutubeMediaAccessProfile.PUBLIC_DEFAULT,
-                useCachedInfoJson = false,
-                selectionOnly = true,
-                cacheRoot = cacheRoot,
-            )
-        }
-        assertTrue("missing enabled cookie file must stop request construction", missing.isFailure)
-
-        cookieFile.writeText("$COOKIE_HEADER\n${cookieLine("SID", "ready")}\n")
-        val request = ytdlp.buildYoutubeDLRequest(
+        fun makeRequest() = ytdlp.buildYoutubeDLRequest(
             downloadItem = item,
             mediaAccessProfile = YoutubeMediaAccessProfile.PUBLIC_DEFAULT,
             useCachedInfoJson = false,
             selectionOnly = true,
             cacheRoot = cacheRoot,
         )
+        val missing = runCatching(::makeRequest)
+        assertTrue("missing enabled cookie file must stop request construction", missing.isFailure)
+        cookieFile.writeText(COOKIE_HEADER)
+        assertTrue("header-only enabled projection must stop request construction", runCatching(::makeRequest).isFailure)
+        cookieFile.writeText("$COOKIE_HEADER\n\t\t\t\t\t\t\t\n")
+        assertTrue("malformed enabled projection must stop request construction", runCatching(::makeRequest).isFailure)
+
+        cookieFile.writeText("$COOKIE_HEADER\n${cookieLine("SID", "ready")}\n")
+        val request = makeRequest()
         try {
+            // The production download request carries options in an exact
+            // app-generated config; top-level arguments alone omit that carrier.
+            val configPath = requireNotNull(request.getArguments("--config-locations")?.filterNotNull()?.singleOrNull())
+            val config = File(configPath)
+            assertEquals(cacheRoot.canonicalFile, config.parentFile?.canonicalFile)
+            val sanitizedArguments = YoutubeDLCompat.previewSanitizedArguments(context, request)
+            val configOptionIndex = sanitizedArguments.indexOf("--config-locations")
+            assertTrue("the real execution sanitizer must retain the generated config", configOptionIndex >= 0)
+            assertEquals(config.canonicalPath, File(sanitizedArguments[configOptionIndex + 1]).canonicalPath)
+            val effectiveOptions = requireNotNull(YtdlpCommandTokenizer.tokenize(config.readText()))
+            val cookieOptionIndexes = effectiveOptions.indices.filter { effectiveOptions[it] == "--cookies" }
+            assertEquals("the effective config must carry exactly one configured cookie option", 1, cookieOptionIndexes.size)
             assertEquals(
                 cookieFile.absolutePath,
-                request.getArguments("--cookies")?.filterNotNull()?.singleOrNull(),
+                effectiveOptions[cookieOptionIndexes.single() + 1],
             )
         } finally {
             request.getArguments("--config-locations")
