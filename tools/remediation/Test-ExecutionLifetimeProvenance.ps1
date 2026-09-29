@@ -105,15 +105,27 @@ if (-not [string]::IsNullOrWhiteSpace($control)) {
     }
 }
 $instrumentationClassArgument = @($args | Where-Object { $_ -like '-Pandroid.testInstrumentationRunnerArguments.class=*' } | Select-Object -First 1)
+$resultRootBase = $workingDirectory
+$demoResultRoot = [Environment]::GetEnvironmentVariable('YTDLNISX_REMEDIATION_DEMO_RESULT_ROOT')
+if (-not [string]::IsNullOrWhiteSpace($demoResultRoot)) { $resultRootBase = $demoResultRoot }
 if ($instrumentationClassArgument.Count -gt 0) {
     $instrumentationClass = ([string]$instrumentationClassArgument[0]).Substring('-Pandroid.testInstrumentationRunnerArguments.class='.Length)
     $escapedClass = [System.Security.SecurityElement]::Escape($instrumentationClass)
-    $resultRoot = Join-Path $workingDirectory 'app\build\outputs\androidTest-results\connected\debug'
+    $resultRoot = Join-Path $resultRootBase 'app\build\outputs\androidTest-results\connected\debug'
     New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
     $junit = '<testsuite name="' + $escapedClass + '" tests="1" failures="0" errors="0" skipped="0"><testcase classname="' + $escapedClass + '" name="synthetic_connected_gate" /></testsuite>'
     [System.IO.File]::WriteAllText((Join-Path $resultRoot 'TEST-synthetic-connected-gate.xml'), $junit, (New-Object System.Text.UTF8Encoding($false)))
     Write-Output 'Starting 1 tests'
     Write-Output '1 tests completed'
+}
+$jvmClassArgument = @($args | Where-Object { $_ -like '--tests=*' } | Select-Object -First 1)
+if ($jvmClassArgument.Count -gt 0) {
+    $jvmClass = ([string]$jvmClassArgument[0]).Substring('--tests='.Length)
+    $escapedJvmClass = [System.Security.SecurityElement]::Escape($jvmClass)
+    $jvmResultRoot = Join-Path $resultRootBase 'app\build\test-results\testDebugUnitTest'
+    New-Item -ItemType Directory -Path $jvmResultRoot -Force | Out-Null
+    $jvmJunit = '<testsuite name="' + $escapedJvmClass + '" tests="1" failures="0" errors="0" skipped="0"><testcase classname="' + $escapedJvmClass + '" name="synthetic_jvm_gate" /></testsuite>'
+    [System.IO.File]::WriteAllText((Join-Path $jvmResultRoot 'TEST-synthetic-jvm-gate.xml'), $jvmJunit, (New-Object System.Text.UTF8Encoding($false)))
 }
 Write-Output 'BUILD SUCCESSFUL'
 exit 0
@@ -529,6 +541,12 @@ function Invoke-ConnectedVerificationChild {
         [Parameter(Mandatory)][string]$Name,
         [string]$EvidenceRootOverride,
         [string]$GradleMarker,
+        [string[]]$JvmClasses = @(),
+        [string[]]$CompileTasks = @(),
+        [switch]$RunDiffCheck,
+        [switch]$ToolingDemoMode,
+        [string]$DemoDiagnosticErrorGateId,
+        [string]$FinalizationSerializationFailureArtifact,
         [ValidateRange(1, 300)][int]$WatchdogIntervalSeconds = 30,
         [ValidateRange(0, 30)][int]$GradleDelaySeconds = 0
     )
@@ -540,14 +558,20 @@ function Invoke-ConnectedVerificationChild {
     ) + $Classes + @(
         '-AdbPath', $AdbPath,
         '-DeviceSerial', $DeviceSerial,
-        '-ProbeTimeoutSeconds', '2',
+        '-ProbeTimeoutSeconds', '10',
         '-DeviceWatchdogIntervalSeconds', [string]$WatchdogIntervalSeconds,
         '-GateTimeoutSeconds', '60',
         '-EvidenceRoot', $selectedEvidenceRoot
     )
+    if ($JvmClasses.Count -gt 0) { $arguments += @('-JvmTestClass') + $JvmClasses }
+    if ($CompileTasks.Count -gt 0) { $arguments += @('-CompileTask') + $CompileTasks }
+    if ($RunDiffCheck) { $arguments += '-RunDiffCheck' }
+    if ($ToolingDemoMode) { $arguments += @('-ToolingDemoMode', '-DemoResultRoot', 'demo-results') }
     $environment = @{ YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog }
     if (-not [string]::IsNullOrWhiteSpace($GradleMarker)) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG = $GradleMarker }
     if ($GradleDelaySeconds -gt 0) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_DELAY_SECONDS = [string]$GradleDelaySeconds }
+    if (-not [string]::IsNullOrWhiteSpace($DemoDiagnosticErrorGateId)) { $environment.YTDLNISX_REMEDIATION_DEMO_DIAGNOSTIC_ERROR_GATE_ID = $DemoDiagnosticErrorGateId }
+    if (-not [string]::IsNullOrWhiteSpace($FinalizationSerializationFailureArtifact)) { $environment.YTDLNISX_REMEDIATION_DEMO_FINALIZATION_SERIALIZATION_FAIL_ONCE = $FinalizationSerializationFailureArtifact }
     $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment $environment
     $result = Complete-ToolingPowerShell -Running $running -TimeoutSeconds 180
     Save-ChildEvidence -Name $Name -Result $result
@@ -1211,6 +1235,104 @@ switch -Exact ($command) {
         $ordinaryAdbFailureDetails.isEvidencePathFailure -eq $false
     )
     Add-AcceptanceCheck -CheckId 'wrapped_filestream_path_failure_classified_as_tooling_without_reclassifying_adb_start_failure' -Pass $wrappedPathClassifierPass -Detail "The extracted production classifier observed exception chain $(@($wrappedPathDetails.exceptionTypes) -join ' -> ') and returned $($wrappedPathDetails.classification); a plain ADB-start exception remained outside the evidence-path classification."
+
+    $finalizationFixture = New-ToolingFixture -Name 'report-finalization-success'
+    $finalizationConnectedClass = 'com.ireum.ytdl.acceptance.ReportFinalizationConnectedTest'
+    $finalizationJvmClass = 'com.ireum.ytdl.acceptance.ReportFinalizationJvmTest'
+    $finalizationAdbLog = Join-Path $runRoot 'report-finalization-success-adb-calls.log'
+    $finalizationSuccess = Invoke-ConnectedVerificationChild -Fixture $finalizationFixture -Classes @($finalizationConnectedClass) -JvmClasses @($finalizationJvmClass) -CompileTasks @(':app:compileDebugKotlin') -RunDiffCheck -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $finalizationAdbLog -Name 'report-finalization-success-all-gate-kinds' -WatchdogIntervalSeconds 1 -GradleDelaySeconds 2
+    $finalizationSuccessVerificationPath = Get-VerificationJsonPath -Result $finalizationSuccess
+    $finalizationSuccessEvidence = Get-Content -LiteralPath $finalizationSuccessVerificationPath -Raw | ConvertFrom-Json
+    $finalizationSuccessDirectory = Split-Path -Parent $finalizationSuccessVerificationPath
+    $finalizationSuccessLifetimePath = Join-Path $finalizationSuccessDirectory 'execution-lifetime.json'
+    $finalizationSuccessTimingsPath = Join-Path $finalizationSuccessDirectory 'timings.json'
+    $finalizationSuccessArtifactsExist = ((Test-Path -LiteralPath $finalizationSuccessVerificationPath -PathType Leaf) -and (Test-Path -LiteralPath $finalizationSuccessLifetimePath -PathType Leaf) -and (Test-Path -LiteralPath $finalizationSuccessTimingsPath -PathType Leaf))
+    $finalizationSuccessLifetime = Get-Content -LiteralPath $finalizationSuccessLifetimePath -Raw | ConvertFrom-Json
+    $finalizationSuccessTimings = Get-Content -LiteralPath $finalizationSuccessTimingsPath -Raw | ConvertFrom-Json
+    if ($finalizationSuccessTimings -isnot [array]) { $finalizationSuccessTimings = @($finalizationSuccessTimings) }
+    $finalizationSuccessExpectedIds = @(
+        ('connected:' + $finalizationConnectedClass),
+        ('jvm:' + $finalizationJvmClass),
+        'compile::app:compileDebugKotlin',
+        'git_diff_check'
+    )
+    $finalizationSuccessGateStatuses = @($finalizationSuccessEvidence.gates | Where-Object { $_.status -eq 'PASS' }).Count -eq 4
+    $finalizationSuccessPass = (
+        $finalizationSuccess.exitCode -eq 0 -and
+        $finalizationSuccessArtifactsExist -and
+        $finalizationSuccessEvidence.status -eq 'PASS' -and
+        $finalizationSuccessEvidence.finalization.status -eq 'PASS' -and
+        $finalizationSuccessEvidence.finalization.errors.Count -eq 0 -and
+        $finalizationSuccessGateStatuses -and
+        $finalizationSuccessEvidence.gates[0].stallDiagnosticError -eq $null -and
+        $finalizationSuccessLifetime.status -eq 'PASS' -and
+        $finalizationSuccessLifetime.reportFinalization.status -eq 'PASS' -and
+        $finalizationSuccessTimings.Count -eq 4 -and
+        (@($finalizationSuccessTimings | ForEach-Object { $_.gateId } | Where-Object { $finalizationSuccessExpectedIds -notcontains $_ }).Count -eq 0) -and
+        (@($finalizationSuccessExpectedIds | Where-Object { $finalizationSuccessTimings.gateId -notcontains $_ }).Count -eq 0)
+    )
+    Add-AcceptanceCheck -CheckId 'successful_connected_jvm_compile_diff_gates_durably_finalize_all_reports' -Pass $finalizationSuccessPass -Detail 'The synthetic exact-candidate connected, JVM, compile, and diff gates all passed without a diagnostic error; verification.json, execution-lifetime.json, and timings.json were present and parsed, with all four gate IDs represented.'
+
+    $diagnosticErrorFixture = New-ToolingFixture -Name 'report-finalization-diagnostic-error'
+    $diagnosticErrorClass = 'com.ireum.ytdl.acceptance.ReportFinalizationDiagnosticErrorTest'
+    $diagnosticErrorGateId = 'connected:' + $diagnosticErrorClass
+    $diagnosticErrorRun = Invoke-ConnectedVerificationChild -Fixture $diagnosticErrorFixture -Classes @($diagnosticErrorClass) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog (Join-Path $runRoot 'report-finalization-diagnostic-error-adb-calls.log') -Name 'report-finalization-diagnostic-capture-error' -ToolingDemoMode -DemoDiagnosticErrorGateId $diagnosticErrorGateId -WatchdogIntervalSeconds 1 -GradleDelaySeconds 2
+    $diagnosticErrorVerificationPath = Get-VerificationJsonPath -Result $diagnosticErrorRun
+    $diagnosticErrorEvidence = Get-Content -LiteralPath $diagnosticErrorVerificationPath -Raw | ConvertFrom-Json
+    $diagnosticErrorDirectory = Split-Path -Parent $diagnosticErrorVerificationPath
+    $diagnosticErrorLifetimePath = Join-Path $diagnosticErrorDirectory 'execution-lifetime.json'
+    $diagnosticErrorTimingsPath = Join-Path $diagnosticErrorDirectory 'timings.json'
+    $diagnosticErrorArtifactsExist = ((Test-Path -LiteralPath $diagnosticErrorVerificationPath -PathType Leaf) -and (Test-Path -LiteralPath $diagnosticErrorLifetimePath -PathType Leaf) -and (Test-Path -LiteralPath $diagnosticErrorTimingsPath -PathType Leaf))
+    $diagnosticErrorLifetime = Get-Content -LiteralPath $diagnosticErrorLifetimePath -Raw | ConvertFrom-Json
+    $diagnosticErrorTimings = Get-Content -LiteralPath $diagnosticErrorTimingsPath -Raw | ConvertFrom-Json
+    if ($diagnosticErrorTimings -isnot [array]) { $diagnosticErrorTimings = @($diagnosticErrorTimings) }
+    $diagnosticErrorGate = @($diagnosticErrorEvidence.gates | Where-Object { $_.gateId -eq $diagnosticErrorGateId })[0]
+    $expectedDiagnosticError = "Injected ToolingDemoMode diagnostic capture failure for $diagnosticErrorGateId."
+    $diagnosticErrorPass = (
+        $diagnosticErrorRun.exitCode -eq 0 -and
+        $diagnosticErrorArtifactsExist -and
+        $diagnosticErrorEvidence.status -eq 'PASS' -and
+        $diagnosticErrorEvidence.finalization.status -eq 'PASS' -and
+        $diagnosticErrorEvidence.finalization.errors.Count -eq 0 -and
+        $null -ne $diagnosticErrorGate -and
+        $diagnosticErrorGate.status -eq 'PASS' -and
+        $diagnosticErrorGate.executedTests -eq 1 -and
+        $diagnosticErrorGate.stallDiagnostic -eq $null -and
+        $diagnosticErrorGate.stallDiagnosticError -eq $expectedDiagnosticError -and
+        $diagnosticErrorLifetime.reportFinalization.status -eq 'PASS' -and
+        $diagnosticErrorTimings.Count -eq 1 -and
+        $diagnosticErrorTimings[0].gateId -eq $diagnosticErrorGateId
+    )
+    Add-AcceptanceCheck -CheckId 'diagnostic_capture_error_is_durable_without_masking_gate_pass' -Pass $diagnosticErrorPass -Detail 'A demo-only synchronized diagnostic-capture exception was retained in stallDiagnosticError while its connected JUnit gate remained PASS; all three final reports were present and parsed.'
+
+    $serializationFailureFixture = New-ToolingFixture -Name 'report-finalization-serialization-failure'
+    $serializationFailureClass = 'com.ireum.ytdl.acceptance.ReportFinalizationSerializationFailureTest'
+    $serializationFailureRun = Invoke-ConnectedVerificationChild -Fixture $serializationFailureFixture -Classes @($serializationFailureClass) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog (Join-Path $runRoot 'report-finalization-serialization-failure-adb-calls.log') -Name 'report-finalization-serialization-failure-fails-closed' -ToolingDemoMode -FinalizationSerializationFailureArtifact 'timings.json'
+    $serializationFailureVerificationPath = Get-VerificationJsonPath -Result $serializationFailureRun
+    $serializationFailureEvidence = Get-Content -LiteralPath $serializationFailureVerificationPath -Raw | ConvertFrom-Json
+    $serializationFailureDirectory = Split-Path -Parent $serializationFailureVerificationPath
+    $serializationFailureLifetimePath = Join-Path $serializationFailureDirectory 'execution-lifetime.json'
+    $serializationFailureTimingsPath = Join-Path $serializationFailureDirectory 'timings.json'
+    $serializationFailureArtifactsExist = ((Test-Path -LiteralPath $serializationFailureVerificationPath -PathType Leaf) -and (Test-Path -LiteralPath $serializationFailureLifetimePath -PathType Leaf) -and (Test-Path -LiteralPath $serializationFailureTimingsPath -PathType Leaf))
+    $serializationFailureLifetime = Get-Content -LiteralPath $serializationFailureLifetimePath -Raw | ConvertFrom-Json
+    $serializationFailureTimings = Get-Content -LiteralPath $serializationFailureTimingsPath -Raw | ConvertFrom-Json
+    if ($serializationFailureTimings -isnot [array]) { $serializationFailureTimings = @($serializationFailureTimings) }
+    $serializationFailureGate = @($serializationFailureEvidence.gates | Where-Object { $_.gateId -eq ('connected:' + $serializationFailureClass) })[0]
+    $serializationFailurePass = (
+        $serializationFailureRun.exitCode -ne 0 -and
+        $serializationFailureArtifactsExist -and
+        $serializationFailureEvidence.status -eq 'FAILED_REPORT_FINALIZATION' -and
+        $serializationFailureEvidence.finalization.status -eq 'FAIL' -and
+        $serializationFailureEvidence.finalization.underlyingVerificationStatus -eq 'PASS' -and
+        @($serializationFailureEvidence.finalization.errors | Where-Object { $_.phase -eq 'initial' -and $_.artifact -eq 'timings.json' -and $_.message -match 'serialization failure' }).Count -eq 1 -and
+        $null -ne $serializationFailureGate -and
+        $serializationFailureGate.status -eq 'PASS' -and
+        $serializationFailureGate.executedTests -eq 1 -and
+        $serializationFailureLifetime.status -eq 'FAILED_REPORT_FINALIZATION' -and
+        $serializationFailureLifetime.reportFinalization.status -eq 'FAIL' -and
+        $serializationFailureTimings.Count -eq 1
+    )
+    Add-AcceptanceCheck -CheckId 'report_serialization_failure_preserves_gate_result_and_fails_closed_with_all_reports' -Pass $serializationFailurePass -Detail 'A one-shot demo serialization failure at timings.json retained the connected gate PASS as underlying evidence, changed the overall verifier result to FAILED_REPORT_FINALIZATION, durably recovered all three reports, and returned nonzero.'
 
     $script:acceptanceEvidence.status = 'PASS'
     $script:acceptanceEvidence.endedUtc = Format-RemediationUtc (Get-RemediationUtcNow)

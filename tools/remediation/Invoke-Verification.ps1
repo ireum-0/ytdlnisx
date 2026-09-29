@@ -60,6 +60,24 @@ function Get-VerificationArtifactToken {
     return $readablePrefix + '-' + $digest
 }
 
+$script:demoFinalizationSerializationFailureInjected = $false
+
+function Write-VerificationFinalizationJson {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$Value
+    )
+    $requestedFailureArtifact = [Environment]::GetEnvironmentVariable('YTDLNISX_REMEDIATION_DEMO_FINALIZATION_SERIALIZATION_FAIL_ONCE')
+    $artifactName = [System.IO.Path]::GetFileName($Path)
+    if ($ToolingDemoMode -and -not $script:demoFinalizationSerializationFailureInjected -and
+        $requestedFailureArtifact -ceq $artifactName -and
+        $artifactName -in @('verification.json', 'execution-lifetime.json', 'timings.json')) {
+        $script:demoFinalizationSerializationFailureInjected = $true
+        throw "Injected ToolingDemoMode report serialization failure for $artifactName."
+    }
+    Write-RemediationJson -Path $Path -Value $Value
+}
+
 function Get-VerificationEvidencePathBudget {
     param(
         [Parameter(Mandatory)][string]$RepositoryFullPath,
@@ -670,6 +688,10 @@ foreach ($gate in $gateSpecs) {
     $infraSignals = @()
     $infraStatus = 'not_applicable'
     $phaseDurations = @{}
+    $demoDiagnosticErrorGateId = $null
+    if ($ToolingDemoMode) {
+        $demoDiagnosticErrorGateId = [Environment]::GetEnvironmentVariable('YTDLNISX_REMEDIATION_DEMO_DIAGNOSTIC_ERROR_GATE_ID')
+    }
     $watch = [ordered]@{
         lastPulseUtc = $gateStart
         currentPhase = 'gradle_startup_configuration'
@@ -681,6 +703,7 @@ foreach ($gate in $gateSpecs) {
         samples = (New-Object System.Collections.Generic.List[object])
         pressureSamples = (New-Object System.Collections.Generic.List[object])
         diagnostic = $null
+        diagnosticError = $null
     }
 
     if ($gate.kind -eq 'connected') {
@@ -961,14 +984,17 @@ foreach ($gate in $gateSpecs) {
                     boundedHealthFailure = [bool]$sample.hardFailure
                     persistentPressureKinds = $persistentPressureKinds
                     elevatedProbeLatency = [bool]$latencyWarning
+                    demoDiagnosticErrorRequested = [bool]($ToolingDemoMode -and $demoDiagnosticErrorGateId -ceq $gate.gateId)
                 }
-                if ($sample.hardFailure -or $persistentPressureKinds.Count -gt 0 -or $latencyWarning) {
+                $forceDemoDiagnosticError = ($ToolingDemoMode -and $demoDiagnosticErrorGateId -ceq $gate.gateId -and -not $watch.diagnosticCaptured)
+                if ($sample.hardFailure -or $persistentPressureKinds.Count -gt 0 -or $latencyWarning -or $forceDemoDiagnosticError) {
                     if ($sample.hardFailure) { $watch.hardDeviceFailure = $true }
                     $captureForNewHardFailure = ($sample.hardFailure -and -not $watch.hardFailureDiagnosticCaptured)
                     if (-not $watch.diagnosticCaptured -or $captureForNewHardFailure) {
                         $watch.diagnosticCaptured = $true
                         if ($sample.hardFailure) { $watch.hardFailureDiagnosticCaptured = $true }
                         try {
+                            if ($forceDemoDiagnosticError) { throw "Injected ToolingDemoMode diagnostic capture failure for $($gate.gateId)." }
                             $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'd' -WatchSample $sample -PreviousPressureSamples $priorPressureRecords -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
                             $watch.diagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
                             $watch.diagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
@@ -1041,10 +1067,14 @@ foreach ($gate in $gateSpecs) {
                     $watch.hardDeviceFailure = $true
                     if (-not $watch.diagnosticCaptured) {
                         $watch.diagnosticCaptured = $true
-                        $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'e' -WatchSample $endHealth -PreviousPressureSamples @($watch.pressureSamples.ToArray()) -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
-                        $watch.diagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
-                        $watch.diagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
-                        $watch.diagnostic | Add-Member -NotePropertyName capturePhase -NotePropertyValue 'gate_end_health_failure' -Force
+                        try {
+                            $watch.diagnostic = Capture-RemediationGuestStallDiagnostics -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -EvidenceDirectory $runDirectory -NamePrefix 'e' -WatchSample $endHealth -PreviousPressureSamples @($watch.pressureSamples.ToArray()) -AdbTimeoutSeconds ([Math]::Min(8, $ProbeTimeoutSeconds))
+                            $watch.diagnostic | Add-Member -NotePropertyName gateId -NotePropertyValue $gate.gateId -Force
+                            $watch.diagnostic | Add-Member -NotePropertyName artifactToken -NotePropertyValue $gate.artifactToken -Force
+                            $watch.diagnostic | Add-Member -NotePropertyName capturePhase -NotePropertyValue 'gate_end_health_failure' -Force
+                        } catch {
+                            $watch.diagnosticError = $_.Exception.Message
+                        }
                     }
                 }
                 $gateEndCorrelation = Get-RemediationTimeCorrelationSample -RepoPath $repoFull -AdbPath $AdbPath -DeviceSerial $DeviceSerial -LogDirectory $gateCorrelationDirectory -NamePrefix 'e' -TimeoutSeconds ([Math]::Min(5, $ProbeTimeoutSeconds))
@@ -1304,9 +1334,84 @@ $verification = [pscustomobject][ordered]@{
     semanticVerdict = 'not_provided_by_verification_tool'
     cleanVerdict = 'not_provided_by_verification_tool'
 }
-Write-RemediationJson -Path (Join-Path $runDirectory 'execution-lifetime.json') -Value $executionLifetime
-Write-RemediationJson -Path (Join-Path $runDirectory 'verification.json') -Value $verification
-Write-RemediationJson -Path (Join-Path $runDirectory 'timings.json') -Value @($phaseResults.ToArray())
+$finalizationRecord = [ordered]@{
+    status = 'PASS'
+    underlyingVerificationStatus = $overall
+    underlyingExecutionLifetimeStatus = $executionLifetime.status
+    artifactPaths = [ordered]@{
+        verification = (Join-Path $runDirectory 'verification.json')
+        executionLifetime = (Join-Path $runDirectory 'execution-lifetime.json')
+        timings = (Join-Path $runDirectory 'timings.json')
+    }
+    errors = @()
+    recoveryErrors = @()
+}
+$executionLifetime | Add-Member -NotePropertyName reportFinalization -NotePropertyValue $finalizationRecord -Force
+$verification | Add-Member -NotePropertyName finalization -NotePropertyValue $finalizationRecord -Force
+
+$finalizationErrors = New-Object System.Collections.Generic.List[object]
+try {
+    Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'execution-lifetime.json') -Value $executionLifetime
+} catch {
+    $finalizationErrors.Add([pscustomobject]@{ artifact = 'execution-lifetime.json'; phase = 'initial'; message = $_.Exception.Message })
+}
+try {
+    Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'timings.json') -Value @($phaseResults.ToArray())
+} catch {
+    $finalizationErrors.Add([pscustomobject]@{ artifact = 'timings.json'; phase = 'initial'; message = $_.Exception.Message })
+}
+if ($finalizationErrors.Count -eq 0) {
+    try {
+        Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'verification.json') -Value $verification
+    } catch {
+        $finalizationErrors.Add([pscustomobject]@{ artifact = 'verification.json'; phase = 'initial'; message = $_.Exception.Message })
+    }
+}
+
+if ($finalizationErrors.Count -gt 0) {
+    $passed = $false
+    $overall = 'FAILED_REPORT_FINALIZATION'
+    $verification.status = $overall
+    $finalizationFailureEnded = Get-RemediationUtcNow
+    $verification.endedUtc = Format-RemediationUtc $finalizationFailureEnded
+    $verification.endedKorea = Format-RemediationKoreaTime $finalizationFailureEnded
+    $executionLifetime.status = $overall
+    $finalizationRecord.status = 'FAIL'
+    $finalizationRecord.errors = @($finalizationErrors.ToArray())
+
+    $recoveryErrors = New-Object System.Collections.Generic.List[object]
+    try {
+        Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'execution-lifetime.json') -Value $executionLifetime
+    } catch {
+        $recoveryErrors.Add([pscustomobject]@{ artifact = 'execution-lifetime.json'; phase = 'failure_recovery'; message = $_.Exception.Message })
+    }
+    try {
+        Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'timings.json') -Value @($phaseResults.ToArray())
+    } catch {
+        $recoveryErrors.Add([pscustomobject]@{ artifact = 'timings.json'; phase = 'failure_recovery'; message = $_.Exception.Message })
+    }
+    $finalizationRecord.recoveryErrors = @($recoveryErrors.ToArray())
+    $finalizationRecord.errors = @($finalizationErrors.ToArray() + $recoveryErrors.ToArray())
+    try {
+        Write-VerificationFinalizationJson -Path (Join-Path $runDirectory 'verification.json') -Value $verification
+    } catch {
+        $recoveryErrors.Add([pscustomobject]@{ artifact = 'verification.json'; phase = 'failure_recovery'; message = $_.Exception.Message })
+        $finalizationRecord.recoveryErrors = @($recoveryErrors.ToArray())
+        $finalizationRecord.errors = @($finalizationErrors.ToArray() + $recoveryErrors.ToArray())
+        try {
+            $fallbackText = @(
+                'REPORT_FINALIZATION_STATUS=FAILED'
+                ('UNDERLYING_VERIFICATION_STATUS=' + $finalizationRecord.underlyingVerificationStatus)
+                ('CANDIDATE_SHA=' + $head)
+                ('EVIDENCE_DIRECTORY=' + $runDirectory)
+                (($finalizationRecord.errors | ForEach-Object { $_.artifact + ':' + $_.phase + ':' + $_.message }) -join [Environment]::NewLine)
+            ) -join [Environment]::NewLine
+            [System.IO.File]::WriteAllText((Join-Path $runDirectory 'finalization-error.txt'), $fallbackText, (New-Object System.Text.UTF8Encoding($false)))
+        } catch {
+            Write-Error -Message ("Report finalization failed and its fallback evidence could not be written: " + $_.Exception.Message) -ErrorAction Continue
+        }
+    }
+}
 if ($null -ne $firstInfrastructureFailurePath) {
     Write-Output ('INFRA_FAILURE_JSON=' + $firstInfrastructureFailurePath)
 }
