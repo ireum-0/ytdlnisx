@@ -21,6 +21,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementMismatchKind
 import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.database.viewmodel.DownloadViewModel
+import com.ireum.ytdl.database.viewmodel.DownloadViewModelPauseAllTestHooks
 import com.ireum.ytdl.receiver.CancelDownloadNotificationReceiver
 import com.ireum.ytdl.receiver.PauseDownloadNotificationReceiver
 import com.ireum.ytdl.util.HistoryRedownloadMarker
@@ -76,6 +77,42 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.lang.Process
 
+/** Class-filter adapter for the canonical verifier; the original runner owns all fixture lifecycle. */
+@RunWith(AndroidJUnit4::class)
+class PauseAllLateAdmissionMethodVerificationTest {
+    @Test
+    fun exactLateAdmissionMethod() {
+        val method = "pauseAllLeavesLateProductionAdmissionRunningOutsideItsTargetSnapshot"
+        val executed = mutableListOf<String>()
+        var assumptionFailures = 0
+        val core = org.junit.runner.JUnitCore()
+        core.addListener(object : org.junit.runner.notification.RunListener() {
+            override fun testStarted(description: org.junit.runner.Description) {
+                executed.add("${description.className}#${description.methodName}")
+            }
+
+            override fun testAssumptionFailure(failure: org.junit.runner.notification.Failure) {
+                assumptionFailures++
+            }
+        })
+        val result = core.run(org.junit.runner.Request.method(FindingAProductionWiringTest::class.java, method))
+        android.util.Log.i(
+            "PauseAllMethodVerification",
+            "method=$method executed=$executed run=${result.runCount} ignored=${result.ignoreCount} " +
+                "assumptions=$assumptionFailures failures=${result.failureCount}",
+        )
+        result.failures.firstOrNull()?.let { first ->
+            result.failures.drop(1).forEach { first.exception.addSuppressed(it.exception) }
+            throw first.exception
+        }
+        assertEquals(listOf("${FindingAProductionWiringTest::class.java.name}#$method"), executed)
+        assertEquals(1, result.runCount)
+        assertEquals(0, result.ignoreCount)
+        assertEquals(0, assumptionFailures)
+        assertEquals(0, result.failureCount)
+    }
+}
+
 @RunWith(AndroidJUnit4::class)
 class FindingAProductionWiringTest {
     private lateinit var db: DBManager
@@ -83,6 +120,7 @@ class FindingAProductionWiringTest {
 
     @Before
     fun createDb() {
+        DownloadViewModelPauseAllTestHooks.afterSnapshotCapturedForTesting = null
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.clearForTesting(context)
@@ -117,6 +155,7 @@ class FindingAProductionWiringTest {
 
     @After
     fun closeDb() {
+        DownloadViewModelPauseAllTestHooks.afterSnapshotCapturedForTesting = null
         DownloadExecutionRecovery.cancelAllRecoveryJobsForTesting()
         DownloadExecutionRecovery.clearForTesting(ApplicationProvider.getApplicationContext())
         DownloadWorkerExecutionOwners.clearForTesting()
@@ -2092,8 +2131,9 @@ class FindingAProductionWiringTest {
         )
         val processId = YtdlpProcessIdentity.download(activeId, executionId)
         val targetProcess = PauseAllHeldProcess()
+        val snapshotCaptured = CountDownLatch(1)
+        val releasePauseAll = CountDownLatch(1)
         val lateClaimPublished = CountDownLatch(1)
-        val releaseLateClaim = CountDownLatch(1)
         val lateWorkerAtStopGate = CountDownLatch(1)
         val releaseLateWorker = CountDownLatch(1)
         var lateWorkId: UUID? = null
@@ -2105,6 +2145,25 @@ class FindingAProductionWiringTest {
         val viewModel = DownloadViewModel(context, db, true)
         val previousDestroyOverride = YoutubeDLCompat.destroyProcessOverrideForTesting
 
+        suspend fun captureState(boundary: String) {
+            val carriers = withContext(Dispatchers.IO) {
+                workManager.getWorkInfosByTag("download").get(10, TimeUnit.SECONDS)
+                    .filter { it.id !in existingDownloadWorkIds }
+                    .joinToString { "${it.id}:${it.state}" }
+            }
+            listOf(activeId, lateQueuedId).forEach { id ->
+                val row = db.downloadDao.getNullableDownloadById(id)
+                android.util.Log.i(
+                    "PauseAllLateAdmission",
+                    "$boundary id=$id status=${row?.status} execution=${row?.executionId} " +
+                        "owner=${DownloadWorkerExecutionOwners.ownerOf(id)} " +
+                        "processOwner=${DownloadWorkerProcessOwners.ownerOf(id)} " +
+                        "disposition=${DownloadExecutionRecovery.pendingDispositionForExecution(context, id)} " +
+                        "phase=${DownloadExecutionRecovery.pendingPhaseForTesting(context, id)} carriers=$carriers",
+                )
+            }
+        }
+
         try {
             preferences.edit()
                 .putInt("concurrent_downloads", 2)
@@ -2113,19 +2172,28 @@ class FindingAProductionWiringTest {
             YoutubeDLCompat.destroyProcessOverrideForTesting = null
             YoutubeDLCompat.registerProcessForTesting(processId, targetProcess)
             assertTrue(DownloadWorkerProcessOwners.claim(activeId, executionId))
+            DownloadWorkerExecutionOwners.claim(activeId, executionId)
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(activeId, executionId))
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
+            DownloadViewModelPauseAllTestHooks.afterSnapshotCapturedForTesting = { snapshot ->
+                assertEquals(listOf(activeId), snapshot.map { it.id })
+                assertEquals(executionId, snapshot.single().executionId)
+                snapshotCaptured.countDown()
+                withContext(Dispatchers.IO) {
+                    check(releasePauseAll.await(60, TimeUnit.SECONDS)) {
+                        "Pause All snapshot was not released"
+                    }
+                }
+            }
             DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = { item ->
                 if (item.id == lateQueuedId) {
                     lateClaimPublished.countDown()
-                    check(releaseLateClaim.await(20, TimeUnit.SECONDS)) {
-                        "late execution claim was not released"
-                    }
                 }
             }
             DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = { targetId, boundary ->
                 if (targetId == lateQueuedId && boundary == "stop_gate") {
                     lateWorkerAtStopGate.countDown()
-                    check(releaseLateWorker.await(15, TimeUnit.SECONDS)) {
+                    check(releaseLateWorker.await(60, TimeUnit.SECONDS)) {
                         "late sibling worker was not released for cleanup"
                     }
                 }
@@ -2134,12 +2202,8 @@ class FindingAProductionWiringTest {
             val pause = async { viewModel.pauseAllDownloads() }
             pauseAll = pause
             assertTrue(
-                "Pause All did not reach A's exact native-quiescence boundary",
-                withContext(Dispatchers.IO) { targetProcess.destroyRequested.await(15, TimeUnit.SECONDS) },
-            )
-            assertEquals(
-                DownloadRepository.Status.Paused.name,
-                db.downloadDao.getNullableDownloadById(activeId)?.status,
+                "Pause All did not materialize its exact target snapshot",
+                withContext(Dispatchers.IO) { snapshotCaptured.await(15, TimeUnit.SECONDS) },
             )
 
             val queuedSibling = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
@@ -2151,9 +2215,11 @@ class FindingAProductionWiringTest {
                 )
             }
             assertTrue("late sibling was not admitted by the production path", admitted.isSuccess)
+            val claimReached = withContext(Dispatchers.IO) { lateClaimPublished.await(20, TimeUnit.SECONDS) }
+            captureState("after-late-claim-wait reached=$claimReached")
             assertTrue(
                 "late sibling did not claim a fresh execution after A's snapshot",
-                withContext(Dispatchers.IO) { lateClaimPublished.await(20, TimeUnit.SECONDS) },
+                claimReached,
             )
             val lateExecution = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
             assertEquals(DownloadRepository.Status.Active.name, lateExecution.status)
@@ -2161,7 +2227,7 @@ class FindingAProductionWiringTest {
                 "late sibling must own a fresh execution",
                 lateExecution.executionId.isNotBlank() && lateExecution.executionId != queuedSibling.executionId,
             )
-            releaseLateClaim.countDown()
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(lateQueuedId, lateExecution.executionId))
             assertTrue(
                 "late sibling worker did not reach the stop gate after claim",
                 withContext(Dispatchers.IO) { lateWorkerAtStopGate.await(20, TimeUnit.SECONDS) },
@@ -2177,9 +2243,17 @@ class FindingAProductionWiringTest {
             assertNotNull("late sibling must have a running tagged carrier", runningLateWork)
             lateWorkId = requireNotNull(runningLateWork).id
 
+            captureState("before-pause-release")
+            releasePauseAll.countDown()
+            assertTrue(
+                "Pause All did not reach A's exact native-quiescence boundary",
+                withContext(Dispatchers.IO) { targetProcess.destroyRequested.await(15, TimeUnit.SECONDS) },
+            )
+            assertEquals(DownloadRepository.Status.Paused.name, db.downloadDao.getNullableDownloadById(activeId)?.status)
             targetProcess.release()
             pause.await()
 
+            captureState("after-pause-completed")
             assertEquals(
                 DownloadRepository.Status.Paused.name,
                 db.downloadDao.getNullableDownloadById(activeId)?.status,
@@ -2187,6 +2261,8 @@ class FindingAProductionWiringTest {
             val lateAfterPause = requireNotNull(db.downloadDao.getNullableDownloadById(lateQueuedId))
             assertEquals(DownloadRepository.Status.Active.name, lateAfterPause.status)
             assertEquals(lateExecution.executionId, lateAfterPause.executionId)
+            assertTrue(DownloadWorkerExecutionOwners.isOwnedBy(lateQueuedId, lateExecution.executionId))
+            assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(lateQueuedId))
             assertFalse(DownloadExecutionRecovery.pendingDownloadIds(context).contains(activeId))
             val workAfterPause = withContext(Dispatchers.IO) {
                 workManager.getWorkInfoById(requireNotNull(lateWorkId))
@@ -2197,9 +2273,13 @@ class FindingAProductionWiringTest {
                 WorkInfo.State.RUNNING,
                 workAfterPause?.state,
             )
+        } catch (failure: Throwable) {
+            runCatching { captureState("failure-before-teardown ${failure.javaClass.simpleName}") }
+                .exceptionOrNull()?.let(failure::addSuppressed)
+            throw failure
         } finally {
+            releasePauseAll.countDown()
             targetProcess.release()
-            releaseLateClaim.countDown()
             val discoveredLateWorkId = lateWorkId ?: runCatching {
                 withContext(Dispatchers.IO) {
                     workManager.getWorkInfosByTag("download")
@@ -2214,12 +2294,14 @@ class FindingAProductionWiringTest {
             DownloadClaimTestHooks.afterExecutionOwnerPublicationForTesting = null
             DownloadWorkerEffectTestHooks.beforeAuthorityReadForTesting = null
             DownloadWorkerEffectTestHooks.dbManagerForTesting = null
+            DownloadViewModelPauseAllTestHooks.afterSnapshotCapturedForTesting = null
             if (cancelLateWork != null) {
                 runCatching { cancelLateWork.result.get(10, TimeUnit.SECONDS) }
             }
             runCatching { withTimeout(20_000L) { pauseAll?.await() } }
             YoutubeDLCompat.clearProcessForTesting(processId)
             DownloadWorkerProcessOwners.release(activeId, executionId)
+            DownloadWorkerExecutionOwners.release(activeId, executionId)
             DownloadExecutionRecovery.cancelRecoveryJobForTesting(activeId)
             YoutubeDLCompat.destroyProcessOverrideForTesting = previousDestroyOverride
             preferences.edit().also { editor ->

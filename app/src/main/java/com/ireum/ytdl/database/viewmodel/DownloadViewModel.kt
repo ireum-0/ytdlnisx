@@ -105,6 +105,10 @@ import java.util.Locale
 import java.util.UUID
 
 
+internal object DownloadViewModelPauseAllTestHooks {
+    internal var afterSnapshotCapturedForTesting: (suspend (List<DownloadItem>) -> Unit)? = null
+}
+
 class DownloadViewModel private constructor(
     private val application: Application,
     private val databaseOverride: DBManager?,
@@ -3925,6 +3929,7 @@ class DownloadViewModel private constructor(
                 getActiveAndPostProcessingDownloads()
             }
         }
+        DownloadViewModelPauseAllTestHooks.afterSnapshotCapturedForTesting?.invoke(activeDownloadsList)
         var firstFailure: Exception? = null
         if (activeDownloadsList.isNotEmpty()) {
             withContext(Dispatchers.IO){
