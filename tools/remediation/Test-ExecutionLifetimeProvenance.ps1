@@ -1344,7 +1344,7 @@ switch -Exact ($command) {
     $completeGradleHome = Join-Path $cacheObservationRoot 'complete-gradle-user-home'
     $completeBefore = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $completeGradleHome -ExecutionWorktree $transientFixture.path
     $completeBucketPath = [string]$completeBefore.expectedBucketPath
-    $completeDistributionRoot = Join-Path $completeBucketPath $distributionInfo.distributionName
+    $completeDistributionRoot = Join-Path $completeBucketPath $distributionInfo.extractedRootName
     [System.IO.Directory]::CreateDirectory($completeBucketPath) | Out-Null
     [System.IO.Directory]::CreateDirectory((Join-Path $completeDistributionRoot 'bin')) | Out-Null
     [System.IO.Directory]::CreateDirectory((Join-Path $completeDistributionRoot 'lib')) | Out-Null
@@ -1357,6 +1357,29 @@ switch -Exact ($command) {
     $completeObservationJson = ConvertTo-Json -InputObject $completeObservation -Depth 8
     $completeBucketPass = ($completeObservation.apparentDistributionComplete -and $completeObservation.metadataReadable -and -not $completeObservation.cacheContentsRead -and $completeObservation.bucketToken -eq $distributionToken -and $completeObservationJson -notmatch 'CACHE_CONTENT_SENTINEL')
     Add-AcceptanceCheck -CheckId 'complete_wrapper_bucket_is_observed_without_cache_content_reads' -Pass $completeBucketPass -Detail 'A complete synthetic Gradle 8.13 bucket was identified from bounded metadata and expected launcher paths; no cache file contents were read or emitted.'
+
+    Add-AcceptanceCheck -CheckId 'canonical_bin_outer_vs_inner' -Pass ($distributionInfo.distributionName -eq 'gradle-8.13-bin' -and $distributionInfo.extractedRootName -eq 'gradle-8.13') -Detail 'The canonical bin archive retains its outer bin identity and maps its extracted root to the versioned Gradle directory.'
+    $allProperties = Join-Path $gradleHelperRoot 'all-wrapper.properties'
+    Write-ToolingUtf8 -Path $allProperties -Content "distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-all.zip`ndistributionBase=GRADLE_USER_HOME`ndistributionPath=wrapper/dists`n"
+    $allDistributionInfo = Get-GradleWrapperDistributionInfo -PropertiesPath $allProperties
+    $allObservation = Get-GradleWrapperCacheObservation -DistributionInfo $allDistributionInfo -EffectiveGradleUserHome $completeGradleHome -ExecutionWorktree $transientFixture.path
+    Add-AcceptanceCheck -CheckId 'canonical_all_outer_vs_inner' -Pass ($allDistributionInfo.distributionName -eq 'gradle-8.13-all' -and $allDistributionInfo.extractedRootName -eq 'gradle-8.13') -Detail 'The canonical all archive retains its outer all identity and maps to the same versioned extracted root.'
+    Add-AcceptanceCheck -CheckId 'distinct_outer_bucket_identity' -Pass ($allObservation.outerDistributionName -ne $completeObservation.outerDistributionName -and $allObservation.bucketToken -ne $completeObservation.bucketToken -and $allObservation.expectedBucketPath -ne $completeObservation.expectedBucketPath) -Detail 'Bin and all distributions remain distinct outer directories and exact URL-derived buckets.'
+    Add-AcceptanceCheck -CheckId 'launcher_under_inner_root' -Pass ($completeObservation.launcherBatPath -eq (Join-Path $completeDistributionRoot 'bin\gradle.bat') -and $completeObservation.launcherScriptPath -eq (Join-Path $completeDistributionRoot 'bin\gradle') -and $completeObservation.launcherJarPath -eq (Join-Path $completeDistributionRoot 'lib\gradle-launcher-8.13.jar')) -Detail 'Every expected launcher resolves beneath the inner root, rather than the outer bin/all directory.'
+    $okOnlyHome = Join-Path $cacheObservationRoot 'ok-only-gradle-user-home'
+    $okOnlyBefore = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $okOnlyHome -ExecutionWorktree $transientFixture.path
+    Write-ToolingUtf8 -Path (Join-Path $okOnlyBefore.expectedBucketPath ($distributionInfo.distributionFileName + '.ok')) -Content 'marker fixture'
+    $okOnlyObservation = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $okOnlyHome -ExecutionWorktree $transientFixture.path
+    Add-AcceptanceCheck -CheckId 'ok_without_inner_root_not_complete' -Pass ($okOnlyObservation.okMarkerPresent -and -not $okOnlyObservation.extractedDistributionPresent -and -not $okOnlyObservation.apparentDistributionComplete) -Detail 'An ok marker without the expected extracted root does not authorize completeness.'
+    [System.IO.Directory]::CreateDirectory($okOnlyObservation.expectedExtractedRootPath) | Out-Null
+    $rootOnlyObservation = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $okOnlyHome -ExecutionWorktree $transientFixture.path
+    Add-AcceptanceCheck -CheckId 'inner_root_without_launcher_not_complete' -Pass ($rootOnlyObservation.okMarkerPresent -and $rootOnlyObservation.extractedDistributionPresent -and -not $rootOnlyObservation.launcherBatPresent -and -not $rootOnlyObservation.launcherJarPresent -and -not $rootOnlyObservation.apparentDistributionComplete) -Detail 'A marker plus extracted root without required launcher artifacts remains incomplete.'
+    Add-AcceptanceCheck -CheckId 'complete_inner_root_reports_complete' -Pass ($completeObservation.metadataReadable -and $completeObservation.okMarkerPresent -and $completeObservation.extractedDistributionPresent -and $completeObservation.launcherBatPresent -and $completeObservation.launcherScriptPresent -and $completeObservation.launcherJarPresent -and $completeObservation.apparentDistributionComplete -and $completeObservation.bucketImmediateEntries -contains $distributionInfo.extractedRootName) -Detail 'Readable bucket metadata and all required artifacts agree with the derived inner root and report complete.'
+    $unsupportedProperties = Join-Path $gradleHelperRoot 'unsupported-wrapper.properties'
+    Write-ToolingUtf8 -Path $unsupportedProperties -Content "distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-src.zip`ndistributionBase=GRADLE_USER_HOME`ndistributionPath=wrapper/dists`n"
+    $unsupportedRejected = $false
+    try { $null = Get-GradleWrapperDistributionInfo -PropertiesPath $unsupportedProperties } catch { $unsupportedRejected = ($_.Exception.Message -match 'supported canonical bin/all extracted-root mapping') }
+    Add-AcceptanceCheck -CheckId 'unsupported_distribution_mapping_fails_closed_or_explicitly_unavailable' -Pass $unsupportedRejected -Detail 'Unsupported source archives fail before a cache inner-root path is invented.'
 
     $missingGradleHome = Join-Path $cacheObservationRoot 'missing-gradle-user-home'
     $missingBefore = Test-Path -LiteralPath $missingGradleHome

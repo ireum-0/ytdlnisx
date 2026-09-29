@@ -331,12 +331,14 @@ function Get-GradleWrapperDistributionInfo {
     $distributionFileName = [Regex]::Match($uri.AbsolutePath, '[^/]+$').Value
     if ([string]::IsNullOrWhiteSpace($distributionFileName)) { throw 'The wrapper distributionUrl has no distribution file name.' }
     $distributionName = [System.IO.Path]::GetFileNameWithoutExtension($distributionFileName)
-    $versionMatch = [Regex]::Match($distributionName, '^gradle-(?<version>.+?)-(?:bin|all|src)$')
+    $versionMatch = [Regex]::Match($distributionFileName, '^gradle-(?<version>[0-9]+(?:\.[0-9]+)*(?:-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)?)-(?<type>bin|all)\.zip$')
+    if (-not $versionMatch.Success) { throw 'The wrapper distribution name has no supported canonical bin/all extracted-root mapping.' }
     return [pscustomobject][ordered]@{
         distributionUrl = [string]$values['distributionUrl']
         distributionFileName = $distributionFileName
         distributionName = $distributionName
-        gradleVersion = $(if ($versionMatch.Success) { $versionMatch.Groups['version'].Value } else { $null })
+        gradleVersion = $versionMatch.Groups['version'].Value
+        extractedRootName = 'gradle-' + $versionMatch.Groups['version'].Value
         distributionBase = [string]$values['distributionBase']
         distributionPath = [string]$values['distributionPath']
     }
@@ -421,7 +423,7 @@ function Get-GradleWrapperCacheObservation {
     }
     $bucketParent = Join-Path (Join-Path $basePath $relativeDistributionPath) $DistributionInfo.distributionName
     $bucketPath = Join-Path $bucketParent $bucketToken
-    $distributionRoot = Join-Path $bucketPath $DistributionInfo.distributionName
+    $distributionRoot = Join-Path $bucketPath $DistributionInfo.extractedRootName
     $expectedLauncherJar = $null
     if (-not [string]::IsNullOrWhiteSpace([string]$DistributionInfo.gradleVersion)) {
         $expectedLauncherJar = Join-Path (Join-Path $distributionRoot 'lib') ('gradle-launcher-' + $DistributionInfo.gradleVersion + '.jar')
@@ -466,6 +468,9 @@ function Get-GradleWrapperCacheObservation {
     $extractedPresent = Test-Path -LiteralPath $distributionRoot -PathType Container
     return [pscustomobject][ordered]@{
         expectedBucketPath = [System.IO.Path]::GetFullPath($bucketPath)
+        outerDistributionName = $DistributionInfo.distributionName
+        extractedRootName = $DistributionInfo.extractedRootName
+        expectedExtractedRootPath = [System.IO.Path]::GetFullPath($distributionRoot)
         bucketToken = $bucketToken
         bucketExists = [bool]$bucketExists
         bucketImmediateEntries = @($entryNames)
@@ -473,6 +478,8 @@ function Get-GradleWrapperCacheObservation {
         extractedDistributionPresent = [bool]$extractedPresent
         okMarkerPresent = [bool](Test-Path -LiteralPath $okPath -PathType Leaf)
         launcherBatPresent = [bool](Test-Path -LiteralPath $launcherBatPath -PathType Leaf)
+        launcherBatPath = $launcherBatPath
+        launcherScriptPath = $launcherPath
         launcherScriptPresent = [bool](Test-Path -LiteralPath $launcherPath -PathType Leaf)
         launcherJarPath = $expectedLauncherJar
         launcherJarPresent = [bool]$launcherJarPresent
@@ -480,7 +487,7 @@ function Get-GradleWrapperCacheObservation {
         partPresent = [bool](Test-Path -LiteralPath $partPath -PathType Leaf)
         lockPresent = [bool](Test-Path -LiteralPath $lockPath -PathType Leaf)
         metadataReadable = [bool]$metadataReadable
-        apparentDistributionComplete = [bool]($bucketExists -and $extractedPresent -and (Test-Path -LiteralPath $okPath -PathType Leaf) -and $requiredPresent)
+        apparentDistributionComplete = [bool]($bucketExists -and $metadataReadable -and $extractedPresent -and (Test-Path -LiteralPath $okPath -PathType Leaf) -and $requiredPresent)
         cacheContentsRead = $false
     }
 }
@@ -602,6 +609,8 @@ function New-GradleLaunchEnvironmentProvenance {
         distributionUrl = $distribution.distributionUrl
         distributionFileName = $distribution.distributionFileName
         distributionName = $distribution.distributionName
+        gradleVersion = $distribution.gradleVersion
+        extractedRootName = $distribution.extractedRootName
         distributionBase = $distribution.distributionBase
         distributionPath = $distribution.distributionPath
         wrapperBucketToken = $cacheState.bucketToken
