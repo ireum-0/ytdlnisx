@@ -49,8 +49,35 @@ function New-ToolingFixture {
     $baseline = "committed-candidate-value`n"
     Write-ToolingUtf8 -Path (Join-Path $fixturePath '.gitignore') -Content "build/`nlocal.properties`n"
     Write-ToolingUtf8 -Path (Join-Path $fixturePath 'behavior.cfg') -Content $baseline
-    $fakeGradle = @'
+    Write-ToolingUtf8 -Path (Join-Path $fixturePath 'gradle\wrapper\gradle-wrapper.properties') -Content "distributionUrl=https\://services.gradle.org/distributions/gradle-8.13-bin.zip`ndistributionBase=GRADLE_USER_HOME`ndistributionPath=wrapper/dists`n"
+$fakeGradle = @'
 $ErrorActionPreference = 'Stop'
+$workingDirectory = (Get-Location).Path
+$launchCapturePath = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_LAUNCH_CAPTURE')
+if (-not [string]::IsNullOrWhiteSpace($launchCapturePath)) {
+    $probe = $workingDirectory
+    $sourceEvidenceRoot = $null
+    while (-not [string]::IsNullOrWhiteSpace($probe)) {
+        $candidateEvidenceRoot = Join-Path $probe 'build\remediation-agent'
+        if (Test-Path -LiteralPath $candidateEvidenceRoot -PathType Container) { $sourceEvidenceRoot = $candidateEvidenceRoot; break }
+        $parentProbe = Split-Path -Parent $probe
+        if ([string]::IsNullOrWhiteSpace($parentProbe) -or $parentProbe -eq $probe) { break }
+        $probe = $parentProbe
+    }
+    $latestLaunchEvidence = $null
+    if ($null -ne $sourceEvidenceRoot) {
+        $latestLaunchEvidence = Get-ChildItem -LiteralPath $sourceEvidenceRoot -Filter '*.l.json' -File -Recurse -ErrorAction Stop | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    }
+    $launchObservedUtc = [DateTimeOffset]::UtcNow
+    $launchRecord = [pscustomobject][ordered]@{
+        gateId = $(if ($null -ne $latestLaunchEvidence) { [string](Get-Content -LiteralPath $latestLaunchEvidence.FullName -Raw | ConvertFrom-Json).gateId } else { $null })
+        evidencePath = $(if ($null -ne $latestLaunchEvidence) { $latestLaunchEvidence.FullName } else { $null })
+        evidenceExistedAtGradleEntry = ($null -ne $latestLaunchEvidence)
+        evidenceLastWriteUtc = $(if ($null -ne $latestLaunchEvidence) { $latestLaunchEvidence.LastWriteTimeUtc.ToString('o') } else { $null })
+        observedUtc = $launchObservedUtc.ToString('o')
+    }
+    [System.IO.File]::AppendAllText($launchCapturePath, (ConvertTo-Json -InputObject $launchRecord -Compress) + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+}
 $control = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_CONTROL_ROOT')
 if (-not [string]::IsNullOrWhiteSpace($control)) {
     $encoding = New-Object System.Text.UTF8Encoding($false)
@@ -61,7 +88,6 @@ if (-not [string]::IsNullOrWhiteSpace($control)) {
         Start-Sleep -Milliseconds 40
     }
 }
-$workingDirectory = (Get-Location).Path
 $gradleInvocationLog = [Environment]::GetEnvironmentVariable('YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG')
 if (-not [string]::IsNullOrWhiteSpace($gradleInvocationLog)) {
     [System.IO.File]::WriteAllText($gradleInvocationLog, 'started', (New-Object System.Text.UTF8Encoding($false)))
@@ -165,6 +191,7 @@ exit 0
         behaviorPath = Join-Path $fixturePath 'behavior.cfg'
         alternatePath = Join-Path $fixturePath 'fake-alternate.ps1'
         evidenceRoot = Join-Path $fixturePath 'build\remediation-agent'
+        syntheticGradleUserHome = Join-Path $fixturePath 'build\synthetic-gradle-user-home'
         remotePath = $barePath
     }
 }
@@ -445,6 +472,18 @@ function Save-ChildEvidence {
     Write-ToolingUtf8 -Path (Join-Path $script:processEvidenceRoot ($safe + '.stderr.log')) -Content ([string]$Result.stderr)
 }
 
+function Get-FixtureGradleEnvironment {
+    param([Parameter(Mandatory)]$Fixture, [AllowNull()][hashtable]$Environment)
+    $merged = @{}
+    if ($null -ne $Environment) {
+        foreach ($name in $Environment.Keys) { $merged[[string]$name] = [string]$Environment[$name] }
+    }
+    if (-not $merged.ContainsKey('GRADLE_USER_HOME')) {
+        $merged.GRADLE_USER_HOME = [string]$Fixture.syntheticGradleUserHome
+    }
+    return $merged
+}
+
 function Invoke-VerificationChild {
     param(
         [Parameter(Mandatory)]$Fixture,
@@ -453,7 +492,7 @@ function Invoke-VerificationChild {
         [string]$Name = 'verification'
     )
     $arguments = @('-RepoPath', $Fixture.path, '-ExpectedSha', $Fixture.sha, '-CompileTask', ':app:compileDebugKotlin', '-GateTimeoutSeconds', '90', '-EvidenceRoot', $Fixture.evidenceRoot) + $ExtraArguments
-    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment $Environment
+    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment (Get-FixtureGradleEnvironment -Fixture $Fixture -Environment $Environment)
     $result = Complete-ToolingPowerShell -Running $running -TimeoutSeconds 150
     Save-ChildEvidence -Name $Name -Result $result
     return $result
@@ -541,12 +580,14 @@ function Invoke-ConnectedVerificationChild {
         [Parameter(Mandatory)][string]$Name,
         [string]$EvidenceRootOverride,
         [string]$GradleMarker,
+        [string]$LaunchCapturePath,
         [string[]]$JvmClasses = @(),
         [string[]]$CompileTasks = @(),
         [switch]$RunDiffCheck,
         [switch]$ToolingDemoMode,
         [string]$DemoDiagnosticErrorGateId,
         [string]$FinalizationSerializationFailureArtifact,
+        [hashtable]$Environment = @{},
         [ValidateRange(1, 300)][int]$WatchdogIntervalSeconds = 30,
         [ValidateRange(0, 30)][int]$GradleDelaySeconds = 0
     )
@@ -567,12 +608,17 @@ function Invoke-ConnectedVerificationChild {
     if ($CompileTasks.Count -gt 0) { $arguments += @('-CompileTask') + $CompileTasks }
     if ($RunDiffCheck) { $arguments += '-RunDiffCheck' }
     if ($ToolingDemoMode) { $arguments += @('-ToolingDemoMode', '-DemoResultRoot', 'demo-results') }
-    $environment = @{ YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog }
-    if (-not [string]::IsNullOrWhiteSpace($GradleMarker)) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG = $GradleMarker }
-    if ($GradleDelaySeconds -gt 0) { $environment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_DELAY_SECONDS = [string]$GradleDelaySeconds }
-    if (-not [string]::IsNullOrWhiteSpace($DemoDiagnosticErrorGateId)) { $environment.YTDLNISX_REMEDIATION_DEMO_DIAGNOSTIC_ERROR_GATE_ID = $DemoDiagnosticErrorGateId }
-    if (-not [string]::IsNullOrWhiteSpace($FinalizationSerializationFailureArtifact)) { $environment.YTDLNISX_REMEDIATION_DEMO_FINALIZATION_SERIALIZATION_FAIL_ONCE = $FinalizationSerializationFailureArtifact }
-    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment $environment
+    $childEnvironment = @{
+        YTDLNISX_TOOLING_ACCEPTANCE_ADB_LOG = $AdbCallLog
+        GRADLE_USER_HOME = [string]$Fixture.syntheticGradleUserHome
+    }
+    if (-not [string]::IsNullOrWhiteSpace($GradleMarker)) { $childEnvironment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_LOG = $GradleMarker }
+    if (-not [string]::IsNullOrWhiteSpace($LaunchCapturePath)) { $childEnvironment.YTDLNISX_TOOLING_ACCEPTANCE_LAUNCH_CAPTURE = $LaunchCapturePath }
+    if ($GradleDelaySeconds -gt 0) { $childEnvironment.YTDLNISX_TOOLING_ACCEPTANCE_GRADLE_DELAY_SECONDS = [string]$GradleDelaySeconds }
+    if (-not [string]::IsNullOrWhiteSpace($DemoDiagnosticErrorGateId)) { $childEnvironment.YTDLNISX_REMEDIATION_DEMO_DIAGNOSTIC_ERROR_GATE_ID = $DemoDiagnosticErrorGateId }
+    if (-not [string]::IsNullOrWhiteSpace($FinalizationSerializationFailureArtifact)) { $childEnvironment.YTDLNISX_REMEDIATION_DEMO_FINALIZATION_SERIALIZATION_FAIL_ONCE = $FinalizationSerializationFailureArtifact }
+    foreach ($environmentName in $Environment.Keys) { $childEnvironment[[string]$environmentName] = [string]$Environment[$environmentName] }
+    $running = Start-ToolingPowerShell -ScriptPath $script:verificationScript -Arguments $arguments -WorkingDirectory $Fixture.path -Environment $childEnvironment
     $result = Complete-ToolingPowerShell -Running $running -TimeoutSeconds 180
     Save-ChildEvidence -Name $Name -Result $result
     return $result
@@ -618,7 +664,7 @@ try {
         '-CompileTask', ':app:compileDebugKotlin',
         '-GateTimeoutSeconds', '90',
         '-EvidenceRoot', $transientFixture.evidenceRoot
-    ) -WorkingDirectory $transientFixture.path -Environment @{ YTDLNISX_TOOLING_ACCEPTANCE_CONTROL_ROOT = $controlRoot }
+    ) -WorkingDirectory $transientFixture.path -Environment (Get-FixtureGradleEnvironment -Fixture $transientFixture -Environment @{ YTDLNISX_TOOLING_ACCEPTANCE_CONTROL_ROOT = $controlRoot })
     $sourceMutated = $false
     $transientResult = $null
     $consumed = $null
@@ -1236,11 +1282,132 @@ switch -Exact ($command) {
     )
     Add-AcceptanceCheck -CheckId 'wrapped_filestream_path_failure_classified_as_tooling_without_reclassifying_adb_start_failure' -Pass $wrappedPathClassifierPass -Detail "The extracted production classifier observed exception chain $(@($wrappedPathDetails.exceptionTypes) -join ' -> ') and returned $($wrappedPathDetails.classification); a plain ADB-start exception remained outside the evidence-path classification."
 
+    $gradleProvenanceHelperNames = @(
+        'Get-GradleHomeOptionOverrides',
+        'Resolve-GradleSelectedJavaExecutable',
+        'ConvertFrom-GradleWrapperPropertyValue',
+        'Get-GradleWrapperDistributionInfo',
+        'Get-GradleWrapperBucketToken',
+        'Resolve-GradleEffectiveUserHome',
+        'Get-GradleWrapperCacheObservation'
+    )
+    foreach ($helperName in $gradleProvenanceHelperNames) {
+        $helperAst = $verificationAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $helperName }, $true)
+        if ($null -eq $helperAst) { throw "The production Gradle provenance helper was not found: $helperName" }
+        . ([scriptblock]::Create($helperAst.Extent.Text))
+    }
+
+    $gradleHelperRoot = Join-Path $runRoot 'gradle-launch-helper-fixtures'
+    $javaHomeFixture = Join-Path $gradleHelperRoot 'selected-jdk'
+    $javaHomeExecutable = Join-Path $javaHomeFixture 'bin\java.exe'
+    $pathFirst = Join-Path $gradleHelperRoot 'path-first'
+    $pathSecond = Join-Path $gradleHelperRoot 'path-second'
+    $pathFirstExecutable = Join-Path $pathFirst 'java.exe'
+    $pathSecondExecutable = Join-Path $pathSecond 'java.exe'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $javaHomeExecutable),(Split-Path -Parent $pathFirstExecutable),(Split-Path -Parent $pathSecondExecutable) -Force | Out-Null
+    Write-ToolingUtf8 -Path $javaHomeExecutable -Content 'selection fixture only'
+    Write-ToolingUtf8 -Path $pathFirstExecutable -Content 'selection fixture only'
+    Write-ToolingUtf8 -Path $pathSecondExecutable -Content 'selection fixture only'
+    $javaHomeSelection = Resolve-GradleSelectedJavaExecutable -WorkingDirectory $gradleHelperRoot -JavaHomeValue $javaHomeFixture -PathValue ($pathSecond + ';' + $pathFirst)
+    $pathSelection = Resolve-GradleSelectedJavaExecutable -WorkingDirectory $gradleHelperRoot -JavaHomeValue $null -PathValue ($pathFirst + ';' + $pathSecond)
+    Add-AcceptanceCheck -CheckId 'gradle_java_selection_prefers_java_home_and_matches_batch_rule' -Pass ($javaHomeSelection.selection -eq 'JAVA_HOME' -and $javaHomeSelection.path -eq [System.IO.Path]::GetFullPath($javaHomeExecutable)) -Detail 'The selected executable resolved to JAVA_HOME\bin\java.exe even when PATH began with a different java.exe, matching the canonical batch launcher branch.'
+    Add-AcceptanceCheck -CheckId 'gradle_java_selection_uses_first_path_executable_when_java_home_unset' -Pass ($pathSelection.selection -eq 'PATH' -and $pathSelection.path -eq [System.IO.Path]::GetFullPath($pathFirstExecutable) -and $pathSelection.pathEntryIndex -eq 1) -Detail 'With JAVA_HOME unset, the selected executable was the first java.exe in PATH order.'
+
+    $userHomeDefault = Join-Path $gradleHelperRoot 'reported-user-home'
+    $explicitGradleHome = Join-Path $gradleHelperRoot 'explicit-gradle-user-home'
+    $effectiveFromEnvironment = Resolve-GradleEffectiveUserHome -WorkingDirectory $gradleHelperRoot -GradleUserHomePropertyIsSet $false -GradleUserHomePropertyValue $null -GradleUserHomeEnvironmentIsSet $true -GradleUserHomeEnvironmentValue $explicitGradleHome -UserHome $userHomeDefault
+    Add-AcceptanceCheck -CheckId 'explicit_gradle_user_home_overrides_user_home_default' -Pass ($effectiveFromEnvironment.path -eq [System.IO.Path]::GetFullPath($explicitGradleHome) -and $effectiveFromEnvironment.source -eq 'environment_GRADLE_USER_HOME') -Detail 'An explicit GRADLE_USER_HOME resolved ahead of the selected Java user.home default.'
+
+    $overrideRecord = Get-GradleHomeOptionOverrides -GradleUserHomeIsSet $true -GradleUserHomeValue $explicitGradleHome -JavaHomeValue $javaHomeFixture -JavaOpts ('-Duser.home="' + (Join-Path $gradleHelperRoot 'java-opts-user-home') + '" -Dapi.token=SHOULD_NOT_APPEAR') -GradleOpts ('-Dgradle.user.home="' + (Join-Path $gradleHelperRoot 'gradle-opts-home') + '" -Djava.home="' + (Join-Path $gradleHelperRoot 'gradle-opts-java-home') + '"') -JavaToolOptions '-Duser.home=C:\tool-options-user-home -Daccess.token=SHOULD_NOT_APPEAR'
+    $effectiveFromProperty = Resolve-GradleEffectiveUserHome -WorkingDirectory $gradleHelperRoot -GradleUserHomePropertyIsSet $true -GradleUserHomePropertyValue (Join-Path $gradleHelperRoot 'system-property-gradle-home') -GradleUserHomeEnvironmentIsSet $true -GradleUserHomeEnvironmentValue $explicitGradleHome -UserHome $userHomeDefault
+    $overrideJson = ConvertTo-Json -InputObject $overrideRecord -Depth 8
+    $overrideProperties = @($overrideRecord.jvmHomeProperties)
+    $overridePrecedencePass = (
+        $effectiveFromProperty.path -eq [System.IO.Path]::GetFullPath((Join-Path $gradleHelperRoot 'system-property-gradle-home')) -and
+        $effectiveFromProperty.propertyOverridesEnvironment -and
+        @($overrideProperties | Where-Object { $_.property -eq 'user.home' }).Count -eq 2 -and
+        @($overrideProperties | Where-Object { $_.property -eq 'gradle.user.home' -and $_.source -eq 'GRADLE_OPTS' }).Count -eq 1 -and
+        @($overrideProperties | Where-Object { $_.property -eq 'java.home' -and $_.source -eq 'GRADLE_OPTS' }).Count -eq 1 -and
+        $overrideJson -notmatch 'SHOULD_NOT_APPEAR|access\.token|api\.token'
+    )
+    Add-AcceptanceCheck -CheckId 'gradle_home_system_property_precedence_filters_unrelated_secrets' -Pass $overridePrecedencePass -Detail 'The gradle.user.home JVM property won over GRADLE_USER_HOME and user.home; only java.home/user.home/gradle.user.home option values were retained, and unrelated token options were excluded.'
+
+    $fixtureWrapperProperties = Join-Path $transientFixture.path 'gradle\wrapper\gradle-wrapper.properties'
+    $distributionInfo = Get-GradleWrapperDistributionInfo -PropertiesPath $fixtureWrapperProperties
+    $distributionToken = Get-GradleWrapperBucketToken -DistributionUrl $distributionInfo.distributionUrl
+    $distributionMappingPass = ($distributionInfo.distributionUrl -eq 'https://services.gradle.org/distributions/gradle-8.13-bin.zip' -and $distributionToken -eq '5xuhj0ry160q40clulazy9h7d')
+    Add-AcceptanceCheck -CheckId 'distribution_url_maps_to_wrapper_compatible_bucket' -Pass $distributionMappingPass -Detail "The fixture wrapper URL mapped to the Gradle 8.13 wrapper bucket token $distributionToken using the URL-derived cache identity."
+    $distinctDistributionToken = Get-GradleWrapperBucketToken -DistributionUrl 'https://services.gradle.org/distributions/gradle-8.13-all.zip'
+    Add-AcceptanceCheck -CheckId 'distinct_distribution_urls_map_to_distinct_buckets' -Pass ($distinctDistributionToken -ne $distributionToken) -Detail 'Changing the exact distribution URL changed the wrapper bucket token.'
+
+    $cacheObservationRoot = Join-Path $script:fixturesRoot 'wrapper-cache-observation'
+    $completeGradleHome = Join-Path $cacheObservationRoot 'complete-gradle-user-home'
+    $completeBefore = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $completeGradleHome -ExecutionWorktree $transientFixture.path
+    $completeBucketPath = [string]$completeBefore.expectedBucketPath
+    $completeDistributionRoot = Join-Path $completeBucketPath $distributionInfo.distributionName
+    [System.IO.Directory]::CreateDirectory($completeBucketPath) | Out-Null
+    [System.IO.Directory]::CreateDirectory((Join-Path $completeDistributionRoot 'bin')) | Out-Null
+    [System.IO.Directory]::CreateDirectory((Join-Path $completeDistributionRoot 'lib')) | Out-Null
+    Write-ToolingUtf8 -Path (Join-Path (Join-Path $completeDistributionRoot 'bin') 'gradle.bat') -Content 'launcher fixture'
+    Write-ToolingUtf8 -Path (Join-Path (Join-Path $completeDistributionRoot 'bin') 'gradle') -Content 'launcher fixture'
+    Write-ToolingUtf8 -Path (Join-Path (Join-Path $completeDistributionRoot 'lib') 'gradle-launcher-8.13.jar') -Content 'jar fixture'
+    Write-ToolingUtf8 -Path (Join-Path $completeBucketPath ($distributionInfo.distributionFileName + '.ok')) -Content 'complete marker fixture'
+    Write-ToolingUtf8 -Path (Join-Path $completeBucketPath ($distributionInfo.distributionFileName + '.zip')) -Content 'CACHE_CONTENT_SENTINEL'
+    $completeObservation = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $completeGradleHome -ExecutionWorktree $transientFixture.path
+    $completeObservationJson = ConvertTo-Json -InputObject $completeObservation -Depth 8
+    $completeBucketPass = ($completeObservation.apparentDistributionComplete -and $completeObservation.metadataReadable -and -not $completeObservation.cacheContentsRead -and $completeObservation.bucketToken -eq $distributionToken -and $completeObservationJson -notmatch 'CACHE_CONTENT_SENTINEL')
+    Add-AcceptanceCheck -CheckId 'complete_wrapper_bucket_is_observed_without_cache_content_reads' -Pass $completeBucketPass -Detail 'A complete synthetic Gradle 8.13 bucket was identified from bounded metadata and expected launcher paths; no cache file contents were read or emitted.'
+
+    $missingGradleHome = Join-Path $cacheObservationRoot 'missing-gradle-user-home'
+    $missingBefore = Test-Path -LiteralPath $missingGradleHome
+    $missingObservation = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $missingGradleHome -ExecutionWorktree $transientFixture.path
+    $missingAfter = Test-Path -LiteralPath $missingGradleHome
+    $incompleteGradleHome = Join-Path $cacheObservationRoot 'incomplete-gradle-user-home'
+    $incompleteBefore = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $incompleteGradleHome -ExecutionWorktree $transientFixture.path
+    $incompleteBucket = [string]$incompleteBefore.expectedBucketPath
+    [System.IO.Directory]::CreateDirectory($incompleteBucket) | Out-Null
+    Write-ToolingUtf8 -Path (Join-Path $incompleteBucket ($distributionInfo.distributionFileName + '.part')) -Content 'partial fixture'
+    $entriesBeforeIncompleteObserve = @((Get-ChildItem -LiteralPath $incompleteBucket -Force -ErrorAction Stop | ForEach-Object { [string]$_.Name }) | Sort-Object)
+    $incompleteObservation = Get-GradleWrapperCacheObservation -DistributionInfo $distributionInfo -EffectiveGradleUserHome $incompleteGradleHome -ExecutionWorktree $transientFixture.path
+    $entriesAfterIncompleteObserve = @((Get-ChildItem -LiteralPath $incompleteBucket -Force -ErrorAction Stop | ForEach-Object { [string]$_.Name }) | Sort-Object)
+    $missingIncompletePass = (
+        -not $missingBefore -and -not $missingAfter -and $missingObservation.metadataReadable -and -not $missingObservation.apparentDistributionComplete -and
+        $incompleteObservation.bucketExists -and $incompleteObservation.partPresent -and -not $incompleteObservation.apparentDistributionComplete -and
+        (@(Compare-Object -ReferenceObject $entriesBeforeIncompleteObserve -DifferenceObject $entriesAfterIncompleteObserve).Count -eq 0)
+    )
+    Add-AcceptanceCheck -CheckId 'missing_and_incomplete_buckets_are_observed_without_mutation' -Pass $missingIncompletePass -Detail 'Missing and partial wrapper buckets were classified from metadata only; observation created no cache directory or file and left the existing .part entry unchanged.'
+
+    $probeFailureFixture = New-ToolingFixture -Name 'gradle-property-probe-failure'
+    $probeFailureClass = 'com.ireum.ytdl.acceptance.GradleProbeMustBlockTest'
+    $probeFailureMarker = Join-Path $runRoot 'gradle-probe-failure-gradle-started'
+    $probeFailureSecret = 'GRADLE_LAUNCH_SENTINEL_MUST_NOT_BE_EMITTED'
+    $probeFailureRun = Invoke-ConnectedVerificationChild -Fixture $probeFailureFixture -Classes @($probeFailureClass) -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog (Join-Path $runRoot 'gradle-probe-failure-adb-calls.log') -Name 'gradle-property-probe-failure-blocks-before-launch' -GradleMarker $probeFailureMarker -Environment @{ JAVA_TOOL_OPTIONS = ('-Znot-a-real-java-option -Dapi.token=' + $probeFailureSecret) }
+    $probeFailureVerificationPath = Get-VerificationJsonPath -Result $probeFailureRun
+    $probeFailureEvidence = Get-Content -LiteralPath $probeFailureVerificationPath -Raw | ConvertFrom-Json
+    $probeFailureGate = @($probeFailureEvidence.gates | Where-Object { $_.gateId -eq ('connected:' + $probeFailureClass) })[0]
+    $probeFailureProvenancePath = [string]$probeFailureGate.gradleLaunchEnvironmentEvidencePath
+    $probeFailureProvenance = if (Test-Path -LiteralPath $probeFailureProvenancePath -PathType Leaf) { Get-Content -LiteralPath $probeFailureProvenancePath -Raw | ConvertFrom-Json } else { $null }
+    $probeFailureEvidenceText = Get-Content -LiteralPath $probeFailureVerificationPath -Raw
+    if ($null -ne $probeFailureProvenancePath -and (Test-Path -LiteralPath $probeFailureProvenancePath -PathType Leaf)) { $probeFailureEvidenceText += Get-Content -LiteralPath $probeFailureProvenancePath -Raw }
+    $probeFailurePass = (
+        $probeFailureRun.exitCode -ne 0 -and
+        $probeFailureEvidence.status -eq 'BLOCKED_BY_TOOLING_INFRASTRUCTURE' -and
+        $probeFailureGate.status -eq 'BLOCKED_GRADLE_LAUNCH_PROVENANCE' -and
+        $null -ne $probeFailureProvenance -and
+        $probeFailureProvenance.status -eq 'BLOCKED' -and
+        $probeFailureProvenance.failureStage -eq 'java_property_probe' -and
+        $probeFailureProvenance.gradleStarted -eq $false -and
+        -not (Test-Path -LiteralPath $probeFailureMarker -PathType Leaf) -and
+        $probeFailureEvidenceText -notmatch [Regex]::Escape($probeFailureSecret)
+    )
+    Add-AcceptanceCheck -CheckId 'java_property_probe_failure_blocks_gradle_before_launch' -Pass $probeFailurePass -Detail 'An invalid JAVA_TOOL_OPTIONS probe produced durable BLOCKED_GRADLE_LAUNCH_PROVENANCE evidence and no fake Gradle start; a non-home token sentinel from the JVM options stayed out of evidence.'
+
     $finalizationFixture = New-ToolingFixture -Name 'report-finalization-success'
     $finalizationConnectedClass = 'com.ireum.ytdl.acceptance.ReportFinalizationConnectedTest'
     $finalizationJvmClass = 'com.ireum.ytdl.acceptance.ReportFinalizationJvmTest'
     $finalizationAdbLog = Join-Path $runRoot 'report-finalization-success-adb-calls.log'
-    $finalizationSuccess = Invoke-ConnectedVerificationChild -Fixture $finalizationFixture -Classes @($finalizationConnectedClass) -JvmClasses @($finalizationJvmClass) -CompileTasks @(':app:compileDebugKotlin') -RunDiffCheck -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $finalizationAdbLog -Name 'report-finalization-success-all-gate-kinds' -WatchdogIntervalSeconds 1 -GradleDelaySeconds 2
+    $finalizationLaunchCapturePath = Join-Path $runRoot 'report-finalization-launch-captures.jsonl'
+    $finalizationSuccess = Invoke-ConnectedVerificationChild -Fixture $finalizationFixture -Classes @($finalizationConnectedClass) -JvmClasses @($finalizationJvmClass) -CompileTasks @(':app:compileDebugKotlin') -RunDiffCheck -AdbPath $syntheticAdbPath -DeviceSerial 'emulator-artifact' -AdbCallLog $finalizationAdbLog -Name 'report-finalization-success-all-gate-kinds' -LaunchCapturePath $finalizationLaunchCapturePath -WatchdogIntervalSeconds 1 -GradleDelaySeconds 2
     $finalizationSuccessVerificationPath = Get-VerificationJsonPath -Result $finalizationSuccess
     $finalizationSuccessEvidence = Get-Content -LiteralPath $finalizationSuccessVerificationPath -Raw | ConvertFrom-Json
     $finalizationSuccessDirectory = Split-Path -Parent $finalizationSuccessVerificationPath
@@ -1250,6 +1417,10 @@ switch -Exact ($command) {
     $finalizationSuccessLifetime = Get-Content -LiteralPath $finalizationSuccessLifetimePath -Raw | ConvertFrom-Json
     $finalizationSuccessTimings = Get-Content -LiteralPath $finalizationSuccessTimingsPath -Raw | ConvertFrom-Json
     if ($finalizationSuccessTimings -isnot [array]) { $finalizationSuccessTimings = @($finalizationSuccessTimings) }
+    $finalizationLaunchCaptures = @()
+    if (Test-Path -LiteralPath $finalizationLaunchCapturePath -PathType Leaf) {
+        $finalizationLaunchCaptures = @(Get-Content -LiteralPath $finalizationLaunchCapturePath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+    }
     $finalizationSuccessExpectedIds = @(
         ('connected:' + $finalizationConnectedClass),
         ('jvm:' + $finalizationJvmClass),
@@ -1257,6 +1428,19 @@ switch -Exact ($command) {
         'git_diff_check'
     )
     $finalizationSuccessGateStatuses = @($finalizationSuccessEvidence.gates | Where-Object { $_.status -eq 'PASS' }).Count -eq 4
+    $expectedLaunchGateIds = @($finalizationSuccessExpectedIds | Where-Object { $_ -ne 'git_diff_check' })
+    $launchEvidencePass = ($finalizationLaunchCaptures.Count -eq 3 -and (Test-Path -LiteralPath $finalizationFixture.syntheticGradleUserHome) -eq $false)
+    foreach ($launchCapture in $finalizationLaunchCaptures) {
+        if (-not $launchCapture.evidenceExistedAtGradleEntry -or $expectedLaunchGateIds -notcontains $launchCapture.gateId -or [string]::IsNullOrWhiteSpace([string]$launchCapture.evidencePath)) { $launchEvidencePass = $false; continue }
+        if (-not (Test-Path -LiteralPath $launchCapture.evidencePath -PathType Leaf)) { $launchEvidencePass = $false; continue }
+        $sidecar = Get-Content -LiteralPath $launchCapture.evidencePath -Raw | ConvertFrom-Json
+        $writeTime = [DateTimeOffset]::Parse([string]$launchCapture.evidenceLastWriteUtc, [Globalization.CultureInfo]::InvariantCulture)
+        $observedTime = [DateTimeOffset]::Parse([string]$launchCapture.observedUtc, [Globalization.CultureInfo]::InvariantCulture)
+        $expectedEffectiveHome = [System.IO.Path]::GetFullPath($finalizationFixture.syntheticGradleUserHome)
+        $launchEvidencePass = ($launchEvidencePass -and $sidecar.status -eq 'CAPTURED' -and $sidecar.outputPersistedBeforeGate -eq $true -and $sidecar.gateId -eq $launchCapture.gateId -and $sidecar.candidateSha -eq $finalizationFixture.sha -and $sidecar.canonicalGradlePath -like '*\gradlew.bat' -and (Test-Path -LiteralPath $sidecar.selectedJava.path -PathType Leaf) -and -not [string]::IsNullOrWhiteSpace([string]$sidecar.javaProperties.javaHome) -and -not [string]::IsNullOrWhiteSpace([string]$sidecar.javaProperties.userHome) -and $sidecar.effectiveGradleUserHome.path -eq $expectedEffectiveHome -and $sidecar.distributionUrl -eq $distributionInfo.distributionUrl -and $sidecar.wrapperBucketToken -eq $distributionToken -and $writeTime -le $observedTime)
+    }
+    $sidecarGateLinks = @($finalizationSuccessEvidence.gates | Where-Object { $_.kind -ne 'diff' -and $_.gradleLaunchEnvironmentProvenanceStatus -eq 'CAPTURED' -and (Test-Path -LiteralPath $_.gradleLaunchEnvironmentEvidencePath -PathType Leaf) }).Count -eq 3
+    $lifetimeSidecarLinks = @($finalizationSuccessLifetime.gates | Where-Object { $_.gradleLaunchEnvironmentProvenanceStatus -eq 'CAPTURED' -and (Test-Path -LiteralPath $_.gradleLaunchEnvironmentEvidencePath -PathType Leaf) }).Count -eq 3
     $finalizationSuccessPass = (
         $finalizationSuccess.exitCode -eq 0 -and
         $finalizationSuccessArtifactsExist -and
@@ -1264,6 +1448,11 @@ switch -Exact ($command) {
         $finalizationSuccessEvidence.finalization.status -eq 'PASS' -and
         $finalizationSuccessEvidence.finalization.errors.Count -eq 0 -and
         $finalizationSuccessGateStatuses -and
+        $launchEvidencePass -and
+        (@($finalizationLaunchCaptures | ForEach-Object { $_.gateId } | Select-Object -Unique).Count -eq 3) -and
+        (@($expectedLaunchGateIds | Where-Object { $finalizationLaunchCaptures.gateId -notcontains $_ }).Count -eq 0) -and
+        $sidecarGateLinks -and
+        $lifetimeSidecarLinks -and
         $finalizationSuccessEvidence.gates[0].stallDiagnosticError -eq $null -and
         $finalizationSuccessLifetime.status -eq 'PASS' -and
         $finalizationSuccessLifetime.reportFinalization.status -eq 'PASS' -and
@@ -1271,7 +1460,7 @@ switch -Exact ($command) {
         (@($finalizationSuccessTimings | ForEach-Object { $_.gateId } | Where-Object { $finalizationSuccessExpectedIds -notcontains $_ }).Count -eq 0) -and
         (@($finalizationSuccessExpectedIds | Where-Object { $finalizationSuccessTimings.gateId -notcontains $_ }).Count -eq 0)
     )
-    Add-AcceptanceCheck -CheckId 'successful_connected_jvm_compile_diff_gates_durably_finalize_all_reports' -Pass $finalizationSuccessPass -Detail 'The synthetic exact-candidate connected, JVM, compile, and diff gates all passed without a diagnostic error; verification.json, execution-lifetime.json, and timings.json were present and parsed, with all four gate IDs represented.'
+    Add-AcceptanceCheck -CheckId 'successful_connected_jvm_compile_diff_gates_durably_finalize_all_reports' -Pass $finalizationSuccessPass -Detail 'The synthetic exact-candidate connected, JVM, compile, and diff gates all passed without a diagnostic error; all reports finalized, each non-demo Gradle gate linked its durable launch sidecar, the fake wrapper observed that sidecar at entry, and the fixture Gradle home remained unmodified.'
 
     $diagnosticErrorFixture = New-ToolingFixture -Name 'report-finalization-diagnostic-error'
     $diagnosticErrorClass = 'com.ireum.ytdl.acceptance.ReportFinalizationDiagnosticErrorTest'
