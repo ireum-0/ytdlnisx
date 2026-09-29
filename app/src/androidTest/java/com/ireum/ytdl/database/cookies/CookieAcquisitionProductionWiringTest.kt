@@ -279,11 +279,13 @@ class CookieAcquisitionProductionWiringTest {
 
         cookieFile.writeText("$COOKIE_HEADER\n${cookieLine("SID", "ready")}\n")
         val request = makeRequest()
+        val executableArguments = request.buildCommand()
+        val configOptionIndexes = executableArguments.indices.filter { executableArguments[it] == "--config-locations" }
+        assertEquals("the executable request must carry exactly one generated config", 1, configOptionIndexes.size)
+        val config = File(executableArguments[configOptionIndexes.single() + 1])
         try {
             // The production download request carries options in an exact
-            // app-generated config; top-level arguments alone omit that carrier.
-            val configPath = requireNotNull(request.getArguments("--config-locations")?.filterNotNull()?.singleOrNull())
-            val config = File(configPath)
+            // app-generated config added as commands, outside getArguments().
             assertEquals(cacheRoot.canonicalFile, config.parentFile?.canonicalFile)
             val sanitizedArguments = YoutubeDLCompat.previewSanitizedArguments(context, request)
             val configOptionIndex = sanitizedArguments.indexOf("--config-locations")
@@ -297,9 +299,7 @@ class CookieAcquisitionProductionWiringTest {
                 effectiveOptions[cookieOptionIndexes.single() + 1],
             )
         } finally {
-            request.getArguments("--config-locations")
-                ?.filterNotNull()
-                ?.forEach { File(it).delete() }
+            config.delete()
         }
     }
 
