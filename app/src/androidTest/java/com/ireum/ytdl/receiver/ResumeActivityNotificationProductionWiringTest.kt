@@ -7,6 +7,8 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.provider.Settings
 import android.os.Bundle
+import android.os.Build
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -60,6 +62,35 @@ class ResumeActivityNotificationProductionWiringTest {
 
     private suspend fun exerciseNotificationCapabilities() {
         val application = ApplicationProvider.getApplicationContext<Application>()
+        if (Build.VERSION.SDK_INT >= 33) {
+            val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
+            automation.adoptShellPermissionIdentity("android.permission.GRANT_RUNTIME_PERMISSIONS")
+            try {
+                automation.grantRuntimePermission(application.packageName, Manifest.permission.POST_NOTIFICATIONS)
+            } finally {
+                automation.dropShellPermissionIdentity()
+            }
+            assertEquals(
+                "notification transport requires its normal runtime permission",
+                PackageManager.PERMISSION_GRANTED,
+                application.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS),
+            )
+        }
+        val manager = application.getSystemService(NotificationManager::class.java)
+        assertTrue("notification transport must be enabled", manager.areNotificationsEnabled())
+        if (Build.VERSION.SDK_INT >= 26) {
+            withTimeout(10_000L) {
+                while (listOf(NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID, NotificationUtil.DOWNLOAD_ERRORED_CHANNEL_ID)
+                        .any { manager.getNotificationChannel(it) == null }
+                ) {
+                    delay(25L)
+                }
+            }
+            listOf(NotificationUtil.DOWNLOAD_SERVICE_CHANNEL_ID, NotificationUtil.DOWNLOAD_ERRORED_CHANNEL_ID)
+                .forEach { channelId ->
+                    assertNotEquals(NotificationManager.IMPORTANCE_NONE, manager.getNotificationChannel(channelId).importance)
+                }
+        }
         assertFalse("test requires no overlay authority", Settings.canDrawOverlays(application))
         val requestedPermissions = application.packageManager
             .getPackageInfo(application.packageName, PackageManager.GET_PERMISSIONS)
@@ -129,12 +160,15 @@ class ResumeActivityNotificationProductionWiringTest {
             val after = requireNotNull(database.downloadDao.getNullableDownloadById(id))
             if (wasAccepted) {
                 assertNotEquals(DownloadRepository.Status.Paused.name, after.status)
-                assertFalse(isNotificationActive(application, notificationId))
+                awaitNotificationConsumed(application, notificationId)
             } else {
                 assertEquals(DownloadRepository.Status.Paused.name, after.status)
                 assertEquals(executionId, after.executionId)
                 assertTrue(isNotificationActive(application, notificationId))
             }
+        } catch (failure: Throwable) {
+            captureFailureState(application, database, id, notificationId, failure)
+            throw failure
         } finally {
             existingWorkIds?.let { cancelNewDownloadWork(application, it) }
             NotificationUtil(application).cancelDownloadNotification(notificationId)
@@ -186,13 +220,16 @@ class ResumeActivityNotificationProductionWiringTest {
             if (wasAccepted) {
                 assertEquals(operationId, after.operationId)
                 assertEquals(attempt + 1, after.retryAttempt)
-                assertFalse(isNotificationActive(application, notificationId))
+                awaitNotificationConsumed(application, notificationId)
             } else {
                 assertEquals(DownloadRepository.Status.Error.name, after.status)
                 assertEquals(operationId, after.operationId)
                 assertEquals(attempt, after.retryAttempt)
                 assertTrue(isNotificationActive(application, notificationId))
             }
+        } catch (failure: Throwable) {
+            captureFailureState(application, database, id, notificationId, failure)
+            throw failure
         } finally {
             existingWorkIds?.let { cancelNewDownloadWork(application, it) }
             NotificationUtil(application).cancelDownloadNotification(notificationId)
@@ -200,13 +237,21 @@ class ResumeActivityNotificationProductionWiringTest {
         }
     }
 
-    private fun dispatchPostedAction(application: Application, notificationId: Int) {
+    private suspend fun dispatchPostedAction(application: Application, notificationId: Int) {
         val notificationManager = application.getSystemService(NotificationManager::class.java)
-        val notification = notificationManager.activeNotifications
-            .firstOrNull { it.id == notificationId }
-            ?.notification
+        val notification = withTimeout(10_000L) {
+            var posted = notificationManager.activeNotifications.firstOrNull { it.id == notificationId }
+            while (posted == null) {
+                delay(25L)
+                posted = notificationManager.activeNotifications.firstOrNull { it.id == notificationId }
+            }
+            posted.notification
+        }
         assertNotNull("NotificationUtil did not post notification $notificationId", notification)
         val pendingIntent = requireNotNull(notification?.actions?.singleOrNull()?.actionIntent)
+        assertTrue("resume/retry must use an Activity capability", pendingIntent.isActivity)
+        assertEquals(application.packageName, pendingIntent.creatorPackage)
+        android.util.Log.i("ResumeNotificationWiring", "posted=$notificationId channel=${notification.channelId} activityCapability=true creator=${pendingIntent.creatorPackage}")
         val activityCreated = CountDownLatch(1)
         val activityDestroyed = CountDownLatch(1)
         val observer = object : Application.ActivityLifecycleCallbacks {
@@ -266,6 +311,38 @@ class ResumeActivityNotificationProductionWiringTest {
     private fun isNotificationActive(application: Application, notificationId: Int): Boolean =
         application.getSystemService(NotificationManager::class.java)
             .activeNotifications.any { it.id == notificationId }
+
+    private suspend fun awaitNotificationConsumed(application: Application, notificationId: Int) {
+        withTimeout(10_000L) {
+            while (isNotificationActive(application, notificationId)) delay(25L)
+        }
+        assertFalse(isNotificationActive(application, notificationId))
+    }
+
+    private fun captureFailureState(
+        application: Application,
+        database: DBManager,
+        id: Long,
+        notificationId: Int,
+        failure: Throwable,
+    ) {
+        runCatching {
+            val manager = application.getSystemService(NotificationManager::class.java)
+            val row = database.downloadDao.getNullableDownloadById(id)
+            val channels = if (Build.VERSION.SDK_INT >= 26) manager.notificationChannels
+                .joinToString { "${it.id}:${it.importance}" } else "pre-channel-api"
+            val permission = if (Build.VERSION.SDK_INT >= 33)
+                application.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) else "pre-runtime-api"
+            android.util.Log.e(
+                "ResumeNotificationWiring",
+                "failure-before-teardown sdk=${Build.VERSION.SDK_INT} target=${application.applicationInfo.targetSdkVersion} " +
+                    "permission=$permission enabled=${manager.areNotificationsEnabled()} channels=$channels " +
+                    "notification=$notificationId active=${isNotificationActive(application, notificationId)} " +
+                    "id=$id status=${row?.status} execution=${row?.executionId} operation=${row?.operationId} attempt=${row?.retryAttempt}",
+                failure,
+            )
+        }.exceptionOrNull()?.let(failure::addSuppressed)
+    }
 
     private fun download(
         status: String,
