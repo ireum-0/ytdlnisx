@@ -334,6 +334,9 @@ internal fun hasDurableUserStopRevokedAuthority(
  * production lease is acquired or immediately before the real effect call.
  */
 internal object DownloadWorkerEffectTestHooks {
+    /** Observes exact attempt cleanup after every existing ownership decision. */
+    @Volatile
+    internal var afterAttemptCleanupForTesting: ((Long, String) -> Unit)? = null
     @Volatile
     internal var beforeAuthorityReadForTesting: ((Long, String) -> Unit)? = null
     /** Uses an in-memory Room database for a real WorkManager worker test. */
@@ -5397,6 +5400,10 @@ class DownloadWorker(
                                 }
                             }
                         }
+                        DownloadWorkerEffectTestHooks.afterAttemptCleanupForTesting?.invoke(
+                            downloadItem.id,
+                            downloadItem.executionId,
+                        )
                     }
 
         private fun currentAuthoritativeOutputPaths(): List<String> =

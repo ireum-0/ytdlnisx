@@ -21,7 +21,9 @@ import com.ireum.ytdl.util.VideoFileQualityState
 import com.ireum.ytdl.util.VideoMediaQuality
 import com.ireum.ytdl.util.runtime.BundledFfmpegRuntime
 import com.ireum.ytdl.util.runtime.BundledFfmpegRuntimeResolution
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpNativeProcessBarrier
 import com.ireum.ytdl.work.DownloadExecutionRecovery
+import com.ireum.ytdl.work.DownloadProducerRecovery
 import com.ireum.ytdl.work.DownloadOutputProvenance
 import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.DownloadWorkerEffectTestHooks
@@ -44,6 +46,43 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+/** Selects the original method through its runner, including its real fixture lifecycle. */
+@RunWith(AndroidJUnit4::class)
+class DownloadOutputCleanupMethodVerificationTest {
+    @Test
+    fun exactUnavailableFfmpegMethod() {
+        val method = "unavailableFfmpegRuntimeFailsHardSubBeforePublishingOutput"
+        val executed = mutableListOf<String>()
+        var assumptionFailures = 0
+        val core = org.junit.runner.JUnitCore()
+        core.addListener(object : org.junit.runner.notification.RunListener() {
+            override fun testStarted(description: org.junit.runner.Description) {
+                executed.add("${description.className}#${description.methodName}")
+            }
+
+            override fun testAssumptionFailure(failure: org.junit.runner.notification.Failure) {
+                assumptionFailures++
+            }
+        })
+        val result = core.run(org.junit.runner.Request.method(DownloadOutputProductionWiringTest::class.java, method))
+        android.util.Log.i(
+            "OutputMethodVerification",
+            "method=$method executed=$executed run=${result.runCount} ignored=${result.ignoreCount} " +
+                "assumptions=$assumptionFailures failures=${result.failureCount}",
+        )
+        result.failures.firstOrNull()?.let { first ->
+            result.failures.drop(1).forEach { first.exception.addSuppressed(it.exception) }
+            throw first.exception
+        }
+        assertEquals(listOf("${DownloadOutputProductionWiringTest::class.java.name}#$method"), executed)
+        assertEquals(1, result.runCount)
+        assertEquals(0, result.ignoreCount)
+        assertEquals(0, assumptionFailures)
+        assertEquals(0, result.failureCount)
+    }
+}
 
 private val outputWiringDownloadIds = AtomicLong(
     System.currentTimeMillis().coerceAtLeast(10_000_000L),
@@ -109,7 +148,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             val ownedOutputDirectory = requireNotNull(currentOutputDirectory)
             assertEquals(".ytdlnisx-output", ownedOutputDirectory.parentFile?.name)
@@ -147,7 +186,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
@@ -187,7 +226,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
@@ -255,7 +294,7 @@ class DownloadOutputProductionWiringTest {
                 )
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
@@ -305,7 +344,7 @@ class DownloadOutputProductionWiringTest {
                 )
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(1, history.downloadPath.size)
@@ -345,7 +384,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
             assertTrue(history.downloadPath.single().startsWith(effectiveDestination.canonicalPath))
@@ -394,7 +433,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertTrue(nativeBoundaryReached.get())
             val staging = requireNotNull(ownedOutputDirectory)
@@ -455,7 +494,7 @@ class DownloadOutputProductionWiringTest {
                 true
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertTrue(nativeBoundaryReached.get())
             assertTrue(burnReached.get())
@@ -506,7 +545,7 @@ class DownloadOutputProductionWiringTest {
                 false
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertTrue(nativeBoundaryReached.get())
             assertTrue(burnReached.get())
@@ -551,8 +590,27 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val failedRow = requireNotNull(db.downloadDao.getNullableDownloadById(downloadId))
+            assertTrue(failedRow.executionId.isNotBlank())
+            assertFalse(downloadId in DownloadExecutionRecovery.pendingDownloadIds(context))
+            assertNull(DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId))
+            assertNull(DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId))
+            val producerDiscovery = DownloadProducerRecovery.discover(context)
+            assertTrue(producerDiscovery is DownloadProducerRecovery.DiscoveryResult.Healthy)
+            val producers = producerDiscovery.records.filter { it.downloadId == downloadId }
+            producers.forEach { producer ->
+                assertEquals(failedRow.operationId, producer.operationId)
+                assertEquals(failedRow.executionId, producer.executionId)
+                assertTrue(producer.generationId.isNotBlank())
+                assertTrue(producer.phase in setOf(
+                    DownloadProducerRecovery.Phase.COMPLETE,
+                    DownloadProducerRecovery.Phase.FINALIZED,
+                ))
+            }
+            assertFalse(DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId))
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
                 DownloadRepository.Status.Error.name,
@@ -594,7 +652,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             val history = requireNotNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(1, history.downloadPath.size)
@@ -638,7 +696,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertTrue(nativeBoundaryReached.get())
             val staging = requireNotNull(ownedOutputDirectory)
@@ -685,7 +743,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertFalse(nativeBoundaryReached.get())
             assertFalse(File(authoredPathRoot, "\$HOME").exists())
@@ -734,7 +792,7 @@ class DownloadOutputProductionWiringTest {
                         }
                     }
 
-                enqueueAndAwaitDownloadWorker(context)
+                enqueueAndAwaitDownloadWorker(context, downloadId)
 
                 assertFalse(nativeBoundaryReached.get())
                 assertTrue(sentinel.exists())
@@ -782,7 +840,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertFalse(nativeBoundaryReached.get())
             assertFalse(escaped.exists())
@@ -824,7 +882,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertFalse(nativeBoundaryReached.get())
             assertFalse(escaped.exists())
@@ -870,7 +928,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertTrue(nativeBoundaryReached.get())
             val stagingRoot = requireNotNull(ownedOutputDirectory)
@@ -913,7 +971,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertFalse(nativeBoundaryReached.get())
             assertFalse(escaped.exists())
@@ -959,7 +1017,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertFalse(nativeBoundaryReached.get())
             assertFalse(escaped.exists())
@@ -1004,7 +1062,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
@@ -1042,7 +1100,7 @@ class DownloadOutputProductionWiringTest {
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext())
+            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(oldMedia.absolutePath, requireNotNull(db.historyDao.getNullableItem(historyId)).downloadPath.single())
@@ -1052,6 +1110,7 @@ class DownloadOutputProductionWiringTest {
     }
 
     private fun clearOutputHooks() {
+        DownloadWorkerEffectTestHooks.afterAttemptCleanupForTesting = null
         DownloadWorkerEffectTestHooks.dbManagerForTesting = null
         DownloadWorkerEffectTestHooks.beforeYtdlpExecutionForTesting = null
         DownloadWorkerEffectTestHooks.ytdlpSuccessForTesting = null
@@ -1163,8 +1222,14 @@ class DownloadOutputProductionWiringTest {
         WorkManager.getInstance(context).cancelAllWork().result.get(10, TimeUnit.SECONDS)
     }
 
-    private suspend fun enqueueAndAwaitDownloadWorker(context: Context): WorkInfo {
+    private suspend fun enqueueAndAwaitDownloadWorker(context: Context, downloadId: Long): WorkInfo {
         val workManager = WorkManager.getInstance(context)
+        val cleanedExecution = AtomicReference<String?>()
+        DownloadWorkerEffectTestHooks.afterAttemptCleanupForTesting = { candidateId, executionId ->
+            if (candidateId == downloadId && executionId.isNotBlank()) {
+                cleanedExecution.compareAndSet(null, executionId)
+            }
+        }
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .addTag("bug-output-real-worker")
             .build()
@@ -1174,10 +1239,59 @@ class DownloadOutputProductionWiringTest {
                 val workInfo = runCatching {
                     workManager.getWorkInfoById(request.id).get(1, TimeUnit.SECONDS)
                 }.getOrNull()
-                if (workInfo?.state?.isFinished == true) return@withContext workInfo
+                if (workInfo != null && (workInfo.state.isFinished || cleanedExecution.get() != null)) {
+                    val executionId = cleanedExecution.get()
+                    captureAndAssertPostAttempt(context, downloadId, executionId, workInfo)
+                    return@withContext workInfo
+                }
                 Thread.sleep(250L)
             }
             error("Timed out waiting for real DownloadWorker ${request.id}")
         }
+    }
+
+    private fun captureAndAssertPostAttempt(
+        context: Context,
+        downloadId: Long,
+        cleanedExecutionId: String?,
+        workInfo: WorkInfo,
+    ) {
+        val row = db.downloadDao.getNullableDownloadById(downloadId)
+        val history = db.historyDao.getItemByDownloadId(downloadId)
+        val executionOwner = DownloadWorkerExecutionOwners.ownerOf(downloadId)
+        val processOwner = DownloadWorkerProcessOwners.ownerOf(downloadId)
+        val disposition = DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId)
+        val phase = DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId)
+        val genericPending = downloadId in DownloadExecutionRecovery.pendingDownloadIds(context)
+        val producerDiscovery = DownloadProducerRecovery.discover(context)
+        val producers = producerDiscovery.records.filter { it.downloadId == downloadId }
+        val producerBlocking = DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId)
+        val executionId = cleanedExecutionId ?: row?.executionId.orEmpty()
+        val nativeRegistered = DownloadWorker.hasRegisteredNativeProcess(downloadId, executionId)
+        val markerDebt = YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId, executionId)
+        android.util.Log.i(
+            "OutputAttemptCleanupProof",
+            "download=$downloadId cleanupExecution=$cleanedExecutionId row=${row?.status}/${row?.executionId} " +
+                "history=${history?.id} historyDownload=${history?.downloadId} outputCount=${history?.downloadPath?.size} " +
+                "executionOwner=$executionOwner processOwner=$processOwner genericPending=$genericPending " +
+                "disposition=$disposition phase=$phase producerDiscovery=${producerDiscovery::class.java.simpleName} " +
+                "producers=${producers.map { "${it.operationId}/${it.executionId}/${it.generationId}/${it.phase}" }} " +
+                "producerBlocking=$producerBlocking nativeRegistered=$nativeRegistered markerDebt=$markerDebt " +
+                "workRequest=${workInfo.id} workState=${workInfo.state}",
+        )
+        assertTrue("Producer discovery must remain readable", producerDiscovery is DownloadProducerRecovery.DiscoveryResult.Healthy)
+        assertNotNull("The exact real attempt must complete its cleanup observation", cleanedExecutionId)
+        if (cleanedExecutionId != null) {
+            assertTrue(cleanedExecutionId.isNotBlank())
+            if (row != null) assertEquals("Cleanup must belong to the exact row execution", cleanedExecutionId, row.executionId)
+        }
+        assertTrue("Attempt cleanup must not abandon a running row", row?.status !in setOf(
+            DownloadRepository.Status.Active.name,
+            DownloadRepository.Status.PostProcessing.name,
+        ))
+        assertNull("A terminal attempt must release execution authority", executionOwner)
+        assertNull("A terminal attempt must release process authority", processOwner)
+        assertFalse("A completed synthetic attempt must not retain native execution", nativeRegistered)
+        assertFalse("A completed synthetic attempt must not retain native marker debt", markerDebt)
     }
 }
