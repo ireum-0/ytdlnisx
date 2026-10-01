@@ -369,7 +369,7 @@ class DownloadOutputProductionWiringTest {
                 probePaths.set(paths.toList())
                 try {
                     assertFalse(paths.any { it == ambientHighQuality.canonicalPath })
-                    assertTrue(paths.any { it == requireNotNull(stagedLowQuality).canonicalPath })
+                    assertEquals(listOf(File(destination, "requested (1).mp4").canonicalPath), paths)
                     VideoMediaQuality(
                         state = VideoFileQualityState.READY,
                         width = 640,
