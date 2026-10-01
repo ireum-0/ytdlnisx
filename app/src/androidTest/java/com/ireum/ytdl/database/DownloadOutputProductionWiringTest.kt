@@ -15,6 +15,7 @@ import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
+import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.VideoFileQualityState
@@ -32,6 +33,7 @@ import com.ireum.ytdl.work.DownloadWorkerProcessOwners
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -283,7 +285,7 @@ class DownloadOutputProductionWiringTest {
 
     @Test
     fun realWorkerVerifiedQualityCannotUseAmbientHighQualityForReplacement() = runBlocking {
-        withCacheDownloads(false) {
+        withDiagnosticAdmissionPreferences {
             val downloadId = outputWiringDownloadIds.getAndIncrement()
             val destination = File(testRoot, "verified-quality-negative").apply { mkdirs() }
             val oldMedia = File(destination, "old.mp4").apply { writeBytes(byteArrayOf(9, 9, 9)) }
@@ -349,23 +351,33 @@ class DownloadOutputProductionWiringTest {
             }
 
             val context = ApplicationProvider.getApplicationContext<Context>()
-            enqueueAndAwaitDownloadWorker(context, downloadId) { workInfo, cleanupExecutionId ->
+            enqueueAndAwaitDownloadWorker(context, downloadId) { workInfo, cleanupExecutionId, requestId ->
                 fun read(label: String, observation: () -> Any?): String =
                     "$label=" + runCatching { observation().toString() }
                         .getOrElse { "OBSERVATION_FAILED:${it::class.java.simpleName}" }
                 val row = runCatching { db.downloadDao.getNullableDownloadById(downloadId) }
                 val executionId = row.getOrNull()?.executionId?.takeIf { it.isNotBlank() }
                     ?: cleanupExecutionId
+                val queueWindow = System.currentTimeMillis() + 6000
+                val queuedIds = runCatching {
+                    db.downloadDao.getQueuedScheduledDownloadsUntil(queueWindow).first().map { it.id }
+                }
                 listOf(
                     "VerifiedQualityDiagnostic download=$downloadId ytdlpEntered=${ytdlpEntered.get()} " +
                         "ytdlpExited=${ytdlpExited.get()} probeEntered=${probeEntered.get()} " +
                         "probeExited=${probeExited.get()} probePaths=${probePaths.get()} " +
-                        "cleanupExecution=$cleanupExecutionId workRequest=${workInfo?.id} workState=${workInfo?.state}",
+                        "cleanupExecution=$cleanupExecutionId workRequest=$requestId workState=${workInfo?.state} " +
+                        "runAttemptCount=${workInfo?.runAttemptCount}",
+                    "queueWindow=$queueWindow queueIds=${queuedIds.getOrNull()} " +
+                        "targetInQueue=${queuedIds.getOrNull()?.contains(downloadId)} " +
+                        "queueReadFailure=${queuedIds.exceptionOrNull()?.javaClass?.simpleName}",
                     "rowReadFailure=${row.exceptionOrNull()?.javaClass?.simpleName} " +
                         "row=${row.getOrNull()?.let { "${it.status}/${it.executionId}/${it.operationId}/${it.lastIssueCode}/${it.lastIssueStage}" }}",
                     read("executionOwner") { DownloadWorkerExecutionOwners.ownerOf(downloadId) },
                     read("processOwner") { DownloadWorkerProcessOwners.ownerOf(downloadId) },
                     read("genericPending") { downloadId in DownloadExecutionRecovery.pendingDownloadIds(context) },
+                    read("targetPendingRecovery") { DownloadExecutionRecovery.hasPendingRecovery(context, downloadId) },
+                    read("workerRecoveryResponsibility") { DownloadExecutionRecovery.hasRecoveryResponsibility(context, db) },
                     read("genericDisposition") { DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) },
                     read("genericPhase") { DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) },
                     read("producer") {
@@ -373,6 +385,20 @@ class DownloadOutputProductionWiringTest {
                         "${discovered::class.java.simpleName}:${discovered.records.filter { it.downloadId == downloadId }}"
                     },
                     read("producerBlocking") { DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId) },
+                    read("primaryCommitted") { DownloadPrimarySuccessAuthorityRepository.hasCommittedForDownloadBlocking(db, downloadId) },
+                    read("primaryAuthorities") { db.downloadPrimarySuccessAuthorityDao.getByDownloadBlocking(downloadId) },
+                    read("processClaimable") { DownloadWorkerProcessOwners.canClaimNewExecution(downloadId) },
+                    read("anyRegisteredNative") { DownloadWorker.hasAnyRegisteredNativeProcess(downloadId) },
+                    read("anyMarkerDebt") { YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId) },
+                    read("lowQualityCancellation") { db.lowQualityRedownloadDao.hasCancellationRequestedByDownload(downloadId) },
+                    "lowQualityItem=" + runCatching { db.lowQualityRedownloadDao.getItemByDownloadId(downloadId).toString() }
+                        .getOrElse { "OBSERVATION_FAILED:${it::class.java.simpleName}" },
+                    read("runningRows") { db.downloadDao.getActiveAndPostProcessingDownloadsList().map { "${it.id}/${it.status}/${it.executionId}" } },
+                    read("preferences") {
+                        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+                        "scheduler=${preferences.getBoolean("use_scheduler", false)} concurrent=${preferences.getInt("concurrent_downloads", 1)} " +
+                            "cache=${preferences.getBoolean("cache_downloads", true)}"
+                    },
                     read("nativeRegistered") { executionId?.let { DownloadWorker.hasRegisteredNativeProcess(downloadId, it) } ?: "EXECUTION_UNKNOWN" },
                     read("markerDebt") { executionId?.let { YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId, it) } ?: "EXECUTION_UNKNOWN" },
                     read("targetHistory") { db.historyDao.getNullableItem(historyId)?.let { "${it.id}/${it.downloadId}/${it.downloadPath}" } },
@@ -1210,6 +1236,41 @@ class DownloadOutputProductionWiringTest {
         DownloadWorkerEffectTestHooks.beforeNoCacheMediaScanForTesting = null
     }
 
+    private suspend fun <T> withDiagnosticAdmissionPreferences(block: suspend () -> T): T {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(
+            ApplicationProvider.getApplicationContext<Context>(),
+        )
+        val hadScheduler = preferences.contains("use_scheduler")
+        val oldScheduler = preferences.getBoolean("use_scheduler", false)
+        val hadConcurrent = preferences.contains("concurrent_downloads")
+        val oldConcurrent = preferences.getInt("concurrent_downloads", 1)
+        return try {
+            assertTrue(preferences.edit()
+                .putBoolean("use_scheduler", false)
+                .putInt("concurrent_downloads", 1)
+                .commit())
+            withCacheDownloads(false, block)
+        } finally {
+            val restore = preferences.edit()
+            if (hadScheduler) restore.putBoolean("use_scheduler", oldScheduler)
+            else restore.remove("use_scheduler")
+            if (hadConcurrent) restore.putInt("concurrent_downloads", oldConcurrent)
+            else restore.remove("concurrent_downloads")
+            assertTrue(restore.commit())
+            assertEquals(hadScheduler, preferences.contains("use_scheduler"))
+            assertEquals(oldScheduler, preferences.getBoolean("use_scheduler", false))
+            assertEquals(hadConcurrent, preferences.contains("concurrent_downloads"))
+            assertEquals(oldConcurrent, preferences.getInt("concurrent_downloads", 1))
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+                0,
+                android.os.Bundle().apply {
+                    putString("stream", "\nAdmissionPreferencesRestored schedulerPresent=$hadScheduler " +
+                        "scheduler=$oldScheduler concurrentPresent=$hadConcurrent concurrent=$oldConcurrent\n")
+                },
+            )
+        }
+    }
+
     private suspend fun <T> withCacheDownloads(enabled: Boolean, block: suspend () -> T): T {
         val preferences = PreferenceManager.getDefaultSharedPreferences(
             ApplicationProvider.getApplicationContext()
@@ -1312,7 +1373,7 @@ class DownloadOutputProductionWiringTest {
     private suspend fun enqueueAndAwaitDownloadWorker(
         context: Context,
         downloadId: Long,
-        diagnostic: ((WorkInfo?, String?) -> String)? = null,
+        diagnostic: (suspend (WorkInfo?, String?, UUID) -> String)? = null,
     ): WorkInfo {
         val workManager = WorkManager.getInstance(context)
         val cleanedExecution = AtomicReference<String?>()
@@ -1324,30 +1385,48 @@ class DownloadOutputProductionWiringTest {
         val request = OneTimeWorkRequestBuilder<DownloadWorker>()
             .addTag("bug-output-real-worker")
             .build()
+        fun emitDiagnostic(text: String): String {
+            androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+                0,
+                android.os.Bundle().apply { putString("stream", "\n$text\n") },
+            )
+            android.util.Log.i("VerifiedQualityDiagnostic", text)
+            return text
+        }
+        if (diagnostic != null) {
+            withContext(Dispatchers.IO) {
+                emitDiagnostic("phase=BEFORE_ENQUEUE\n" + diagnostic(null, null, request.id))
+            }
+        }
         workManager.enqueue(request)
         return withContext(Dispatchers.IO) {
             var lastWorkInfo: WorkInfo? = null
-            fun reportDiagnostic(): String? = diagnostic?.invoke(lastWorkInfo, cleanedExecution.get())?.also { text ->
-                androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
-                    0,
-                    android.os.Bundle().apply { putString("stream", "\n$text\n") },
-                )
-                android.util.Log.i("VerifiedQualityDiagnostic", text)
-            }
+            val transitions = mutableListOf<String>()
+            suspend fun reportDiagnostic(phase: String): String? =
+                diagnostic?.invoke(lastWorkInfo, cleanedExecution.get(), request.id)?.let { text ->
+                    emitDiagnostic("phase=$phase observedWorkInfoTransitions=$transitions\n$text")
+                }
             repeat(240) {
                 val workInfo = runCatching {
                     workManager.getWorkInfoById(request.id).get(1, TimeUnit.SECONDS)
                 }.getOrNull()
                 lastWorkInfo = workInfo
+                if (diagnostic != null && workInfo != null) {
+                    val stopReason = runCatching {
+                        workInfo.javaClass.getMethod("getStopReason").invoke(workInfo)
+                    }.getOrElse { "STOP_REASON_OBSERVATION_FAILED:${it::class.java.simpleName}" }
+                    val observation = "${workInfo.state}/attempt=${workInfo.runAttemptCount}/stopReason=$stopReason"
+                    if (transitions.lastOrNull() != observation) transitions.add(observation)
+                }
                 if (workInfo != null && (workInfo.state.isFinished || cleanedExecution.get() != null)) {
-                    reportDiagnostic()
+                    reportDiagnostic("TERMINAL_OR_CLEANUP")
                     val executionId = cleanedExecution.get()
                     captureAndAssertPostAttempt(context, downloadId, executionId, workInfo)
                     return@withContext workInfo
                 }
                 Thread.sleep(250L)
             }
-            val details = reportDiagnostic()
+            val details = reportDiagnostic("TIMEOUT")
             error("Timed out waiting for real DownloadWorker ${request.id}" +
                 (details?.let { "\n$it" } ?: ""))
         }
