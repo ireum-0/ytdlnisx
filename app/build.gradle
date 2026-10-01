@@ -46,7 +46,7 @@ android {
     }catch(IOException ignored){}
     defaultConfig {
         applicationId "com.ireum.ytdl"
-        minSdk 24
+        minSdk 26
         targetSdk 36
         versionCode baseVersionCode
         versionName "${versionMajor}.${versionMinor}.${versionPatch}${versionExt}"
