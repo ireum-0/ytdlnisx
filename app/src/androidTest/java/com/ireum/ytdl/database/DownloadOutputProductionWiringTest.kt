@@ -127,6 +127,44 @@ class DownloadOutputVerifiedQualityMethodDiagnosticTest {
     }
 }
 
+/** Diagnostic selection preserves the original method's runner and fixture. */
+@RunWith(AndroidJUnit4::class)
+class DownloadOutputAmbientMethodDiagnosticTest {
+    @Test
+    fun exactAmbientMethod() {
+        val method = "realWorkerRejectsAmbientRecentAndSameNameFiles"
+        val executed = mutableListOf<String>()
+        var assumptionFailures = 0
+        val core = org.junit.runner.JUnitCore()
+        core.addListener(object : org.junit.runner.notification.RunListener() {
+            override fun testStarted(description: org.junit.runner.Description) {
+                executed.add("${description.className}#${description.methodName}")
+            }
+
+            override fun testAssumptionFailure(failure: org.junit.runner.notification.Failure) {
+                assumptionFailures++
+            }
+        })
+        val result = core.run(org.junit.runner.Request.method(DownloadOutputProductionWiringTest::class.java, method))
+        val summary = "AmbientMethodDiagnostic method=$method executed=$executed run=${result.runCount} " +
+            "ignored=${result.ignoreCount} assumptions=$assumptionFailures failures=${result.failureCount}"
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+            0,
+            android.os.Bundle().apply { putString("stream", "\n$summary\n") },
+        )
+        println(summary)
+        result.failures.firstOrNull()?.let { first ->
+            result.failures.drop(1).forEach { first.exception.addSuppressed(it.exception) }
+            throw first.exception
+        }
+        assertEquals(listOf("${DownloadOutputProductionWiringTest::class.java.name}#$method"), executed)
+        assertEquals(1, result.runCount)
+        assertEquals(0, result.ignoreCount)
+        assertEquals(0, assumptionFailures)
+        assertEquals(0, result.failureCount)
+    }
+}
+
 private val outputWiringDownloadIds = AtomicLong(
     System.currentTimeMillis().coerceAtLeast(10_000_000L),
 )
@@ -219,17 +257,52 @@ class DownloadOutputProductionWiringTest {
             val recent = File(destination, "recent.m4a").apply { writeBytes(byteArrayOf(4, 5, 6)) }
             val sameName = File(destination, "same-name.m4a").apply { writeBytes(byteArrayOf(8, 9, 0)) }
             db.downloadDao.insertRaw(download(downloadId, destination.absolutePath))
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val hookCandidate = AtomicReference<Long?>()
+            fun snapshot(boundary: String): String {
+                fun read(label: String, observation: () -> Any?): String =
+                    "$label=" + runCatching { observation().toString() }
+                        .getOrElse { "OBSERVATION_FAILED:${it::class.java.simpleName}" }
+                return listOf(
+                    "AmbientDiagnostic boundary=$boundary download=$downloadId hookCandidate=${hookCandidate.get()}",
+                    read("row") { db.downloadDao.getNullableDownloadById(downloadId)?.let { "${it.id}/${it.status}/${it.operationId}/${it.executionId}/${it.lastIssueCode}/${it.lastIssueStage}" } },
+                    read("history") { db.historyDao.getItemByDownloadId(downloadId)?.let { "${it.id}/${it.downloadId}/${it.downloadPath}" } },
+                    read("executionOwner") { DownloadWorkerExecutionOwners.ownerOf(downloadId) },
+                    read("processOwner") { DownloadWorkerProcessOwners.ownerOf(downloadId) },
+                    read("genericPending") { DownloadExecutionRecovery.hasPendingRecovery(context, downloadId) },
+                    read("genericDisposition") { DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) },
+                    read("genericPhase") { DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) },
+                    read("workerRecoveryResponsibility") { DownloadExecutionRecovery.hasRecoveryResponsibility(context, db) },
+                    read("producer") { DownloadProducerRecovery.discover(context).let { "${it::class.java.simpleName}:${it.records.filter { record -> record.downloadId == downloadId }}" } },
+                    read("producerBlocking") { DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId) },
+                    read("nativeRegistered") { DownloadWorker.hasAnyRegisteredNativeProcess(downloadId) },
+                    read("markerDebt") { YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId) },
+                    read("preferences") { PreferenceManager.getDefaultSharedPreferences(context).let { "scheduler=${it.getBoolean("use_scheduler", false)} concurrent=${it.getInt("concurrent_downloads", 1)} cache=${it.getBoolean("cache_downloads", true)}" } },
+                    "ambientRecentExists=${recent.exists()} ambientSameNameExists=${sameName.exists()}",
+                ).joinToString("\n")
+            }
+            fun emit(text: String) {
+                androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+                    0, android.os.Bundle().apply { putString("stream", "\n$text\n") },
+                )
+            }
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
             DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, _ ->
                 if (candidateId != downloadId) {
                     null
                 } else {
+                    hookCandidate.set(candidateId)
+                    emit(snapshot("YTDLP_ENTRY"))
                     "[download] Destination: '${sameName.absolutePath}'\n" +
-                        "[download] Destination: '${recent.absolutePath}'"
+                        hookCandidate.set(candidateId)
+                    emit(snapshot("YTDLP_ENTRY"))
+                    "[download] Destination: '${recent.absolutePath}'"
                 }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
+            enqueueAndAwaitDownloadWorker(context, downloadId) { workInfo, cleanupExecutionId, requestId ->
+                "request=$requestId workState=${workInfo?.state} attempt=${workInfo?.runAttemptCount} cleanupExecution=$cleanupExecutionId\n" + snapshot("OBSERVER")
+            }
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
