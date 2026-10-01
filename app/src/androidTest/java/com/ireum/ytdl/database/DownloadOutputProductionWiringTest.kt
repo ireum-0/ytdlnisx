@@ -13,9 +13,12 @@ import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.DownloadItem
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItem
+import com.ireum.ytdl.database.models.LowQualityRedownloadItemState
 import com.ireum.ytdl.database.models.VideoPreferences
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.DownloadPrimarySuccessAuthorityRepository
+import com.ireum.ytdl.database.repository.LowQualityRedownloadRepository
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
 import com.ireum.ytdl.util.VideoFileQualityState
@@ -286,7 +289,8 @@ class DownloadOutputProductionWiringTest {
     @Test
     fun realWorkerVerifiedQualityCannotUseAmbientHighQualityForReplacement() = runBlocking {
         withDiagnosticAdmissionPreferences {
-            val downloadId = outputWiringDownloadIds.getAndIncrement()
+            val requestedDownloadId = outputWiringDownloadIds.getAndIncrement()
+            val sourceUrl = "https://example.com/$requestedDownloadId"
             val destination = File(testRoot, "verified-quality-negative").apply { mkdirs() }
             val oldMedia = File(destination, "old.mp4").apply { writeBytes(byteArrayOf(9, 9, 9)) }
             val ambientHighQuality = File(destination, "requested.mp4").apply {
@@ -294,22 +298,50 @@ class DownloadOutputProductionWiringTest {
             }
             val historyId = db.historyDao.insertAndGetIdRaw(
                 history(oldMedia.absolutePath).copy(
+                    url = sourceUrl,
                     type = DownloadType.video,
                     format = Format(container = "mp4", format_note = "720p"),
                     downloadId = 0L,
                 )
             )
-            db.downloadDao.insertRaw(
-                download(
-                    id = downloadId,
+            val ledgerRepository = LowQualityRedownloadRepository(db)
+            val operation = ledgerRepository.createOrReconnect()
+            ledgerRepository.checkpointScan(
+                operationId = operation.operationId,
+                historyId = historyId,
+                candidate = LowQualityRedownloadItem(
+                    operationId = operation.operationId,
+                    historyId = historyId,
+                    intendedSourceUrl = sourceUrl,
+                    intendedType = DownloadType.video.name,
+                    requestedHeight = 720,
+                    expectedHeight = 720,
+                    selected = true,
+                    itemState = LowQualityRedownloadItemState.CHECKING.name,
+                ),
+                failed = false,
+            )
+            val downloadId = requireNotNull(ledgerRepository.linkDownloadAtomically(
+                operationId = operation.operationId,
+                historyId = historyId,
+                downloadItem = download(
+                    id = requestedDownloadId,
                     destination = destination.absolutePath,
                     type = DownloadType.video,
                     formatNote = "720p",
                     container = "mp4",
                     videoPreferences = VideoPreferences(embedSubs = false),
                     playlistUrl = HistoryRedownloadMarker.quality(historyId, 720),
-                )
-            )
+                ),
+            ))
+            assertEquals(requestedDownloadId, downloadId)
+            val linkedItem = requireNotNull(db.lowQualityRedownloadDao.getItemByDownloadId(downloadId))
+            assertEquals(operation.operationId, linkedItem.operationId)
+            assertEquals(historyId, linkedItem.historyId)
+            assertEquals(sourceUrl, linkedItem.intendedSourceUrl)
+            assertEquals(DownloadType.video.name, linkedItem.intendedType)
+            assertEquals(LowQualityRedownloadItemState.QUEUED, linkedItem.stateValue)
+            assertEquals("RUNNING", requireNotNull(ledgerRepository.getOperation(operation.operationId)).state)
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
             var stagedLowQuality: File? = null
             val ytdlpEntered = AtomicBoolean(false)
