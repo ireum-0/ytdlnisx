@@ -84,6 +84,44 @@ class DownloadOutputCleanupMethodVerificationTest {
     }
 }
 
+/** Diagnostic selection preserves the original method's runner and fixture. */
+@RunWith(AndroidJUnit4::class)
+class DownloadOutputVerifiedQualityMethodDiagnosticTest {
+    @Test
+    fun exactVerifiedQualityMethod() {
+        val method = "realWorkerVerifiedQualityCannotUseAmbientHighQualityForReplacement"
+        val executed = mutableListOf<String>()
+        var assumptionFailures = 0
+        val core = org.junit.runner.JUnitCore()
+        core.addListener(object : org.junit.runner.notification.RunListener() {
+            override fun testStarted(description: org.junit.runner.Description) {
+                executed.add("${description.className}#${description.methodName}")
+            }
+
+            override fun testAssumptionFailure(failure: org.junit.runner.notification.Failure) {
+                assumptionFailures++
+            }
+        })
+        val result = core.run(org.junit.runner.Request.method(DownloadOutputProductionWiringTest::class.java, method))
+        val summary = "VerifiedQualityMethodDiagnostic method=$method executed=$executed run=${result.runCount} " +
+            "ignored=${result.ignoreCount} assumptions=$assumptionFailures failures=${result.failureCount}"
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+            0,
+            android.os.Bundle().apply { putString("stream", "\n$summary\n") },
+        )
+        println(summary)
+        result.failures.firstOrNull()?.let { first ->
+            result.failures.drop(1).forEach { first.exception.addSuppressed(it.exception) }
+            throw first.exception
+        }
+        assertEquals(listOf("${DownloadOutputProductionWiringTest::class.java.name}#$method"), executed)
+        assertEquals(1, result.runCount)
+        assertEquals(0, result.ignoreCount)
+        assertEquals(0, assumptionFailures)
+        assertEquals(0, result.failureCount)
+    }
+}
+
 private val outputWiringDownloadIds = AtomicLong(
     System.currentTimeMillis().coerceAtLeast(10_000_000L),
 )
@@ -272,29 +310,78 @@ class DownloadOutputProductionWiringTest {
             )
             DownloadWorkerEffectTestHooks.dbManagerForTesting = db
             var stagedLowQuality: File? = null
+            val ytdlpEntered = AtomicBoolean(false)
+            val ytdlpExited = AtomicBoolean(false)
+            val probeEntered = AtomicBoolean(false)
+            val probeExited = AtomicBoolean(false)
+            val probePaths = AtomicReference<List<String>>(emptyList())
             DownloadWorkerEffectTestHooks.ytdlpSuccessWithOutputDirectoryForTesting = { candidateId, _, outputDirectory ->
                 if (candidateId != downloadId) {
                     null
                 } else {
-                    stagedLowQuality = File(outputDirectory, "requested.mp4").apply {
-                        writeBytes(byteArrayOf(1, 2, 3))
+                    ytdlpEntered.set(true)
+                    try {
+                        stagedLowQuality = File(outputDirectory, "requested.mp4").apply {
+                            writeBytes(byteArrayOf(1, 2, 3))
+                        }
+                        "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedLowQuality).absolutePath}'"
+                    } finally {
+                        ytdlpExited.set(true)
                     }
-                    "${DownloadOutputProvenance.PRINT_MARKER}'${requireNotNull(stagedLowQuality).absolutePath}'"
                 }
             }
             DownloadWorkerEffectTestHooks.videoQualityProbeForTesting = { paths ->
-                assertFalse(paths.any { it == ambientHighQuality.canonicalPath })
-                assertTrue(paths.any { it == requireNotNull(stagedLowQuality).canonicalPath })
-                VideoMediaQuality(
-                    state = VideoFileQualityState.READY,
-                    width = 640,
-                    height = 360,
-                    hasAudio = true,
-                    path = paths.first(),
-                )
+                probeEntered.set(true)
+                probePaths.set(paths.toList())
+                try {
+                    assertFalse(paths.any { it == ambientHighQuality.canonicalPath })
+                    assertTrue(paths.any { it == requireNotNull(stagedLowQuality).canonicalPath })
+                    VideoMediaQuality(
+                        state = VideoFileQualityState.READY,
+                        width = 640,
+                        height = 360,
+                        hasAudio = true,
+                        path = paths.first(),
+                    )
+                } finally {
+                    probeExited.set(true)
+                }
             }
 
-            enqueueAndAwaitDownloadWorker(ApplicationProvider.getApplicationContext(), downloadId)
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            enqueueAndAwaitDownloadWorker(context, downloadId) { workInfo, cleanupExecutionId ->
+                fun read(label: String, observation: () -> Any?): String =
+                    "$label=" + runCatching { observation().toString() }
+                        .getOrElse { "OBSERVATION_FAILED:${it::class.java.simpleName}" }
+                val row = runCatching { db.downloadDao.getNullableDownloadById(downloadId) }
+                val executionId = row.getOrNull()?.executionId?.takeIf { it.isNotBlank() }
+                    ?: cleanupExecutionId
+                listOf(
+                    "VerifiedQualityDiagnostic download=$downloadId ytdlpEntered=${ytdlpEntered.get()} " +
+                        "ytdlpExited=${ytdlpExited.get()} probeEntered=${probeEntered.get()} " +
+                        "probeExited=${probeExited.get()} probePaths=${probePaths.get()} " +
+                        "cleanupExecution=$cleanupExecutionId workRequest=${workInfo?.id} workState=${workInfo?.state}",
+                    "rowReadFailure=${row.exceptionOrNull()?.javaClass?.simpleName} " +
+                        "row=${row.getOrNull()?.let { "${it.status}/${it.executionId}/${it.operationId}/${it.lastIssueCode}/${it.lastIssueStage}" }}",
+                    read("executionOwner") { DownloadWorkerExecutionOwners.ownerOf(downloadId) },
+                    read("processOwner") { DownloadWorkerProcessOwners.ownerOf(downloadId) },
+                    read("genericPending") { downloadId in DownloadExecutionRecovery.pendingDownloadIds(context) },
+                    read("genericDisposition") { DownloadExecutionRecovery.pendingDispositionForExecution(context, downloadId) },
+                    read("genericPhase") { DownloadExecutionRecovery.pendingPhaseForTesting(context, downloadId) },
+                    read("producer") {
+                        val discovered = DownloadProducerRecovery.discover(context)
+                        "${discovered::class.java.simpleName}:${discovered.records.filter { it.downloadId == downloadId }}"
+                    },
+                    read("producerBlocking") { DownloadProducerRecovery.hasBlockingForAdmission(context, downloadId) },
+                    read("nativeRegistered") { executionId?.let { DownloadWorker.hasRegisteredNativeProcess(downloadId, it) } ?: "EXECUTION_UNKNOWN" },
+                    read("markerDebt") { executionId?.let { YtdlpNativeProcessBarrier.hasDownloadMarkerDebt(downloadId, it) } ?: "EXECUTION_UNKNOWN" },
+                    read("targetHistory") { db.historyDao.getNullableItem(historyId)?.let { "${it.id}/${it.downloadId}/${it.downloadPath}" } },
+                    read("currentHistory") { db.historyDao.getItemByDownloadId(downloadId)?.let { "${it.id}/${it.downloadId}/${it.downloadPath}" } },
+                    read("oldMedia") { "${oldMedia.absolutePath}/exists=${oldMedia.exists()}" },
+                    read("ambientHighQuality") { "${ambientHighQuality.absolutePath}/exists=${ambientHighQuality.exists()}" },
+                    read("stagedLowQuality") { stagedLowQuality?.let { "${it.absolutePath}/exists=${it.exists()}" } },
+                ).joinToString("\n")
+            }
 
             assertNull(db.historyDao.getItemByDownloadId(downloadId))
             assertEquals(
@@ -1222,7 +1309,11 @@ class DownloadOutputProductionWiringTest {
         WorkManager.getInstance(context).cancelAllWork().result.get(10, TimeUnit.SECONDS)
     }
 
-    private suspend fun enqueueAndAwaitDownloadWorker(context: Context, downloadId: Long): WorkInfo {
+    private suspend fun enqueueAndAwaitDownloadWorker(
+        context: Context,
+        downloadId: Long,
+        diagnostic: ((WorkInfo?, String?) -> String)? = null,
+    ): WorkInfo {
         val workManager = WorkManager.getInstance(context)
         val cleanedExecution = AtomicReference<String?>()
         DownloadWorkerEffectTestHooks.afterAttemptCleanupForTesting = { candidateId, executionId ->
@@ -1235,18 +1326,30 @@ class DownloadOutputProductionWiringTest {
             .build()
         workManager.enqueue(request)
         return withContext(Dispatchers.IO) {
+            var lastWorkInfo: WorkInfo? = null
+            fun reportDiagnostic(): String? = diagnostic?.invoke(lastWorkInfo, cleanedExecution.get())?.also { text ->
+                androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendStatus(
+                    0,
+                    android.os.Bundle().apply { putString("stream", "\n$text\n") },
+                )
+                android.util.Log.i("VerifiedQualityDiagnostic", text)
+            }
             repeat(240) {
                 val workInfo = runCatching {
                     workManager.getWorkInfoById(request.id).get(1, TimeUnit.SECONDS)
                 }.getOrNull()
+                lastWorkInfo = workInfo
                 if (workInfo != null && (workInfo.state.isFinished || cleanedExecution.get() != null)) {
+                    reportDiagnostic()
                     val executionId = cleanedExecution.get()
                     captureAndAssertPostAttempt(context, downloadId, executionId, workInfo)
                     return@withContext workInfo
                 }
                 Thread.sleep(250L)
             }
-            error("Timed out waiting for real DownloadWorker ${request.id}")
+            val details = reportDiagnostic()
+            error("Timed out waiting for real DownloadWorker ${request.id}" +
+                (details?.let { "\n$it" } ?: ""))
         }
     }
 
