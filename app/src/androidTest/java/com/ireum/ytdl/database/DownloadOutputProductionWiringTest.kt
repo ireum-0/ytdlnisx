@@ -294,9 +294,7 @@ class DownloadOutputProductionWiringTest {
                     hookCandidate.set(candidateId)
                     emit(snapshot("YTDLP_ENTRY"))
                     "[download] Destination: '${sameName.absolutePath}'\n" +
-                        hookCandidate.set(candidateId)
-                    emit(snapshot("YTDLP_ENTRY"))
-                    "[download] Destination: '${recent.absolutePath}'"
+                        "[download] Destination: '${recent.absolutePath}'"
                 }
             }
 
