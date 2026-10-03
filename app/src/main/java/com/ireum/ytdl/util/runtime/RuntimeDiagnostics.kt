@@ -215,7 +215,17 @@ class RuntimeDiagnostics(
             )
         }
 
-        val execution = executeProcess(executable, arguments, environment)
+        val execution = if (id == RuntimeProbeId.YTDLP) {
+            kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
+                val request = com.yausername.youtubedl_android.YoutubeDLRequest(emptyList()).apply {
+                    addOption("--version")
+                }
+                val response = YoutubeDLCompat.executeLibraryRequest(appContext, request)
+                ProcessExecution(response.exitCode, response.out)
+            }
+        } else {
+            executeProcess(executable, arguments, environment)
+        }
         val summary = firstUsefulLine(execution.output)
         val hasRequiredOutput = requiredOutputToken == null ||
             execution.output.contains(requiredOutputToken, ignoreCase = true)

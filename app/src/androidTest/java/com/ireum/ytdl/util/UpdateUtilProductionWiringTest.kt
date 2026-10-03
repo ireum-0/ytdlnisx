@@ -4,8 +4,15 @@ import android.content.Context
 import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.ireum.ytdl.App
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.yausername.aria2c.Aria2c
+import com.yausername.youtubedl_android.YoutubeDL
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
@@ -25,6 +32,7 @@ class UpdateUtilProductionWiringTest {
     private lateinit var context: Context
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var originalValues: Map<String, Any?>
+    private lateinit var native: RuntimeAuthorityNativeFixture
 
     private val ownedPreferenceKeys = listOf(
         "ytdlp_source",
@@ -38,20 +46,27 @@ class UpdateUtilProductionWiringTest {
     )
 
     @Before
-    fun setUp() {
+    fun setUp() = runBlocking {
         context = ApplicationProvider.getApplicationContext()
+        awaitRuntimeReadiness()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
-        val allPreferences = preferences.all
-        originalValues = ownedPreferenceKeys.associateWith { allPreferences[it] }
+        originalValues = ownedPreferenceKeys.associateWith { key ->
+            if (!preferences.contains(key)) null else if (key.endsWith("_generation")) {
+                preferences.getLong(key, 0)
+            } else preferences.getString(key, null)
+        }
         val editor = preferences.edit()
         ownedPreferenceKeys.forEach(editor::remove)
         assertTrue("test preference reset must persist", editor.commit())
         UpdateUtil.updaterForTesting = null
         UpdateUtil.updateRequestAdmittedForTesting = null
+        native = RuntimeAuthorityNativeFixture(context).also { it.install() }
     }
 
     @After
     fun tearDown() {
+        if (!::originalValues.isInitialized) return
+        if (::native.isInitialized) native.close()
         UpdateUtil.updaterForTesting = null
         UpdateUtil.updateRequestAdmittedForTesting = null
         val editor = preferences.edit()
@@ -66,6 +81,59 @@ class UpdateUtilProductionWiringTest {
             }
         }
         assertTrue("test preferences must be restored", editor.commit())
+    }
+
+    private suspend fun awaitRuntimeReadiness() {
+        var startup: Job? = null
+        try {
+            withTimeout(30_000) {
+                // Observe the same real App job tree as the focused native fixture.
+                val scope = App::class.java.getDeclaredField("applicationScope").let { field ->
+                    field.isAccessible = true
+                    field.get(null) as CoroutineScope
+                }
+                val owner = requireNotNull(scope.coroutineContext[Job])
+                startup = owner
+                while (true) {
+                    val children = owner.children.toList()
+                    if (children.isEmpty()) break
+                    children.joinAll()
+                }
+                check(!owner.isCancelled) { "App startup scope was cancelled" }
+                // In the resolved 0.18.1 dependencies these flags are set only
+                // after payload initialization returns; joining startup publishes them.
+                check(dependencyInitialized(YoutubeDL::class.java)) { "YoutubeDL initialization did not complete" }
+                check(dependencyInitialized(Aria2c::class.java)) { "Aria2c initialization did not complete" }
+            }
+        } catch (failure: Throwable) {
+            throw AssertionError(
+                "Runtime readiness precondition failed within 30000ms: ${readinessDiagnostic(startup)}",
+                failure,
+            )
+        }
+    }
+
+    private fun dependencyInitialized(type: Class<*>): Boolean =
+        type.getDeclaredField("initialized").let { field ->
+            field.isAccessible = true
+            field.getBoolean(null)
+        }
+
+    private fun readinessDiagnostic(startup: Job?): String {
+        fun state(type: Class<*>) = runCatching { dependencyInitialized(type).toString() }
+            .getOrElse { "unavailable:${it.javaClass.simpleName}:${it.message}" }
+        val libraries = runCatching {
+            val runtime = YoutubeDLCompat.runtimeLayout(context)
+            listOf(
+                runtime.pythonBinary,
+                runtime.quickJsBinary,
+                java.io.File(runtime.pythonLibraryDir, "libandroid-support.so"),
+                java.io.File(runtime.pythonLibraryDir, "libpython3.12.so.1.0"),
+            ).joinToString { "${it.absolutePath}:isFile=${it.isFile}:bytes=${it.length()}" }
+        }.getOrElse { "unavailable:${it.javaClass.simpleName}:${it.message}" }
+        return "startup=$startup children=${startup?.children?.toList()} " +
+            "YoutubeDL.initialized=${state(YoutubeDL::class.java)} " +
+            "Aria2c.initialized=${state(Aria2c::class.java)} libraries=[$libraries]"
     }
 
     @Test

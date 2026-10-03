@@ -8,6 +8,8 @@ import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.models.GithubRelease
+import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
+import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRuntimeAuthority
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.yausername.youtubedl_android.YoutubeDL
@@ -16,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runInterruptible
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -202,8 +206,24 @@ class UpdateUtil(context: Context) {
                         return@withContext YTDLPUpdateResponse(YTDLPUpdateStatus.SUPERSEDED)
                     }
 
-                    val response = updaterForTesting?.invoke(context, current.source)
-                        ?: performYoutubeDLUpdate(current.source)
+                    val response = runInterruptible(Dispatchers.IO) {
+                        YtdlpRuntimeAuthority.withMutation(context) { authority ->
+                            val nativeResponse = runBlocking {
+                                updaterForTesting?.invoke(context, current.source)
+                                    ?: performYoutubeDLUpdate(current.source, authority)
+                            }
+                            if (nativeResponse.status == YTDLPUpdateStatus.DONE ||
+                                nativeResponse.status == YTDLPUpdateStatus.ALREADY_UP_TO_DATE
+                            ) {
+                                val request = YoutubeDLRequest(emptyList()).apply { addOption("--version") }
+                                val verified = YoutubeDLCompat.executeUnderMutation(context, request, authority)
+                                check(verified.exitCode == 0 && verified.out.isNotBlank()) {
+                                    "yt-dlp promoted runtime did not pass native validation"
+                                }
+                            }
+                            nativeResponse
+                        }
+                    }
                     if (response.status == YTDLPUpdateStatus.DONE ||
                         response.status == YTDLPUpdateStatus.ALREADY_UP_TO_DATE
                     ) {
@@ -294,8 +314,12 @@ class UpdateUtil(context: Context) {
         }
     }
 
-    private suspend fun performYoutubeDLUpdate(channel: String): YTDLPUpdateResponse {
-        return when (channel) {
+    private fun performYoutubeDLUpdate(
+        channel: String,
+        authority: YtdlpRuntimeAuthority.Mutation,
+    ): YTDLPUpdateResponse {
+        authority.requireOwned()
+        val result = when (channel) {
             "stable", "nightly", "master" -> {
                 val res = YoutubeDL.updateYoutubeDL(context, channelMap[channel]!!)
                 val version = YoutubeDL.version(context)
@@ -314,10 +338,11 @@ class UpdateUtil(context: Context) {
             else -> {
                 val request = YoutubeDLRequest(emptyList())
                 request.addOption("--update-to", "${channel}@latest")
-                val response = YoutubeDL.getInstance().execute(request)
+                val response = YoutubeDLCompat.executeUnderMutation(context, request, authority)
                 customUpdateResponse(response.out)
             }
         }
+        return result
     }
 
     internal fun customUpdateResponse(output: String): YTDLPUpdateResponse {

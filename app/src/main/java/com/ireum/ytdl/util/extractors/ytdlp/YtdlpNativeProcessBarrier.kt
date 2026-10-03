@@ -35,6 +35,9 @@ internal object YtdlpNativeProcessBarrier {
     private const val GENERATION_TOKEN_KEY = "generationToken"
     private const val PROCESS_ID_KEY = "processId"
     private const val PROCESS_ID_ENVIRONMENT = "YTDLNISX_PROCESS_ID"
+    // A publication intent uses the same durable marker/token format. It is
+    // never a launch: native absence alone cannot retire unverified files.
+    internal const val RUNTIME_MUTATION_PROCESS_ID = "mutation:publication"
 
     /** Environment key passed to the supervisor and inherited by descendants. */
     internal const val NATIVE_GENERATION_ENVIRONMENT = "YTDLNISX_NATIVE_GENERATION"
@@ -173,6 +176,7 @@ internal object YtdlpNativeProcessBarrier {
      * this token exists and clears the intent without using age or a timeout.
      */
     fun prepare(context: Context, processId: String): PreparedProcess {
+        check(processId != RUNTIME_MUTATION_PROCESS_ID) { "Reserved runtime publication identity" }
         configure(context)
         val marker = markerFor(processId)
         if (marker.exists() && !recover(marker)) {
@@ -328,6 +332,9 @@ internal object YtdlpNativeProcessBarrier {
                     QuiescenceState.OWNER_OR_GENERATION_CHANGED,
                     snapshot.generationToken,
                 )
+            } else if (snapshot.processId == RUNTIME_MUTATION_PROCESS_ID &&
+                snapshot.state != STATE_QUIESCENT) {
+                FinalizationResult(QuiescenceState.UNRESOLVED, snapshot.generationToken)
             } else if (snapshot.state == STATE_QUIESCENT) {
                 finishQuiescentMarker(marker, snapshot.generationToken)
             } else if (snapshot.generationToken == null) {
@@ -406,6 +413,9 @@ internal object YtdlpNativeProcessBarrier {
                 snapshot.generationToken,
             )
         }
+        if (snapshot.processId == RUNTIME_MUTATION_PROCESS_ID && snapshot.state != STATE_QUIESCENT) {
+            return FinalizationResult(QuiescenceState.UNRESOLVED, snapshot.generationToken)
+        }
         if (snapshot.state == STATE_QUIESCENT) {
             return finishQuiescentMarker(marker, snapshot.generationToken)
         }
@@ -480,6 +490,106 @@ internal object YtdlpNativeProcessBarrier {
             ProcScan.Unavailable -> false
             is ProcScan.Complete -> scan.processes.isEmpty()
         }
+
+    /**
+     * Read-only promotion admission proof over the existing native namespace.
+     * No age/count/Java-owner absence grants permission and this observation
+     * never terminates another owner's process. Existing recovery owns debt.
+     */
+    internal fun runtimeMutationIsQuiescent(context: Context): Boolean {
+        configure(context)
+        val markers = markerFilesOrNull() ?: return false
+        return markers.filter { it.extension == "marker" }.all { marker ->
+            when (val observation = readMarkerObservation(marker)) {
+                MarkerObservation.ABSENT -> true
+                MarkerObservation.MALFORMED, MarkerObservation.UNREADABLE -> false
+                is MarkerObservation.PRESENT -> {
+                    if (marker == markerFor(RUNTIME_MUTATION_PROCESS_ID) &&
+                        observation.snapshot.processId == RUNTIME_MUTATION_PROCESS_ID &&
+                        observation.snapshot.generationToken != null) {
+                        return@all true // Publication debt is retired only after usable validation.
+                    }
+                    // The caller owns exclusive runtime admission, so no
+                    // live Java consumer retains a right to launch STARTING.
+                    // Exact token absence is the established durable proof,
+                    // including a dead supervisor with a stale RUNNING marker.
+                    observation.snapshot.generationToken?.let(::proveGenerationAbsent) == true
+                }
+            }
+        }
+    }
+
+    /** Reader proof over the reserved namespace; unknown is never absence. */
+    internal fun runtimeMutationDebtIsAbsent(context: Context): Boolean {
+        configure(context)
+        val markers = markerFilesOrNull() ?: return false
+        return markers.filter { it.name.startsWith("mutation_") && it.extension == "marker" }.all { marker ->
+            when (val observation = readMarkerObservation(marker)) {
+                MarkerObservation.ABSENT -> true
+                MarkerObservation.MALFORMED, MarkerObservation.UNREADABLE -> false
+                is MarkerObservation.PRESENT -> observation.snapshot.state == STATE_QUIESCENT &&
+                    observation.snapshot.generationToken != null &&
+                    observation.snapshot.processId.startsWith("mutation:") &&
+                    marker == markerFor(observation.snapshot.processId)
+            }
+        }
+    }
+
+    /** Called only under exclusive runtime ownership. Never signals Download/Terminal owners. */
+    internal fun recoverRuntimeMutationNativeDebt(context: Context): Boolean {
+        check(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+        configure(context)
+        val markers = markerFilesOrNull() ?: return false
+        return markers.filter { it.name.startsWith("mutation_") && it.extension == "marker" }.all { marker ->
+            when (val observation = readMarkerObservation(marker)) {
+                MarkerObservation.ABSENT -> true
+                MarkerObservation.MALFORMED, MarkerObservation.UNREADABLE -> false
+                is MarkerObservation.PRESENT -> {
+                    val snapshot = observation.snapshot
+                    if (!snapshot.processId.startsWith("mutation:") ||
+                        marker != markerFor(snapshot.processId) || snapshot.generationToken == null) false
+                    else if (snapshot.processId == RUNTIME_MUTATION_PROCESS_ID) true
+                    else recoverDetailed(marker, snapshot.generationToken).isProvenQuiescent
+                }
+            }
+        }
+    }
+
+    internal fun beginRuntimeMutation(context: Context): PreparedProcess {
+        check(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+        configure(context)
+        val marker = markerFor(RUNTIME_MUTATION_PROCESS_ID)
+        when (val observation = readMarkerObservation(marker)) {
+            MarkerObservation.MALFORMED, MarkerObservation.UNREADABLE -> error("Runtime publication debt is unreadable")
+            is MarkerObservation.PRESENT -> {
+                val snapshot = observation.snapshot
+                check(snapshot.processId == RUNTIME_MUTATION_PROCESS_ID && snapshot.generationToken != null)
+                // Adopt an interrupted publication's exact token; do not replace evidence.
+                if (snapshot.state != STATE_QUIESCENT) return PreparedProcess(marker, snapshot.generationToken)
+            }
+            MarkerObservation.ABSENT -> Unit
+        }
+        val token = UUID.randomUUID().toString()
+        writeMarker(marker, MarkerSnapshot(STATE_STARTING, RUNTIME_MUTATION_PROCESS_ID, token,
+            null, null, null, null, null, null))
+        val observed = readMarker(marker)
+        check(observed?.generationToken == token && observed.state == STATE_STARTING) {
+            "Runtime publication intent was not durably verified"
+        }
+        return PreparedProcess(marker, token)
+    }
+
+    internal fun completeRuntimeMutation(prepared: PreparedProcess): FinalizationResult {
+        check(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+        val snapshot = readMarker(prepared.marker)
+            ?: return FinalizationResult(QuiescenceState.UNRESOLVED, prepared.generationToken)
+        if (prepared.marker != markerFor(RUNTIME_MUTATION_PROCESS_ID) ||
+            snapshot.processId != RUNTIME_MUTATION_PROCESS_ID ||
+            snapshot.generationToken != prepared.generationToken) {
+            return FinalizationResult(QuiescenceState.OWNER_OR_GENERATION_CHANGED, snapshot.generationToken)
+        }
+        return publishQuiescentAndFinish(prepared.marker, snapshot, prepared.generationToken)
+    }
 
     fun hasUnresolved(processId: String): Boolean {
         val marker = runCatching { markerFor(processId) }.getOrNull() ?: return true

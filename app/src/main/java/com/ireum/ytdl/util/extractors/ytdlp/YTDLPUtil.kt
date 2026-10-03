@@ -1,4 +1,4 @@
-﻿package com.ireum.ytdl.util.extractors.ytdlp
+package com.ireum.ytdl.util.extractors.ytdlp
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -316,7 +316,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 }
             }
             if (processId == null) {
-                YoutubeDL.getInstance().execute(request) { progress, eta, line ->
+                YoutubeDLCompat.executeLibraryRequest(context, request) { progress, eta, line ->
                     callback(progress, eta, line)
                 }
             } else {
@@ -496,7 +496,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.addOption("--flat-playlist")
         request.applyDefaultOptionsForFetchingData(null)
         request.addOption(":ytwatchlater")
-        val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
+        val youtubeDLResponse = YoutubeDLCompat.executeLibraryRequest(context, request)
         val results: List<String?> = try {
             val lineSeparator = System.getProperty("line.separator")
             youtubeDLResponse.out.split(lineSeparator!!)
@@ -515,7 +515,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.addOption("--flat-playlist")
         request.applyDefaultOptionsForFetchingData(null)
         request.addOption(":ytrec")
-        val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
+        val youtubeDLResponse = YoutubeDLCompat.executeLibraryRequest(context, request)
         val results: List<String?> = try {
             val lineSeparator = System.getProperty("line.separator")
             youtubeDLResponse.out.split(lineSeparator!!)
@@ -534,7 +534,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.addOption("--flat-playlist")
         request.applyDefaultOptionsForFetchingData(null)
         request.addOption(":ytfav")
-        val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
+        val youtubeDLResponse = YoutubeDLCompat.executeLibraryRequest(context, request)
         val results: List<String?> = try {
             val lineSeparator = System.getProperty("line.separator")
             youtubeDLResponse.out.split(lineSeparator!!)
@@ -553,7 +553,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
         request.addOption("--flat-playlist")
         request.applyDefaultOptionsForFetchingData(null)
         request.addOption(":ythis")
-        val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
+        val youtubeDLResponse = YoutubeDLCompat.executeLibraryRequest(context, request)
         val results: List<String?> = try {
             val lineSeparator = System.getProperty("line.separator")
             youtubeDLResponse.out.split(lineSeparator!!)
@@ -594,11 +594,11 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             if (!request.hasOption("--no-check-certificates")) request.addOption("--no-check-certificates")
 
             var urlIdx = 0
-            YoutubeDL.getInstance().execute(request){ _, _, line ->
+            YoutubeDLCompat.executeLibraryRequest(context, request){ _, _, line ->
                 try{
                     val trimmedLine = line.trim()
                     if (trimmedLine.isNotBlank()){
-                        val url = validatedUrls.getOrNull(urlIdx) ?: return@execute
+                        val url = validatedUrls.getOrNull(urlIdx) ?: return@executeLibraryRequest
 
                         if (trimmedLine.contains("unavailable")) {
                             progress(ResultViewModel.MultipleFormatProgress(url, listOf(), true, trimmedLine))
@@ -678,7 +678,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             includeDataFetchingExtraCommands = true
         )
         val res = runCatching {
-            YoutubeDL.getInstance().execute(request)
+            YoutubeDLCompat.executeLibraryRequest(context, request)
         }.getOrElse { firstError ->
             if (!shouldRetryYoutubeMetadataWithoutAuthentication(safeUrl, firstError)) throw firstError
             Log.w(
@@ -686,7 +686,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 "Retrying YouTube format fetch without authentication or custom data-fetching commands url=$safeUrl",
                 firstError
             )
-            YoutubeDL.getInstance().execute(
+            YoutubeDLCompat.executeLibraryRequest(context,
                 buildRequest(
                     includeYoutubeAuthentication = false,
                     includeDataFetchingExtraCommands = false
@@ -780,7 +780,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
                 request.setYoutubeExtractorArgs(safeUrl)
             }
 
-            val youtubeDLResponse = YoutubeDL.getInstance().execute(request)
+            val youtubeDLResponse = YoutubeDLCompat.executeLibraryRequest(context, request)
             val json = JSONObject(youtubeDLResponse.out)
             val urls = if (json.has("urls")) {
                 json.getString("urls").split("\n")
@@ -815,7 +815,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
 
         val req = YoutubeDLRequest(emptyList())
         req.addOption("--version")
-        return YoutubeDL.getInstance().execute(req).out.trim()
+        return YoutubeDLCompat.executeLibraryRequest(context, req).out.trim()
     }
 
     @OptIn(ExperimentalStdlibApi::class)
@@ -1161,7 +1161,7 @@ class YTDLPUtil(private val context: Context, private val commandTemplateDao: Co
             request.addOption("--no-check-certificates")
             request.addOption("--no-check-formats")
             request.addOption("--quiet")
-            val response = YoutubeDL.getInstance().execute(request)
+            val response = YoutubeDLCompat.executeLibraryRequest(context, request)
             response.out.replace(FileUtil.getCachePath(context) + "${item.id}/", "").trim()
         } catch (ex: Exception) {
             ex.message ?: ""

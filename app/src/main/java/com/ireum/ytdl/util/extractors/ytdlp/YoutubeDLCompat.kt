@@ -19,6 +19,7 @@ import java.io.Reader
 import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.WeakHashMap
+import java.util.UUID
 import java.util.regex.Pattern
 
 object YoutubeDLCompat {
@@ -281,6 +282,37 @@ sys.exit(exit_code)
      * prepare() and ProcessBuilder.start().
      */
     private val launchingProcessIds = mutableSetOf<String>()
+    private val runtimeAdmissions = mutableMapOf<String, RuntimeAdmission>()
+
+    private class RuntimeAdmission {
+        private var revoked = false
+        private var nativeStartEntered = false
+        private var generationToken: String? = null
+
+        @Synchronized fun requireValid() {
+            if (revoked) throw CanceledException()
+        }
+
+        @Synchronized fun startNative(start: () -> Process): Process {
+            requireValid()
+            nativeStartEntered = true
+            return start()
+        }
+
+        @Synchronized fun bindGeneration(token: String) {
+            requireValid()
+            generationToken = token
+        }
+
+        @Synchronized fun revokeBeforeStart(expectedGenerationToken: String?): Boolean {
+            if (expectedGenerationToken != null && generationToken != expectedGenerationToken) return false
+            if (nativeStartEntered) return false
+            revoked = true
+            return true
+        }
+    }
+
+    @Volatile internal var runtimeAdmissionRevokedForTesting: ((String) -> Unit)? = null
     private val allowedConfigFilesByRequest =
         Collections.synchronizedMap(WeakHashMap<YoutubeDLRequest, MutableSet<File>>())
     private val initLock = Any()
@@ -359,7 +391,7 @@ sys.exit(exit_code)
             onNativeGenerationPrepared = onNativeGenerationPrepared,
             onProcessRegistered = onProcessRegistered,
         )
-        if (processId != null && !result.nativeQuiescent) {
+        if (!result.nativeQuiescent) {
             throw NativeExecutionFailure(
                 processId = processId,
                 finalization = result.nativeFinalization,
@@ -386,7 +418,155 @@ sys.exit(exit_code)
         callback: ((Float, Long, String) -> Unit)? = null,
         onNativeGenerationPrepared: ((String) -> Unit)? = null,
         onProcessRegistered: (() -> Unit)? = null,
+        preserveLibraryArguments: Boolean = false,
     ): ExecutionResult {
+        val ownedProcessId = processId ?: "consumer:${UUID.randomUUID()}"
+        val admission = RuntimeAdmission()
+        synchronized(idProcessMap) {
+            if (runtimeAdmissions.containsKey(ownedProcessId) || idProcessMap.containsKey(ownedProcessId)) {
+                throw YoutubeDLException("Process ID already exists")
+            }
+            runtimeAdmissions[ownedProcessId] = admission
+        }
+        try {
+            val runtime = runtimeLayout(context)
+            initializeRuntime(context, runtime)
+            if (requestRequiresMutation(request)) {
+                return YtdlpRuntimeAuthority.withMutation(context, admission::requireValid) { authority ->
+                    val result = executeNativeWithQuiescence(
+                        context, request, ownedProcessId,
+                        redirectErrorStream, callback, onNativeGenerationPrepared, onProcessRegistered,
+                        preserveLibraryArguments, admission,
+                    )
+                    if (result.nativeQuiescent) {
+                        val usable = executeUnderMutation(context, YoutubeDLRequest(emptyList()).apply {
+                            addOption("--version")
+                        }, authority)
+                        check(usable.exitCode == 0 && usable.out.isNotBlank()) {
+                            "yt-dlp self-update did not leave a verified usable runtime"
+                        }
+                    }
+                    result
+                }
+            }
+            return YtdlpRuntimeAuthority.withConsumer(context, ownedProcessId, admission::requireValid) {
+                executeNativeWithQuiescence(
+                    context, request, ownedProcessId,
+                    redirectErrorStream, callback, onNativeGenerationPrepared, onProcessRegistered,
+                    preserveLibraryArguments, admission,
+                )
+            }
+        } finally {
+            synchronized(idProcessMap) {
+                if (runtimeAdmissions[ownedProcessId] === admission) runtimeAdmissions.remove(ownedProcessId)
+            }
+        }
+    }
+
+    /** Preserve direct-library callers' request/config contract while adding exact native ownership. */
+    internal fun executeLibraryRequest(
+        context: Context,
+        request: YoutubeDLRequest,
+        callback: ((Float, Long, String) -> Unit)? = null,
+    ): YoutubeDLResponse {
+        val result = executeWithQuiescence(context, request, callback = callback,
+            preserveLibraryArguments = true)
+        if (!result.nativeQuiescent) throw NativeExecutionFailure(null, result.nativeFinalization,
+            IllegalStateException("Metadata native generation remains unresolved"))
+        return result.response
+    }
+
+    /** Only the exact exclusive owner may run native self-update/validation. */
+    internal fun executeUnderMutation(
+        context: Context,
+        request: YoutubeDLRequest,
+        authority: YtdlpRuntimeAuthority.Mutation,
+    ): YoutubeDLResponse {
+        authority.requireOwned()
+        val result = executeNativeWithQuiescence(
+            context, request, "mutation:${UUID.randomUUID()}", false, null, null, null, true,
+        )
+        if (!result.nativeQuiescent) {
+            throw NativeExecutionFailure(null, result.nativeFinalization,
+                IllegalStateException("Mutation native generation remains unresolved"))
+        }
+        return result.response
+    }
+
+    internal fun validateRuntimeUnderMutation(context: Context, authority: YtdlpRuntimeAuthority.Mutation) {
+        val usable = executeUnderMutation(context, YoutubeDLRequest(emptyList()).apply { addOption("--version") }, authority)
+        check(usable.exitCode == 0 && usable.out.isNotBlank()) {
+            "yt-dlp runtime remains unverified after mutation"
+        }
+    }
+
+    private fun initializeRuntime(context: Context, runtime: RuntimeLayout) {
+        if (runtime.pythonBinary.isFile && runtime.quickJsBinary.isFile && runtime.ytdlpBinary.isFile) return
+        YtdlpRuntimeAuthority.withMutation(context) {
+            ensureRuntimeInitialized(context, runtime.pythonBinary, runtime.quickJsBinary, runtime.ytdlpBinary)
+        }
+    }
+
+    /** Alias/config producers are conservative mutation candidates, never readers. */
+    private fun requestRequiresMutation(request: YoutubeDLRequest): Boolean {
+        fun containsMutation(tokens: List<String>, insideConfig: Boolean = false): Boolean {
+            var index = 0
+            while (index < tokens.size) {
+                val token = tokens[index]
+                val ownership = YtdlpOptionOwnership.inspect(tokens, index)
+                if (ownership.optionTerminator) break
+                if (ownership.canonicalName in setOf("--update", "--update-to", "--alias") ||
+                    (token.startsWith("-") && !token.startsWith("--") &&
+                        token.substringBefore(ownership.inlineValue ?: "\u0000").contains('U'))
+                ) return true
+                if (ownership.canonicalName == "--config-locations") {
+                    if (insideConfig) return true
+                    val allowed = synchronized(allowedConfigFilesByRequest) {
+                        allowedConfigFilesByRequest[request]?.toSet().orEmpty()
+                    }
+                    for (path in ownership.values) {
+                        val file = File(path).canonicalFile
+                        // External/raw library config is not a proven immutable
+                        // ordinary request carrier. Exclude other consumers.
+                        if (file !in allowed) return true
+                        val configured = YtdlpCommandTokenizer.tokenize(file.readText())
+                            ?: error("yt-dlp config cannot be classified for runtime authority")
+                        if (containsMutation(configured, insideConfig = true)) return true
+                    }
+                }
+                index += ownership.nextIndexDelta.coerceAtLeast(1)
+            }
+            return false
+        }
+        return containsMutation(request.buildCommand())
+    }
+
+    /** Defaults from the exact 0.18.1 library execute contract, without rewriting caller options. */
+    private fun libraryArguments(request: YoutubeDLRequest, runtime: RuntimeLayout): List<String> {
+        if (!request.hasOption("--cache-dir") || request.getOption("--cache-dir") == null) {
+            request.addOption("--no-cache-dir")
+        }
+        if (request.buildCommand().contains("libaria2c.so")) {
+            request.addOption("--external-downloader-args", "aria2c:--summary-interval=1")
+            request.addOption("--external-downloader-args", "aria2c:--ca-certificate=${runtime.sslCertificate.absolutePath}")
+        }
+        request.addOption("--js-runtimes", "quickjs:${runtime.quickJsBinary.absolutePath}")
+        request.addOption("--ffmpeg-location", runtime.ffmpegBinary.absolutePath)
+        return request.buildCommand()
+    }
+
+    private fun executeNativeWithQuiescence(
+        context: Context,
+        request: YoutubeDLRequest,
+        processId: String?,
+        redirectErrorStream: Boolean,
+        callback: ((Float, Long, String) -> Unit)?,
+        onNativeGenerationPrepared: ((String) -> Unit)?,
+        onProcessRegistered: (() -> Unit)?,
+        preserveLibraryArguments: Boolean,
+        admission: RuntimeAdmission? = null,
+    ): ExecutionResult {
+        admission?.requireValid()
         val runtime = runtimeLayout(context)
         val nativeBinDir = runtime.nativeBinDir
         val pythonPath = runtime.pythonBinary
@@ -400,16 +580,21 @@ sys.exit(exit_code)
         val envSslCertFile = runtime.sslCertificate.absolutePath
         val envPythonHome = runtime.pythonHome.absolutePath
 
-        ensureRuntimeInitialized(context, pythonPath, quickJsPath, ytdlpPath)
         checkRequiredBinary(pythonPath, "python")
         checkRequiredBinary(quickJsPath, "quickjs")
         checkRequiredBinary(ytdlpPath, "yt-dlp")
 
-        val args = sanitizeArguments(
+        val args = (if (preserveLibraryArguments) libraryArguments(request, runtime) else sanitizeArguments(
             context,
             request.buildCommand(),
             takeAllowedAppGeneratedConfigFiles(request)
-        )
+        )).toMutableList()
+        if (!YtdlpRuntimeAuthority.mutationOwnedByCurrentThread()) {
+            // Config/alias expansion must not turn ordinary consumer authority
+            // into self-update. Command-line options override loaded configs.
+            val terminator = args.indexOf("--").takeIf { it >= 0 } ?: args.size
+            args.add(terminator, "--no-update")
+        }
         val command = mutableListOf<String>()
         command.add(pythonPath.absolutePath)
         command.add(ytdlpPath.absolutePath)
@@ -503,14 +688,16 @@ sys.exit(exit_code)
             // failure is handled by the same marker recovery path below, so
             // launch is never allowed with an unbound generation.
             descendantBarrier?.let { prepared ->
+                admission?.bindGeneration(prepared.generationToken)
                 onNativeGenerationPrepared?.invoke(prepared.generationToken)
             }
-            process = try {
-                processStarterOverrideForTesting?.invoke(
+            fun startNativeProcess(): Process = processStarterOverrideForTesting?.invoke(
                     processCommand.toList(),
                     processBuilder.environment().toMap(),
                     redirectErrorStream,
                 ) ?: processBuilder.start()
+            process = try {
+                admission?.startNative(::startNativeProcess) ?: startNativeProcess()
             } catch (e: IOException) {
                 throw YoutubeDLException(e)
             }
@@ -658,7 +845,7 @@ sys.exit(exit_code)
                 return false
             }
         }
-        return destroyTrackedProcess(processId)
+        return destroyTrackedProcess(processId, expectedGenerationToken)
     }
 
     /** Returns whether this exact execution still has a registered yt-dlp process. */
@@ -746,9 +933,19 @@ sys.exit(exit_code)
         return result
     }
 
-    private fun destroyTrackedProcess(processId: String): Boolean {
+    private fun destroyTrackedProcess(processId: String, expectedGenerationToken: String? = null): Boolean {
         val tracked = synchronized(idProcessMap) { idProcessMap[processId] }
         if (tracked == null) {
+            val pending = synchronized(idProcessMap) { runtimeAdmissions[processId] }
+            if (pending != null) {
+                if (!pending.revokeBeforeStart(expectedGenerationToken)) return false
+                runtimeAdmissionRevokedForTesting?.invoke(processId)
+                // Revocation consumed this exact launch right before native
+                // start. An already prepared marker still needs exact recovery.
+                if (!YtdlpNativeProcessBarrier.isConfigured()) return true
+                return runCatching { YtdlpNativeProcessBarrier.recover(
+                    YtdlpNativeProcessBarrier.markerFor(processId)) }.getOrDefault(false)
+            }
             if (synchronized(idProcessMap) { launchingProcessIds.contains(processId) }) {
                 // A live Java launcher still owns the right to create the
                 // exact generation.  Do not clear STARTING underneath it.

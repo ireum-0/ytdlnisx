@@ -34,10 +34,7 @@ class YoutubeDLCompatProcessCommandProductionTest {
             mkdirs()
         }
         val python = File(root, "bundled-python").apply { writeText("test") }
-        val ytdlp = File(
-            appContext.noBackupFilesDir,
-            "youtubedl-android/yt-dlp/yt-dlp",
-        ).apply {
+        val ytdlp = File(root, "yt-dlp").apply {
             parentFile!!.mkdirs()
             writeText("test")
         }

@@ -95,7 +95,14 @@ class YtdlpNativeProcessBarrierStateMachineTest {
         )
         markers += marker
 
-        assertTrue(YtdlpNativeProcessBarrier.recoverDownloadExecution(918003L, "E1"))
+        val preRecovery = directRoleRecoveryDiagnostics(token, processId, process, marker)
+        val recovered = YtdlpNativeProcessBarrier.recoverDownloadExecution(918003L, "E1")
+        val postRecovery = directRoleRecoveryDiagnostics(token, processId, process, marker)
+        assertTrue(
+            "recovered=$recovered, token=$token, processId=$processId, " +
+                "pre=[$preRecovery], post=[$postRecovery]",
+            recovered,
+        )
         assertFalse(isAliveCompat(process))
         assertFalse(marker.exists())
     }
@@ -264,6 +271,28 @@ class YtdlpNativeProcessBarrierStateMachineTest {
             YtdlpNativeProcessBarrier.observeGeneration(processId) is
                 YtdlpNativeProcessBarrier.GenerationObservation.EXACT_GENERATION,
         )
+    }
+
+    private fun directRoleRecoveryDiagnostics(
+        token: String,
+        processId: String,
+        process: Process,
+        marker: File,
+    ): String {
+        val taggedPid = runCatching { findTaggedPid(token) }
+        val processAlive = runCatching { isAliveCompat(process) }
+        val markerExists = runCatching { marker.exists() }
+        val markerContents = when (markerExists.getOrNull()) {
+            true -> runCatching { marker.readText(Charsets.UTF_8) }.toString()
+            false -> "<ABSENT>"
+            null -> "<NOT_READ: marker existence read failed>"
+        }
+        val generationObservation = runCatching {
+            YtdlpNativeProcessBarrier.observeGeneration(processId)
+        }
+        return "taggedPid=$taggedPid, processAlive=$processAlive, " +
+            "markerExists=$markerExists, markerContents=[$markerContents], " +
+            "generationObservation=$generationObservation"
     }
 
     private fun downloadProcessId(): String =

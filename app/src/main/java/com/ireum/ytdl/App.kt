@@ -245,7 +245,9 @@ class App : Application() {
     @Throws(YoutubeDLException::class)
     private fun initLibraries() {
         ensureRuntimeToolsInstalled()
-        YoutubeDL.getInstance().init(this)
+        com.ireum.ytdl.util.extractors.ytdlp.YtdlpRuntimeAuthority.withMutation(this) {
+            YoutubeDL.getInstance().init(this)
+        }
         // Do not initialize youtubedl-android FFmpeg wrapper here.
         // Its packaged libffmpeg.so can hard-crash on some builds before hard-sub fallback runs.
         Log.i(TAG, "Skipping FFmpeg wrapper init; hard-sub uses runtime executable fallback path")
