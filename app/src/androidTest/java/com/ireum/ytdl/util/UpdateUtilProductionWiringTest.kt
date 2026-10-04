@@ -374,7 +374,11 @@ class UpdateUtilProductionWiringTest {
             withTimeout(30_000) { committed.await() }
             owner.stop()
             assertEquals(1, calls.get())
-            assertEquals(1, db.downloadDao.getDownloadsCountByStatus(listOf("Active", "Queued")))
+            val recovered = db.downloadDao.getDownloadById(activeId)
+            assertEquals("Queued", recovered.status)
+            assertEquals("", recovered.executionId)
+            assertFalse(recovered.status in listOf("Active", "PostProcessing"))
+            assertEquals("Queued", db.downloadDao.getDownloadById(queuedId).status)
         } finally {
             recoveryAllowed.complete(Unit)
             owner.stop()
