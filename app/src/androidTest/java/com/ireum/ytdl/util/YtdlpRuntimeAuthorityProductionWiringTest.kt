@@ -430,9 +430,172 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
     }
 
 
+
+    @Test
+    fun anonymousLibraryMutationUsesMutationNativeIdentity() = authorityTest {
+        val observed = AtomicReference<Pair<String, String>>()
+        YoutubeDLCompat.processStarterOverrideForTesting = { command, environment, redirect ->
+            if (command.contains("--update-to")) {
+                assertTrue(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+                val exact = observePreparedRequest(environment)
+                assertTrue(exact.first.startsWith("mutation:"))
+                assertTrue(YtdlpNativeProcessBarrier.markerFor(exact.first).name.startsWith("mutation_"))
+                observed.set(exact)
+            }
+            ProcessBuilder(command).redirectErrorStream(redirect).apply { environment().putAll(environment) }.start()
+        }
+        val response = withContext(Dispatchers.IO) {
+            YoutubeDLCompat.executeLibraryRequest(context,
+                YoutubeDLRequest(emptyList()).apply { addOption("--update-to", "updater04/native-fixture") })
+        }
+        val exact = requireNotNull(observed.get())
+        assertEquals(0, response.exitCode)
+        assertEquals(exact.first, File(native.root, "update-ready").readText())
+        assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.second))
+        assertFalse(YtdlpNativeProcessBarrier.markerFor(exact.first).exists())
+        assertTrue(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+        requireVersion("fixture-v2")
+    }
+
+    @Test
+    fun anonymousOrdinaryLibraryRequestRemainsConsumerScoped() = authorityTest {
+        val observed = AtomicReference<Pair<String, String>>()
+        YoutubeDLCompat.processStarterOverrideForTesting = { command, environment, redirect ->
+            assertFalse(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+            val exact = observePreparedRequest(environment)
+            assertTrue(exact.first.startsWith("consumer:"))
+            assertTrue(YtdlpNativeProcessBarrier.markerFor(exact.first).name.startsWith("consumer_"))
+            observed.set(exact)
+            ProcessBuilder(command).redirectErrorStream(redirect).apply { environment().putAll(environment) }.start()
+        }
+        requireVersion("fixture-v1")
+        val exact = requireNotNull(observed.get())
+        assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.second))
+        assertFalse(YtdlpNativeProcessBarrier.markerFor(exact.first).exists())
+    }
+
+    @Test
+    fun mutationClassifiedRequestPreservesExplicitProcessIdentity() = authorityTest {
+        val identity = "download:" + runtimeAuthorityDownloadIds.incrementAndGet() + ":" + UUID.randomUUID()
+        val observed = AtomicReference<Pair<String, String>>()
+        val prepared = AtomicReference<String>()
+        val registered = AtomicInteger()
+        YoutubeDLCompat.processStarterOverrideForTesting = { command, environment, redirect ->
+            if (command.contains("--update-to")) {
+                assertTrue(YtdlpRuntimeAuthority.mutationOwnedByCurrentThread())
+                val exact = observePreparedRequest(environment)
+                assertEquals(identity, exact.first)
+                assertEquals(prepared.get(), exact.second)
+                assertTrue(YtdlpNativeProcessBarrier.markerFor(identity).name.startsWith("download_"))
+                observed.set(exact)
+            }
+            ProcessBuilder(command).redirectErrorStream(redirect).apply { environment().putAll(environment) }.start()
+        }
+        val response = withContext(Dispatchers.IO) {
+            YoutubeDLCompat.execute(context,
+                YoutubeDLRequest(emptyList()).apply { addOption("--update-to", "updater04/native-fixture") },
+                processId = identity,
+                onNativeGenerationPrepared = { prepared.set(it) },
+                onProcessRegistered = {
+                    assertEquals(identity, requireNotNull(observed.get()).first)
+                    assertTrue(YoutubeDLCompat.hasProcessById(identity))
+                    registered.incrementAndGet()
+                })
+        }
+        val exact = requireNotNull(observed.get())
+        assertEquals(0, response.exitCode)
+        assertEquals(1, registered.get())
+        assertEquals(identity, File(native.root, "update-ready").readText())
+        assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.second))
+        assertFalse(YoutubeDLCompat.hasProcessById(identity))
+        assertTrue(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+    }
+
+    private fun observePreparedRequest(environment: Map<String, String>): Pair<String, String> {
+        val identity = requireNotNull(environment["YTDLNISX_PROCESS_ID"])
+        val token = requireNotNull(environment["YTDLNISX_NATIVE_GENERATION"])
+        assertTrue("Real launch must have a durable prepared marker",
+            YtdlpNativeProcessBarrier.markerFor(identity).isFile)
+        assertEquals(token, YtdlpNativeProcessBarrier.generationTokenFor(identity))
+        // Reuse exact-generation teardown for these test-owned native requests.
+        mutationGenerations += identity to token
+        return identity to token
+    }
+
+    @Test
+    fun retainedAnonymousMutationRecoversThroughExistingSelectorAndAllowsLaterProgress() = authorityTest {
+        val exact = establishUnresolvedMutation(anonymousLibraryRequest = true)
+        val marker = YtdlpNativeProcessBarrier.markerFor(exact.identity)
+        assertTrue(marker.name.startsWith("mutation_"))
+        val nativeBefore = marker.readText()
+        assertTrue(nativeBefore.contains(exact.token))
+        val publication = YtdlpNativeProcessBarrier.markerFor(YtdlpNativeProcessBarrier.RUNTIME_MUTATION_PROCESS_ID)
+        val publicationBefore = publication.readText()
+        val publicationToken = requireNotNull(
+            YtdlpNativeProcessBarrier.generationTokenFor(YtdlpNativeProcessBarrier.RUNTIME_MUTATION_PROCESS_ID))
+        requireReaderBlocked(exact)
+        YtdlpRuntimeAuthority.resetProcessLocalAuthorityForTesting()
+        assertEquals(nativeBefore, marker.readText())
+        assertEquals(publicationBefore, publication.readText())
+        requireReaderBlocked(exact)
+
+        YtdlpNativeProcessBarrier.markerReadFailurePathForTesting = null
+        val recoveredAdmissions = AtomicInteger()
+        val validationLaunches = AtomicInteger()
+        val readerLaunches = AtomicInteger()
+        YtdlpRuntimeAuthority.mutationAdmittedForTesting = {
+            // This hook follows the existing selector and exact native absence proof.
+            assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.token))
+            assertFalse(marker.exists())
+            assertEquals(publicationToken,
+                YtdlpNativeProcessBarrier.generationTokenFor(YtdlpNativeProcessBarrier.RUNTIME_MUTATION_PROCESS_ID))
+            assertFalse(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+            recoveredAdmissions.incrementAndGet()
+        }
+        YoutubeDLCompat.processStarterOverrideForTesting = { command, environment, redirect ->
+            assertTrue(command.contains("--version"))
+            if (YtdlpRuntimeAuthority.mutationOwnedByCurrentThread()) {
+                assertTrue(environment["YTDLNISX_PROCESS_ID"]?.startsWith("mutation:") == true)
+                assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.token))
+                assertEquals(publicationToken,
+                    YtdlpNativeProcessBarrier.generationTokenFor(YtdlpNativeProcessBarrier.RUNTIME_MUTATION_PROCESS_ID))
+                assertFalse(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+                validationLaunches.incrementAndGet()
+            } else {
+                assertTrue(environment["YTDLNISX_PROCESS_ID"]?.startsWith("consumer:") == true)
+                assertTrue(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+                readerLaunches.incrementAndGet()
+            }
+            ProcessBuilder(command).redirectErrorStream(redirect).apply { environment().putAll(environment) }.start()
+        }
+        try {
+            // Ordinary production admission must recover the old mutation itself:
+            // no direct recoverGeneration shortcut supplies the progress proof.
+            requireVersion("fixture-v1")
+        } finally {
+            YoutubeDLCompat.processStarterOverrideForTesting = null
+            YtdlpRuntimeAuthority.mutationAdmittedForTesting = null
+        }
+        assertEquals(1, recoveredAdmissions.get())
+        assertEquals(1, validationLaunches.get())
+        assertEquals(1, readerLaunches.get())
+        waitFor { !exact.process.isAlive }
+        assertTrue(YtdlpNativeProcessBarrier.proveGenerationAbsent(exact.token))
+        assertFalse(marker.exists())
+        assertFalse(publication.exists())
+        assertTrue(YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context))
+        File(native.root, "update-hold").delete()
+        val util = UpdateUtil(context)
+        util.selectSource("updater04/native-fixture", "fixture")
+        assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE,
+            withContext(Dispatchers.IO) { util.updateYoutubeDL() }.status)
+        requireVersion("fixture-v2")
+    }
+
+
     private data class UnresolvedMutation(val identity: String, val token: String, val process: Process)
 
-    private suspend fun establishUnresolvedMutation(): UnresolvedMutation {
+    private suspend fun establishUnresolvedMutation(anonymousLibraryRequest: Boolean = false): UnresolvedMutation {
         val util = UpdateUtil(context)
         util.selectSource("updater04/native-fixture", "fixture")
         File(native.root, "update-hold").writeText("owned")
@@ -457,7 +620,16 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
             throw IOException("Lost Java launch acknowledgement after real native entry")
         }
         val failure = try {
-            withContext(Dispatchers.IO) { runCatching { util.updateYoutubeDL() }.exceptionOrNull() }
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (anonymousLibraryRequest) {
+                        YoutubeDLCompat.executeLibraryRequest(context,
+                            YoutubeDLRequest(emptyList()).apply { addOption("--update-to", "updater04/native-fixture") })
+                    } else {
+                        util.updateYoutubeDL()
+                    }
+                }.exceptionOrNull()
+            }
         } finally {
             YoutubeDLCompat.processStarterOverrideForTesting = null
         }

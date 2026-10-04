@@ -420,7 +420,13 @@ sys.exit(exit_code)
         onProcessRegistered: (() -> Unit)? = null,
         preserveLibraryArguments: Boolean = false,
     ): ExecutionResult {
-        val ownedProcessId = processId ?: "consumer:${UUID.randomUUID()}"
+        val requiresMutation = requestRequiresMutation(request)
+        // Anonymous writers must share the existing mutation-native recovery namespace.
+        val ownedProcessId = processId ?: if (requiresMutation) {
+            "mutation:${UUID.randomUUID()}"
+        } else {
+            "consumer:${UUID.randomUUID()}"
+        }
         val admission = RuntimeAdmission()
         synchronized(idProcessMap) {
             if (runtimeAdmissions.containsKey(ownedProcessId) || idProcessMap.containsKey(ownedProcessId)) {
@@ -431,7 +437,7 @@ sys.exit(exit_code)
         try {
             val runtime = runtimeLayout(context)
             initializeRuntime(context, runtime)
-            if (requestRequiresMutation(request)) {
+            if (requiresMutation) {
                 return YtdlpRuntimeAuthority.withMutation(context, admission::requireValid) { authority ->
                     val result = executeNativeWithQuiescence(
                         context, request, ownedProcessId,
