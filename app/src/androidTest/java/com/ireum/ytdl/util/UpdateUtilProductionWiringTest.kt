@@ -53,6 +53,8 @@ class UpdateUtilProductionWiringTest {
     private lateinit var context: Context
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var originalValues: Map<String, Any?>
+    private lateinit var provenancePreferences: android.content.SharedPreferences
+    private lateinit var originalProvenanceValues: Map<String, *>
     private lateinit var native: RuntimeAuthorityNativeFixture
     private val startupOwners = mutableListOf<StartupYtdlpUpdateOwner>()
     private val completionListeners = mutableListOf<android.content.SharedPreferences.OnSharedPreferenceChangeListener>()
@@ -76,18 +78,23 @@ class UpdateUtilProductionWiringTest {
         App.instance.startupYtdlpUpdater.stop()
         awaitRuntimeReadiness()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        provenancePreferences = UpdateUtil.destinationProvenancePreferences(context)
+        originalProvenanceValues = provenancePreferences.all.toMap()
         originalValues = ownedPreferenceKeys.associateWith { key ->
             if (!preferences.contains(key)) null else if (key == "auto_update_ytdlp") {
                 preferences.getBoolean(key, false)
             } else if (key == "ytdlp_provenance_epoch") {
-                preferences.getInt(key, 0)
+                preferences.all[key]
             } else if (key.endsWith("_generation")) {
                 preferences.getLong(key, 0)
             } else preferences.getString(key, null)
         }
-        val editor = preferences.edit()
-        ownedPreferenceKeys.forEach(editor::remove)
-        assertTrue("test preference reset must persist", editor.commit())
+        RestoreMutationAdmission.withOrdinaryMutation(context) {
+            assertTrue(provenancePreferences.edit().clear().commit())
+            val editor = preferences.edit()
+            ownedPreferenceKeys.forEach(editor::remove)
+            assertTrue("test preference reset must persist", editor.commit())
+        }
         UpdateUtil.updaterForTesting = null
         UpdateUtil.updateRequestAdmittedForTesting = null
         native = RuntimeAuthorityNativeFixture(context).also { it.install() }
@@ -106,16 +113,11 @@ class UpdateUtilProductionWiringTest {
         UpdateUtil.updateRequestAdmittedForTesting = null
         val editor = preferences.edit()
         ownedPreferenceKeys.forEach(editor::remove)
-        originalValues.forEach { (key, value) ->
-            when (value) {
-                is String -> editor.putString(key, value)
-                is Long -> editor.putLong(key, value)
-                is Int -> editor.putInt(key, value)
-                is Boolean -> editor.putBoolean(key, value)
-                null -> Unit
-            }
-        }
+        originalValues.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
         assertTrue("test preferences must be restored", editor.commit())
+        val localEditor = provenancePreferences.edit().clear()
+        originalProvenanceValues.forEach { (key, value) -> putPreferenceValue(localEditor, key, value) }
+        assertTrue("private provenance state must be restored", localEditor.commit())
     }
 
     private suspend fun awaitRuntimeReadiness() {
@@ -625,7 +627,7 @@ class UpdateUtilProductionWiringTest {
             val calls = AtomicInteger()
             UpdateUtil.updaterForTesting = { _, source ->
                 assertEquals("nightly", source)
-                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
                 calls.incrementAndGet()
                 UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-nightly")
             }
@@ -643,7 +645,7 @@ class UpdateUtilProductionWiringTest {
                 withTimeout(30_000) { committed.await() }
                 owner.stop()
                 assertEquals(1, calls.get())
-                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals(1, provenancePreferences.getInt("epoch", 0))
                 assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
             } finally {
                 ready.complete(Unit)
@@ -671,7 +673,7 @@ class UpdateUtilProductionWiringTest {
                 assertEquals("master", source)
                 assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
                 assertEquals("Restored Master", preferences.getString("ytdlp_source_label", null))
-                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
                 assertFalse(preferences.contains("ytdlp_committed_result"))
                 UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-master")
             }
@@ -707,7 +709,7 @@ class UpdateUtilProductionWiringTest {
                 owner.stop()
                 assertEquals(listOf("master"), calls.toList())
                 assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
-                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals(1, provenancePreferences.getInt("epoch", 0))
                 assertEquals("DONE:destination-master", preferences.getString("ytdlp_committed_result", null))
             } finally {
                 releaseReset.countDown()
@@ -721,9 +723,38 @@ class UpdateUtilProductionWiringTest {
         }
     }
 
-    private suspend fun reproveLegacyGraph(includePending: Boolean) {
+    @Test
+    fun collidingDefaultEpochAndForeignCommittedProofRequireFreshDestinationProof() = runBlocking {
+        reproveLegacyGraph(includePending = false, legacyEpoch = 1)
+    }
+
+    @Test
+    fun collidingDefaultEpochAndForeignPendingProofRequireFreshDestinationProof() = runBlocking {
+        reproveLegacyGraph(includePending = true, legacyEpoch = 1)
+    }
+
+    @Test
+    fun defaultEpochFrom56e0243AlsoRequiresOneTimeReproof() = runBlocking {
+        reproveLegacyGraph(includePending = false, legacyEpoch = 1,
+            legacyResult = "DONE:destination-nightly")
+    }
+
+    @Test
+    fun supportedLegacyEpochStorageTypesConvergeWithoutAnotherProcess() = runBlocking {
+        listOf<Any>(-1, 2, "1", 1L, true, 1.0f, setOf("1")).forEach { legacyEpoch ->
+            reproveLegacyGraph(includePending = false, legacyEpoch = legacyEpoch)
+        }
+    }
+
+    private suspend fun reproveLegacyGraph(
+        includePending: Boolean,
+        legacyEpoch: Any? = null,
+        legacyResult: String = "DONE:foreign-runtime",
+    ) {
         withPreferenceSnapshot {
-            seedLegacyProvenance(includePending)
+            seedLegacyProvenance(includePending, legacyEpoch, legacyResult)
+            assertTrue("old-state fixture must not publish the independent discriminator",
+                provenancePreferences.all.isEmpty())
             val update = UpdateUtil(context)
             val desired = UpdateUtil.DesiredSource("nightly", 83L)
             assertEquals(desired, update.desiredSource())
@@ -732,12 +763,12 @@ class UpdateUtilProductionWiringTest {
                 update.migrateDestinationProvenance()
                 assertNoSourceProof()
                 assertEquals(desired, update.desiredSource())
-                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals(1, provenancePreferences.getInt("epoch", 0))
             }
             val calls = AtomicInteger()
             UpdateUtil.updaterForTesting = { _, source ->
                 assertEquals("nightly", source)
-                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
                 assertFalse(preferences.contains("ytdlp_committed_result"))
                 assertEquals(83L, preferences.getLong("ytdlp_pending_source_generation", -1L))
                 calls.incrementAndGet()
@@ -752,7 +783,9 @@ class UpdateUtilProductionWiringTest {
                 assertEquals(desired, update.desiredSource())
                 assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
                 assertEquals("DONE:destination-nightly", preferences.getString("ytdlp_committed_result", null))
-                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals(1, provenancePreferences.getInt("epoch", 0))
+                assertFalse(preferences.contains("ytdlp_provenance_epoch"))
+                val localFresh = provenancePreferences.all.toMap()
                 val fresh = preferences.all.filterKeys { it in ownedPreferenceKeys }
                 update.migrateDestinationProvenance()
                 assertEquals("migration must retain fresh destination proof", fresh,
@@ -768,6 +801,12 @@ class UpdateUtilProductionWiringTest {
                     secondOwner.stop()
                     assertEquals(1, calls.get())
                     assertEquals(fresh, preferences.all.filterKeys { it in ownedPreferenceKeys })
+                    listOf(false, true).forEach { reset ->
+                        restoreSource(importedSettings("nightly", "User Nightly"), reset)
+                        assertEquals(localFresh, provenancePreferences.all)
+                        assertTrue(update.startupGenerationIsCommitted(desired))
+                    }
+                    assertEquals(1, calls.get())
                 } finally {
                     secondOwner.stop()
                 }
@@ -778,16 +817,21 @@ class UpdateUtilProductionWiringTest {
     }
 
     // Direct pre-change storage, deliberately bypassing all current writers.
-    private fun seedLegacyProvenance(includePending: Boolean) {
+    private fun seedLegacyProvenance(
+        includePending: Boolean,
+        legacyEpoch: Any? = null,
+        legacyResult: String = "DONE:foreign-runtime",
+    ) {
         val editor = preferences.edit()
             .putString("ytdlp_source", "nightly")
             .putString("ytdlp_source_label", "User Nightly")
             .putLong("ytdlp_source_generation", 83L)
             .putString("ytdlp_committed_source", "nightly")
             .putLong("ytdlp_committed_source_generation", 83L)
-            .putString("ytdlp_committed_result", "DONE:foreign-runtime")
+            .putString("ytdlp_committed_result", legacyResult)
             .remove("ytdlp_provenance_epoch")
             .putBoolean("auto_update_ytdlp", false)
+        putPreferenceValue(editor, "ytdlp_provenance_epoch", legacyEpoch)
         if (includePending) {
             editor.putString("ytdlp_pending_source", "nightly")
                 .putLong("ytdlp_pending_source_generation", 83L)
@@ -933,6 +977,7 @@ class UpdateUtilProductionWiringTest {
 
     private suspend fun withPreferenceSnapshot(block: suspend () -> Unit) {
         val snapshot = preferences.all.toMap()
+        val localSnapshot = provenancePreferences.all.toMap()
         try {
             block()
         } finally {
@@ -943,6 +988,9 @@ class UpdateUtilProductionWiringTest {
                 val editor = preferences.edit().clear()
                 snapshot.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
                 assertTrue("full preference graph must be restored", editor.commit())
+                val localEditor = provenancePreferences.edit().clear()
+                localSnapshot.forEach { (key, value) -> putPreferenceValue(localEditor, key, value) }
+                assertTrue("private provenance snapshot must be restored", localEditor.commit())
             }
         }
     }

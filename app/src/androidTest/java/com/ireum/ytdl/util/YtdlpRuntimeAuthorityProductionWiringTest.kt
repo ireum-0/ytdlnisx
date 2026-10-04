@@ -124,6 +124,8 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
     private lateinit var native: RuntimeAuthorityNativeFixture
     private lateinit var preferences: android.content.SharedPreferences
     private var originalValues = emptyMap<String, Any?>()
+    private lateinit var provenancePreferences: android.content.SharedPreferences
+    private var originalProvenanceValues = emptyMap<String, Any?>()
     private var ownsPreferences = false
     private val requests = ConcurrentHashMap<Long, UUID>()
     private class AttemptCleanup {
@@ -175,11 +177,13 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
         App.instance.startupYtdlpUpdater.stop()
         awaitAppStartup()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        provenancePreferences = UpdateUtil.destinationProvenancePreferences(context)
+        originalProvenanceValues = provenancePreferences.all.toMap()
         originalValues = keys.associateWith { key ->
             if (!preferences.contains(key)) null else when (key) {
                 "use_scheduler", "cache_downloads", "use_cookies", "log_downloads" -> preferences.getBoolean(key, false)
                 "concurrent_downloads" -> preferences.getInt(key, 1)
-                "ytdlp_provenance_epoch" -> preferences.getInt(key, 0)
+                "ytdlp_provenance_epoch" -> preferences.all[key]
                 "ytdlp_source_generation", "ytdlp_committed_source_generation", "ytdlp_pending_source_generation" -> preferences.getLong(key, 0)
                 else -> preferences.getString(key, null)
             }
@@ -260,9 +264,17 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
             is Long -> editor.putLong(key, value)
             is Int -> editor.putInt(key, value)
             is Boolean -> editor.putBoolean(key, value)
+            is Float -> editor.putFloat(key, value)
+            is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
             null -> Unit
         } }
         assertTrue("owned preferences must restore", editor.commit())
+        val localEditor = provenancePreferences.edit().clear()
+        originalProvenanceValues.forEach { (key, value) -> when (value) {
+            is Int -> localEditor.putInt(key, value)
+            else -> error("Unexpected private provenance type")
+        } }
+        assertTrue("private provenance state must restore", localEditor.commit())
     }
 
     @Test

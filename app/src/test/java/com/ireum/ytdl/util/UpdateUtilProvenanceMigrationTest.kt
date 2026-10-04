@@ -11,120 +11,180 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateUtilProvenanceMigrationTest {
-    private val epochKey = "ytdlp_provenance_epoch"
+    private val legacyEpochKey = "ytdlp_provenance_epoch"
+    private val localEpochKey = "epoch"
     private val proofKeys = setOf(
         "ytdlp_committed_source_generation", "ytdlp_committed_source", "ytdlp_committed_result",
         "ytdlp_pending_source_generation", "ytdlp_pending_source",
     )
 
     @Test
-    fun absentEpochRetiresLegacyProofDurablyBeforeCompletionAndPreservesIntent() {
-        val store = MemoryPreferences(legacyGraph())
-        UpdateUtil.retirePreChangeProvenance(store.preferences)
+    fun absentEpochRetiresLegacyProofDurablyBeforeIndependentCompletionAndPreservesIntent() {
+        val order = mutableListOf<String>()
+        val defaults = MemoryPreferences(legacyGraph(), afterDurableCommit = { order += "retired" })
+        val local = MemoryPreferences(emptyMap(), afterDurableCommit = {
+            assertTrue(defaults.disk.keys.none { it in proofKeys })
+            assertFalse(defaults.disk.containsKey(legacyEpochKey))
+            order += "published"
+        })
+        migrate(defaults, local)
 
-        assertEquals(2, store.commits)
-        assertTrue(store.durableImages[0].keys.none { it in proofKeys })
-        assertFalse(store.durableImages[0].containsKey(epochKey))
-        assertEquals(1, store.durableImages[1][epochKey])
-        assertTrue(store.disk.keys.none { it in proofKeys })
-        assertEquals("nightly", store.disk["ytdlp_source"])
-        assertEquals("User Nightly", store.disk["ytdlp_source_label"])
-        assertEquals(83L, store.disk["ytdlp_source_generation"])
-        assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(store.preferences))
+        assertEquals(listOf("retired", "published"), order)
+        assertEquals(1, defaults.commits)
+        assertEquals(1, local.commits)
+        assertMigrated(defaults, local)
+        assertEquals("User Nightly", defaults.disk["ytdlp_source_label"])
+        assertEquals(false, defaults.disk["auto_update_ytdlp"])
+        assertEquals("preserved", defaults.disk["unrelated_setting"])
     }
 
     @Test
-    fun oldEpochRetiresLegacyProofWithoutRebasingDesiredGeneration() {
-        val store = MemoryPreferences(legacyGraph() + (epochKey to 0))
-        UpdateUtil.retirePreChangeProvenance(store.preferences)
-
-        assertEquals(1, store.disk[epochKey])
-        assertEquals(83L, store.disk["ytdlp_source_generation"])
-        assertTrue(store.disk.keys.none { it in proofKeys })
+    fun oldDefaultEpochRetiresLegacyProofWithoutRebasingDesiredGeneration() {
+        assertLegacyRetired(legacyGraph() + (legacyEpochKey to 0))
     }
 
     @Test
-    fun currentEpochIsIdempotentAndPreservesFreshCommittedAndPendingProof() {
-        val current = legacyGraph() + mapOf(epochKey to 1, "ytdlp_committed_result" to "DONE:destination-runtime")
-        val store = MemoryPreferences(current)
-        UpdateUtil.retirePreChangeProvenance(store.preferences)
-        UpdateUtil.retirePreChangeProvenance(store.preferences)
+    fun collidingDefaultEpochCannotProveForeignCommittedRuntime() {
+        assertLegacyRetired(legacyGraph(includePending = false) + (legacyEpochKey to 1))
+    }
 
-        assertEquals(0, store.commits)
-        assertEquals(current, store.disk)
-        assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(store.preferences))
+    @Test
+    fun collidingDefaultEpochCannotProveForeignPendingRuntime() {
+        assertLegacyRetired(legacyGraph() + (legacyEpochKey to 1))
+    }
+
+    @Test
+    fun previouslyValidDefaultEpochProofStillRequiresIndependentReproof() {
+        assertLegacyRetired(legacyGraph(includePending = false) + mapOf(
+            legacyEpochKey to 1, "ytdlp_committed_result" to "DONE:destination-runtime",
+        ))
+    }
+
+    @Test
+    fun everySupportedDefaultEpochRepresentationIsRetiredWithoutTypedRead() {
+        listOf<Any>(-1, 2, "1", 1L, true, 1.0f, setOf("1")).forEach { representation ->
+            assertLegacyRetired(legacyGraph() + (legacyEpochKey to representation))
+        }
+    }
+
+    @Test
+    fun currentIndependentEpochIsIdempotentAndPreservesFreshProofAcrossReopening() {
+        val fresh = legacyGraph() + ("ytdlp_committed_result" to "DONE:destination-runtime")
+        val defaults = MemoryPreferences(fresh)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1))
+        migrate(defaults, local)
+        migrate(defaults, local)
+
+        assertEquals(0, defaults.commits)
+        assertEquals(0, local.commits)
+        assertEquals(fresh, defaults.disk)
+        assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        val reopenedDefaults = MemoryPreferences(defaults.disk)
+        val reopenedLocal = MemoryPreferences(local.disk)
+        migrate(reopenedDefaults, reopenedLocal)
+        assertEquals(0, reopenedDefaults.commits)
+        assertEquals(0, reopenedLocal.commits)
+        assertEquals(fresh, reopenedDefaults.disk)
     }
 
     @Test
     fun defaultSourceAbsenceDoesNotMaterializeIntentOrGeneration() {
-        val store = MemoryPreferences(legacyGraph().filterKeys {
+        val defaults = MemoryPreferences(legacyGraph().filterKeys {
             it !in setOf("ytdlp_source", "ytdlp_source_label", "ytdlp_source_generation")
         })
-        UpdateUtil.retirePreChangeProvenance(store.preferences)
+        val local = MemoryPreferences(emptyMap())
+        migrate(defaults, local)
 
-        assertFalse(store.disk.containsKey("ytdlp_source"))
-        assertFalse(store.disk.containsKey("ytdlp_source_label"))
-        assertFalse(store.disk.containsKey("ytdlp_source_generation"))
-        assertTrue(store.disk.keys.none { it in proofKeys })
-        assertEquals(1, store.disk[epochKey])
+        assertFalse(defaults.disk.containsKey("ytdlp_source"))
+        assertFalse(defaults.disk.containsKey("ytdlp_source_label"))
+        assertFalse(defaults.disk.containsKey("ytdlp_source_generation"))
+        assertTrue(defaults.disk.keys.none { it in proofKeys })
+        assertEquals(1, local.disk[localEpochKey])
     }
 
     @Test
-    fun failedRetirementCannotCompleteEpochAndRestartRetiresTheOriginalDiskGraph() {
+    fun failedRetirementCannotPublishLocalStateAndRestartRetiresOriginalDiskGraph() {
+        val legacy = legacyGraph() + (legacyEpochKey to 1)
+        val defaults = MemoryPreferences(legacy, failCommit = 1)
+        val local = MemoryPreferences(emptyMap())
+        val failure = runCatching { migrate(defaults, local) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(legacy, defaults.disk)
+        assertEquals(0, local.commits)
+        assertTrue(local.disk.isEmpty())
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        val reopenedDefaults = MemoryPreferences(defaults.disk)
+        val reopenedLocal = MemoryPreferences(local.disk)
+        migrate(reopenedDefaults, reopenedLocal)
+        assertMigrated(reopenedDefaults, reopenedLocal)
+    }
+
+    @Test
+    fun deathAfterDurableRetirementBeforeLocalPublicationReplaysSafely() {
+        val defaults = MemoryPreferences(legacyGraph() + (legacyEpochKey to "1"),
+            afterDurableCommit = { error("simulated process death after retirement") })
+        val local = MemoryPreferences(emptyMap())
+        val failure = runCatching { migrate(defaults, local) }.exceptionOrNull()
+
+        assertEquals("simulated process death after retirement", failure?.message)
+        assertTrue(defaults.disk.keys.none { it in proofKeys })
+        assertFalse(defaults.disk.containsKey(legacyEpochKey))
+        assertEquals(0, local.commits)
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        val reopenedDefaults = MemoryPreferences(defaults.disk)
+        val reopenedLocal = MemoryPreferences(local.disk)
+        migrate(reopenedDefaults, reopenedLocal)
+        assertMigrated(reopenedDefaults, reopenedLocal)
+    }
+
+    @Test
+    fun failedLocalPublicationIsUntrustedInMemoryAndBothRetryAndRestartAreSafe() {
+        val defaults = MemoryPreferences(legacyGraph() + (legacyEpochKey to 1))
+        val local = MemoryPreferences(emptyMap(), failCommit = 1)
+        val failure = runCatching { migrate(defaults, local) }.exceptionOrNull()
+
+        assertTrue(failure is IllegalStateException)
+        assertEquals(1, local.memory[localEpochKey])
+        assertTrue(local.disk.isEmpty())
+        assertTrue(defaults.disk.keys.none { it in proofKeys })
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        // The in-memory current value must not let a same-process retry skip
+        // confirmed publication. The failed commit affects only its first call.
+        migrate(defaults, local)
+        assertEquals(2, defaults.commits)
+        assertEquals(2, local.commits)
+        assertMigrated(defaults, local)
+
+        // A restart before that retry sees the retired graph and no local
+        // discriminator. It must republish safely rather than accept old proof.
+        val reopenedDefaults = MemoryPreferences(defaults.durableImages.first())
+        val reopenedLocal = MemoryPreferences(emptyMap())
+        migrate(reopenedDefaults, reopenedLocal)
+        assertMigrated(reopenedDefaults, reopenedLocal)
+    }
+
+    @Test
+    fun unsupportedFutureIndependentEpochFailsClosedWithoutErasingState() {
         val legacy = legacyGraph()
-        val store = MemoryPreferences(legacy, failCommit = 1)
-        val failure = runCatching { UpdateUtil.retirePreChangeProvenance(store.preferences) }.exceptionOrNull()
+        val defaults = MemoryPreferences(legacy)
+        val future = mapOf(localEpochKey to 2)
+        val local = MemoryPreferences(future)
+        val failure = runCatching { migrate(defaults, local) }.exceptionOrNull()
 
         assertTrue(failure is IllegalStateException)
-        assertEquals(1, store.commits)
-        assertEquals(legacy, store.disk)
-        assertFalse(store.memory.containsKey(epochKey))
-        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(store.preferences))
-        val reopened = MemoryPreferences(store.disk)
-        UpdateUtil.retirePreChangeProvenance(reopened.preferences)
-        assertEquals(1, reopened.disk[epochKey])
-        assertTrue(reopened.disk.keys.none { it in proofKeys })
-        assertEquals(83L, reopened.disk["ytdlp_source_generation"])
+        assertEquals(0, defaults.commits)
+        assertEquals(0, local.commits)
+        assertEquals(legacy, defaults.disk)
+        assertEquals(future, local.disk)
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
     }
 
     @Test
-    fun failedEpochPublicationStaysUntrustedInMemoryAndRecoversFromRetiredDiskGraph() {
-        val store = MemoryPreferences(legacyGraph(), failCommit = 2)
-        val failure = runCatching { UpdateUtil.retirePreChangeProvenance(store.preferences) }.exceptionOrNull()
-
-        assertTrue(failure is IllegalStateException)
-        assertEquals(1, store.memory[epochKey])
-        assertFalse(store.disk.containsKey(epochKey))
-        assertTrue(store.disk.keys.none { it in proofKeys })
-        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(store.preferences))
-        val reopened = MemoryPreferences(store.disk)
-        UpdateUtil.retirePreChangeProvenance(reopened.preferences)
-        assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(reopened.preferences))
-        assertEquals(1, reopened.disk[epochKey])
-        assertEquals(83L, reopened.disk["ytdlp_source_generation"])
-        val recovered = reopened.disk.toMap()
-        UpdateUtil.retirePreChangeProvenance(reopened.preferences)
-        assertEquals(2, reopened.commits)
-        assertEquals(recovered, reopened.disk)
-    }
-
-    @Test
-    fun unsupportedFutureEpochFailsClosedWithoutErasingItsState() {
-        val future = legacyGraph() + (epochKey to 2)
-        val store = MemoryPreferences(future)
-        val failure = runCatching { UpdateUtil.retirePreChangeProvenance(store.preferences) }.exceptionOrNull()
-
-        assertTrue(failure is IllegalStateException)
-        assertEquals(0, store.commits)
-        assertEquals(future, store.disk)
-        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(store.preferences))
-    }
-
-    @Test
-    fun epochIsDestinationLocalAndTypedRestoreCannotImportIt() {
-        assertFalse(BackupSettingsUtil.isPortablePreferenceKey(epochKey))
+    fun oldDefaultMarkerStillCannotBeExportedOrImportedByTypedRestore() {
+        assertFalse(BackupSettingsUtil.isPortablePreferenceKey(legacyEpochKey))
         val plan = BackupRestoreParser.fromTyped(RestoreAppDataItem(settings = listOf(
-            BackupSettingsItem(epochKey, "1", "Int"),
+            BackupSettingsItem(legacyEpochKey, "1", "Int"),
             BackupSettingsItem("ytdlp_source", "nightly", "String"),
             BackupSettingsItem("ytdlp_source_label", "User Nightly", "String"),
         )))
@@ -132,22 +192,49 @@ class UpdateUtilProvenanceMigrationTest {
             plan.data.settings.orEmpty().map { it.key }.toSet())
     }
 
-    // The old fixture is seeded directly; it never passes through a current writer.
-    private fun legacyGraph(): Map<String, Any?> = mapOf(
-        "ytdlp_source" to "nightly",
-        "ytdlp_source_label" to "User Nightly",
+    private fun assertLegacyRetired(graph: Map<String, Any?>) {
+        // Direct old-state storage; no current writer creates the fixture.
+        val defaults = MemoryPreferences(graph)
+        val local = MemoryPreferences(emptyMap())
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        migrate(defaults, local)
+        assertMigrated(defaults, local)
+        val retired = defaults.disk
+        migrate(defaults, local)
+        assertEquals(1, defaults.commits)
+        assertEquals(1, local.commits)
+        assertEquals(retired, defaults.disk)
+    }
+
+    private fun migrate(defaults: MemoryPreferences, local: MemoryPreferences) =
+        UpdateUtil.retirePreChangeProvenance(defaults.preferences, local.preferences)
+
+    private fun assertMigrated(defaults: MemoryPreferences, local: MemoryPreferences) {
+        assertTrue(defaults.disk.keys.none { it in proofKeys })
+        assertFalse(defaults.disk.containsKey(legacyEpochKey))
+        assertEquals("nightly", defaults.disk["ytdlp_source"])
+        assertEquals(83L, defaults.disk["ytdlp_source_generation"])
+        assertEquals(1, local.disk[localEpochKey])
+        assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+    }
+
+    // Direct pre-change preference graph, not produced by the current writer.
+    private fun legacyGraph(includePending: Boolean = true): Map<String, Any?> = mapOf(
+        "ytdlp_source" to "nightly", "ytdlp_source_label" to "User Nightly",
         "ytdlp_source_generation" to 83L,
         "ytdlp_committed_source_generation" to 83L,
-        "ytdlp_committed_source" to "nightly",
-        "ytdlp_committed_result" to "DONE:foreign-runtime",
-        "ytdlp_pending_source_generation" to 83L,
-        "ytdlp_pending_source" to "nightly",
-        "auto_update_ytdlp" to false,
-        "unrelated_setting" to "preserved",
-    )
+        "ytdlp_committed_source" to "nightly", "ytdlp_committed_result" to "DONE:foreign-runtime",
+        "auto_update_ytdlp" to false, "unrelated_setting" to "preserved",
+    ) + if (includePending) mapOf(
+        "ytdlp_pending_source_generation" to 83L, "ytdlp_pending_source" to "nightly",
+    ) else emptyMap()
 
-    /** Models Android's memory publication on a failed synchronous disk commit. */
-    private class MemoryPreferences(initial: Map<String, Any?>, private val failCommit: Int? = null) {
+    /** Separates each file's memory publication from its confirmed disk image. */
+    private class MemoryPreferences(
+        initial: Map<String, Any?>,
+        private val failCommit: Int? = null,
+        private val afterDurableCommit: (() -> Unit)? = null,
+    ) {
         var memory = initial.toMap()
             private set
         var disk = initial.toMap()
@@ -162,7 +249,14 @@ class UpdateUtilProvenanceMigrationTest {
         ) { _, method, args ->
             when (method.name) {
                 "getAll" -> memory.toMap()
-                "getInt" -> memory[args!![0] as String] ?: args[1]
+                "getInt" -> {
+                    val key = args!![0] as String
+                    if (!memory.containsKey(key)) args[1] else {
+                        val value = memory[key]
+                        if (value !is Int) throw ClassCastException("Non-Int value for " + key)
+                        value
+                    }
+                }
                 "edit" -> editor()
                 "toString" -> "MigrationMemoryPreferences"
                 else -> error("Unexpected preference method " + method.name)
@@ -187,6 +281,7 @@ class UpdateUtilProvenanceMigrationTest {
                         if (commits == failCommit) false else {
                             disk = memory.toMap()
                             durableImages += disk
+                            afterDurableCommit?.invoke()
                             true
                         }
                     }
