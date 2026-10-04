@@ -1,0 +1,32 @@
+manual_review_run: YES
+manual_review_run_status: FINAL
+manual_review_start_parent: e28a67489ae6a71d59150417ba56b5d4edbfcf9f
+review_parent_sha: d8f383eb9df53bc654d04432c6e4f1c5659cc058
+implementation_sha: e3ded5accb08064d84f5d2ff1d2ea84b61cf6254
+implementation_tree: 64c62411c0d458a4296333b2d1f12d91c1a2f536
+protocol_blob: 445f9cd6f2d57c47de88696a297ccc9dad23bfc5
+checklist_v7_blob: e758358ff6d8952470ef3b07f5b18fb26ed4c05c
+lens_policy_blob: 49600871d632fd8612bbabec80dfaa996afb54d3
+overall_verdict: NOT_CLEAN
+canonical_p0: 0
+canonical_p1: 0
+canonical_p2: 3
+canonical_open_roots: BUG-UPDATER-02,BUG-UPDATER-03,BUG-HISTORY-05
+new_finding_ids: NONE
+primary_deep_lens: L1 Durability & recovery
+l1: DEEP_FAIL
+l2: BASELINE_FAIL
+l3: BASELINE_PASS
+l4: BASELINE_FAIL
+l5: BASELINE_PASS
+l6: BASELINE_FAIL
+remaining_not_yet_deep: L2,L3,L4,L5,L6
+next_not_yet_deep_lens: L2 Identity & provenance
+bug_updater_02: OPEN_P2_PRE_E3_PERSISTED_PROVENANCE_MIGRATION_RESIDUAL
+bug_updater_03: OPEN_P2
+bug_history_05: OPEN_P2
+bug_updater_04: CLOSED
+persisted_prompt_status: VALID_REUSE_NO_CHANGE
+intermediate_checkpoint: review-runs/checkpoints/2026-10-04__e3ded5a__manual-v7-l1-intermediate.md
+intermediate_commit: d8f383eb9df53bc654d04432c6e4f1c5659cc058
+independent_execution: NOT_EXECUTED
