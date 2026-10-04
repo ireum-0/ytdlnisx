@@ -12,6 +12,7 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.BackupRestoreParser
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreOutcome
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
 import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
@@ -65,6 +66,7 @@ class UpdateUtilProductionWiringTest {
         "ytdlp_committed_result",
         "ytdlp_pending_source_generation",
         "ytdlp_pending_source",
+        "ytdlp_provenance_epoch",
         "auto_update_ytdlp",
     )
 
@@ -77,6 +79,8 @@ class UpdateUtilProductionWiringTest {
         originalValues = ownedPreferenceKeys.associateWith { key ->
             if (!preferences.contains(key)) null else if (key == "auto_update_ytdlp") {
                 preferences.getBoolean(key, false)
+            } else if (key == "ytdlp_provenance_epoch") {
+                preferences.getInt(key, 0)
             } else if (key.endsWith("_generation")) {
                 preferences.getLong(key, 0)
             } else preferences.getString(key, null)
@@ -93,6 +97,9 @@ class UpdateUtilProductionWiringTest {
     fun tearDown() {
         if (!::originalValues.isInitialized) return
         runBlocking { startupOwners.forEach { it.stop() } }
+        check(!RestoreGate.isRestoreInProgress(context)) {
+            "Active Restore evidence must not be overwritten by test teardown"
+        }
         completionListeners.forEach(preferences::unregisterOnSharedPreferenceChangeListener)
         if (::native.isInitialized) native.close()
         UpdateUtil.updaterForTesting = null
@@ -598,6 +605,198 @@ class UpdateUtilProductionWiringTest {
         listOf(false, true).forEach { startup -> inFlightRestoreSupersedesResult(reset = true, startup = startup) }
     }
 
+    @Test
+    fun startupMigratesLegacyMatchingCommittedProofAndReprovesWithAutomaticUpdatesOff() = runBlocking {
+        reproveLegacyGraph(includePending = false)
+    }
+
+    @Test
+    fun upgradeRetiresLegacyPendingProofAndTheNextStartupKeepsFreshProof() = runBlocking {
+        reproveLegacyGraph(includePending = true)
+    }
+
+    @Test
+    fun legacyProofCannotSatisfyStartupBeforePrerequisitesClearInThisProcess() = runBlocking {
+        withPreferenceSnapshot {
+            seedLegacyProvenance(includePending = false)
+            val enteredPrerequisites = CompletableDeferred<Unit>()
+            val ready = CompletableDeferred<Unit>()
+            val committed = committedGeneration("nightly", 83L)
+            val calls = AtomicInteger()
+            UpdateUtil.updaterForTesting = { _, source ->
+                assertEquals("nightly", source)
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                calls.incrementAndGet()
+                UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-nightly")
+            }
+            val owner = startupOwner(prerequisites = {
+                enteredPrerequisites.complete(Unit)
+                ready.await()
+            })
+            try {
+                withTimeout(10_000) { enteredPrerequisites.await() }
+                assertFalse(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 83L)))
+                assertFalse(preferences.contains("ytdlp_provenance_epoch"))
+                assertEquals("DONE:foreign-runtime", preferences.getString("ytdlp_committed_result", null))
+                assertEquals(0, calls.get())
+                ready.complete(Unit)
+                withTimeout(30_000) { committed.await() }
+                owner.stop()
+                assertEquals(1, calls.get())
+                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
+            } finally {
+                ready.complete(Unit)
+                owner.stop()
+            }
+        }
+    }
+
+    @Test
+    fun activeResetFencesMigrationAndItsRestoredIdentityOwnsFreshProof() = runBlocking {
+        withPreferenceSnapshot {
+            seedLegacyProvenance(includePending = true)
+            val prepared = CountDownLatch(1)
+            val releaseReset = CountDownLatch(1)
+            val prerequisiteEntered = CompletableDeferred<Unit>()
+            val committedB = committedGeneration("master", 84L)
+            val calls = CopyOnWriteArrayList<String>()
+            assertEquals(null, RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting)
+            RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
+                prepared.countDown()
+                check(releaseReset.await(60, TimeUnit.SECONDS)) { "prepared Restore latch was not released" }
+            }
+            UpdateUtil.updaterForTesting = { _, source ->
+                calls += source
+                assertEquals("master", source)
+                assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
+                assertEquals("Restored Master", preferences.getString("ytdlp_source_label", null))
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                assertFalse(preferences.contains("ytdlp_committed_result"))
+                UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-master")
+            }
+            val reset = async(Dispatchers.IO) {
+                SettingsViewModel(context as android.app.Application).restoreData(
+                    RestoreAppDataItem(settings = listOf(
+                        BackupSettingsItem("ytdlp_source", "master", "String"),
+                        BackupSettingsItem("ytdlp_source_label", "Restored Master", "String"),
+                        BackupSettingsItem("auto_update_ytdlp", "false", "Boolean"),
+                    )), context, resetData = true,
+                )
+            }
+            var owner: StartupYtdlpUpdateOwner? = null
+            try {
+                assertTrue("real Reset must own its durable PREPARED boundary", prepared.await(10, TimeUnit.SECONDS))
+                assertTrue(RestoreGate.isRestoreInProgress(context))
+                val failure = runCatching { UpdateUtil(context).migrateDestinationProvenance() }.exceptionOrNull()
+                assertTrue(failure is IllegalStateException)
+                assertEquals("Restore transaction is active", failure?.message)
+                assertFalse(preferences.contains("ytdlp_provenance_epoch"))
+                assertEquals("DONE:foreign-runtime", preferences.getString("ytdlp_committed_result", null))
+                owner = startupOwner(prerequisites = {
+                    prerequisiteEntered.complete(Unit)
+                    RestoreTransactionCoordinator.recover(context)
+                    check(!RestoreGate.isRestoreInProgress(context))
+                })
+                withTimeout(10_000) { prerequisiteEntered.await() }
+                assertEquals(emptyList<String>(), calls.toList())
+                assertFalse(preferences.contains("ytdlp_provenance_epoch"))
+                releaseReset.countDown()
+                assertTrue(withTimeout(45_000) { reset.await() } is RestoreOutcome.Completed)
+                withTimeout(30_000) { committedB.await() }
+                owner.stop()
+                assertEquals(listOf("master"), calls.toList())
+                assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
+                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                assertEquals("DONE:destination-master", preferences.getString("ytdlp_committed_result", null))
+            } finally {
+                releaseReset.countDown()
+                RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = null
+                try {
+                    withTimeout(45_000) { reset.await() }
+                } finally {
+                    owner?.stop()
+                }
+            }
+        }
+    }
+
+    private suspend fun reproveLegacyGraph(includePending: Boolean) {
+        withPreferenceSnapshot {
+            seedLegacyProvenance(includePending)
+            val update = UpdateUtil(context)
+            val desired = UpdateUtil.DesiredSource("nightly", 83L)
+            assertEquals(desired, update.desiredSource())
+            assertFalse(update.startupGenerationIsCommitted(desired))
+            if (includePending) {
+                update.migrateDestinationProvenance()
+                assertNoSourceProof()
+                assertEquals(desired, update.desiredSource())
+                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+            }
+            val calls = AtomicInteger()
+            UpdateUtil.updaterForTesting = { _, source ->
+                assertEquals("nightly", source)
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(preferences))
+                assertFalse(preferences.contains("ytdlp_committed_result"))
+                assertEquals(83L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                calls.incrementAndGet()
+                UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-nightly")
+            }
+            val committed = committedGeneration("nightly", 83L)
+            val firstOwner = startupOwner()
+            try {
+                withTimeout(30_000) { committed.await() }
+                firstOwner.stop()
+                assertEquals(1, calls.get())
+                assertEquals(desired, update.desiredSource())
+                assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
+                assertEquals("DONE:destination-nightly", preferences.getString("ytdlp_committed_result", null))
+                assertEquals(1, preferences.getInt("ytdlp_provenance_epoch", 0))
+                val fresh = preferences.all.filterKeys { it in ownedPreferenceKeys }
+                update.migrateDestinationProvenance()
+                assertEquals("migration must retain fresh destination proof", fresh,
+                    preferences.all.filterKeys { it in ownedPreferenceKeys })
+                val secondResult = CompletableDeferred<UpdateUtil.YTDLPUpdateStatus>()
+                val secondOwner = startupOwner(completed = { observed, result ->
+                    assertEquals(desired, observed)
+                    secondResult.complete(result.status)
+                })
+                try {
+                    assertEquals(UpdateUtil.YTDLPUpdateStatus.ALREADY_UP_TO_DATE,
+                        withTimeout(30_000) { secondResult.await() })
+                    secondOwner.stop()
+                    assertEquals(1, calls.get())
+                    assertEquals(fresh, preferences.all.filterKeys { it in ownedPreferenceKeys })
+                } finally {
+                    secondOwner.stop()
+                }
+            } finally {
+                firstOwner.stop()
+            }
+        }
+    }
+
+    // Direct pre-change storage, deliberately bypassing all current writers.
+    private fun seedLegacyProvenance(includePending: Boolean) {
+        val editor = preferences.edit()
+            .putString("ytdlp_source", "nightly")
+            .putString("ytdlp_source_label", "User Nightly")
+            .putLong("ytdlp_source_generation", 83L)
+            .putString("ytdlp_committed_source", "nightly")
+            .putLong("ytdlp_committed_source_generation", 83L)
+            .putString("ytdlp_committed_result", "DONE:foreign-runtime")
+            .remove("ytdlp_provenance_epoch")
+            .putBoolean("auto_update_ytdlp", false)
+        if (includePending) {
+            editor.putString("ytdlp_pending_source", "nightly")
+                .putLong("ytdlp_pending_source_generation", 83L)
+        } else {
+            editor.remove("ytdlp_pending_source").remove("ytdlp_pending_source_generation")
+        }
+        assertTrue(editor.commit())
+    }
+
     private suspend fun sameSourceRestorePreservesDestination(reset: Boolean) {
         withPreferenceSnapshot {
             seedDestination("nightly", 41L)
@@ -727,7 +926,7 @@ class UpdateUtilProductionWiringTest {
 
     private fun assertNoSourceProof() {
         ownedPreferenceKeys.filter { UpdateUtil.isDestinationLocalPreferenceKey(it) }
-            .filterNot { it == "ytdlp_source_generation" }.forEach { key ->
+            .filterNot { it == "ytdlp_source_generation" || it == "ytdlp_provenance_epoch" }.forEach { key ->
                 assertFalse("no old/imported authority may survive: $key", preferences.contains(key))
             }
     }
@@ -738,6 +937,9 @@ class UpdateUtilProductionWiringTest {
             block()
         } finally {
             RestoreMutationAdmission.withRestorePublication {
+                check(!RestoreGate.isRestoreInProgress(context)) {
+                    "Active Restore evidence must not be overwritten by preference cleanup"
+                }
                 val editor = preferences.edit().clear()
                 snapshot.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
                 assertTrue("full preference graph must be restored", editor.commit())

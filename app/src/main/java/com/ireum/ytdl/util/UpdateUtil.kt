@@ -191,6 +191,12 @@ class UpdateUtil(context: Context) {
     internal fun startupGenerationIsCommitted(requested: DesiredSource): Boolean =
         desiredSource() == requested && committedMatches(requested) && !pendingMutationExists()
 
+    internal suspend fun migrateDestinationProvenance() {
+        RestoreMutationAdmission.withOrdinaryMutation(context) {
+            retirePreChangeProvenance(sharedPreferences)
+        }
+    }
+
     private suspend fun update(
         requested: DesiredSource,
         skipWhenAlreadyCommitted: Boolean,
@@ -200,6 +206,10 @@ class UpdateUtil(context: Context) {
             updateRequestAdmittedForTesting?.invoke()
             return updateMutex.withLock {
                 withContext(Dispatchers.IO) {
+                    // Startup reaches this only after its real readiness and
+                    // Restore recovery prerequisites. Ordinary admission also
+                    // fences manual/worker requests against an active Restore.
+                    migrateDestinationProvenance()
                     val current = desiredSource()
                     if (current != requested) {
                         return@withContext YTDLPUpdateResponse(YTDLPUpdateStatus.SUPERSEDED)
@@ -290,7 +300,8 @@ class UpdateUtil(context: Context) {
     }
 
     private fun committedMatches(desired: DesiredSource): Boolean = synchronized(stateLock) {
-        sharedPreferences.contains(PREF_COMMITTED_GENERATION) &&
+        destinationProvenanceEpochIsCurrent(sharedPreferences) &&
+            sharedPreferences.contains(PREF_COMMITTED_GENERATION) &&
             sharedPreferences.contains(PREF_COMMITTED_SOURCE) &&
             sharedPreferences.contains(PREF_COMMITTED_RESULT) &&
             sharedPreferences.getLong(PREF_COMMITTED_GENERATION, -1L) == desired.generation &&
@@ -303,7 +314,8 @@ class UpdateUtil(context: Context) {
     }
 
     private fun pendingMutationMatches(desired: DesiredSource): Boolean = synchronized(stateLock) {
-        sharedPreferences.getLong(PREF_PENDING_GENERATION, -1L) == desired.generation &&
+        destinationProvenanceEpochIsCurrent(sharedPreferences) &&
+            sharedPreferences.getLong(PREF_PENDING_GENERATION, -1L) == desired.generation &&
             sharedPreferences.getString(PREF_PENDING_SOURCE, null) == desired.source
     }
 
@@ -399,11 +411,46 @@ class UpdateUtil(context: Context) {
         private const val PREF_COMMITTED_RESULT = "ytdlp_committed_result"
         private const val PREF_PENDING_GENERATION = "ytdlp_pending_source_generation"
         private const val PREF_PENDING_SOURCE = "ytdlp_pending_source"
+        private const val PREF_PROVENANCE_EPOCH = "ytdlp_provenance_epoch"
+        private const val CURRENT_PROVENANCE_EPOCH = 1
         private const val DEFAULT_SOURCE = "stable"
 
         private val stateLock = Any()
         private val updateMutex = Mutex()
         private val admittedRequests = mutableMapOf<DesiredSource, Int>()
+        private var provenanceEpochPublicationUnconfirmed = false
+
+        internal fun destinationProvenanceEpochIsCurrent(preferences: SharedPreferences): Boolean =
+            synchronized(stateLock) {
+                !provenanceEpochPublicationUnconfirmed &&
+                    preferences.getInt(PREF_PROVENANCE_EPOCH, 0) == CURRENT_PROVENANCE_EPOCH
+            }
+
+        // The production caller holds RestoreMutationAdmission. No source or
+        // desired-generation value is rewritten by this one-time migration.
+        internal fun retirePreChangeProvenance(preferences: SharedPreferences) = synchronized(stateLock) {
+            val epoch = preferences.getInt(PREF_PROVENANCE_EPOCH, 0)
+            check(epoch in 0..CURRENT_PROVENANCE_EPOCH) { "Unsupported yt-dlp provenance epoch" }
+            if (epoch == CURRENT_PROVENANCE_EPOCH && !provenanceEpochPublicationUnconfirmed) {
+                return@synchronized
+            }
+            // commit() can publish its process map even when its disk write
+            // fails. Keep such an epoch untrusted until a confirmed publication.
+            provenanceEpochPublicationUnconfirmed = true
+            check(preferences.edit()
+                .remove(PREF_COMMITTED_GENERATION)
+                .remove(PREF_COMMITTED_SOURCE)
+                .remove(PREF_COMMITTED_RESULT)
+                .remove(PREF_PENDING_GENERATION)
+                .remove(PREF_PENDING_SOURCE)
+                .commit()) { "Legacy yt-dlp provenance retirement was not durable" }
+            // A death between these commits leaves the old epoch with no
+            // proof; the next owner repeats retirement before completing it.
+            check(preferences.edit().putInt(PREF_PROVENANCE_EPOCH, CURRENT_PROVENANCE_EPOCH).commit()) {
+                "yt-dlp provenance epoch publication was not durable"
+            }
+            provenanceEpochPublicationUnconfirmed = false
+        }
 
         internal fun isDestinationLocalPreferenceKey(key: String): Boolean =
             key.startsWith("ytdlp_") && key != PREF_SOURCE && key != PREF_SOURCE_LABEL

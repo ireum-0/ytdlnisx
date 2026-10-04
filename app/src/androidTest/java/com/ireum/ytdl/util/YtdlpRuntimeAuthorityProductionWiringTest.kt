@@ -138,7 +138,7 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
     private val cancelledTransports = ConcurrentHashMap<Long, DownloadItem>()
     private val keys = listOf("ytdlp_source", "ytdlp_source_label", "ytdlp_source_generation",
         "ytdlp_committed_source_generation", "ytdlp_committed_source", "ytdlp_committed_result",
-        "ytdlp_pending_source_generation", "ytdlp_pending_source", "use_scheduler",
+        "ytdlp_pending_source_generation", "ytdlp_pending_source", "ytdlp_provenance_epoch", "use_scheduler",
         "concurrent_downloads", "cache_downloads", "use_cookies", "log_downloads")
 
     // Run teardown outside JUnit's @After aggregation so its timeout cannot replace
@@ -179,6 +179,7 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
             if (!preferences.contains(key)) null else when (key) {
                 "use_scheduler", "cache_downloads", "use_cookies", "log_downloads" -> preferences.getBoolean(key, false)
                 "concurrent_downloads" -> preferences.getInt(key, 1)
+                "ytdlp_provenance_epoch" -> preferences.getInt(key, 0)
                 "ytdlp_source_generation", "ytdlp_committed_source_generation", "ytdlp_pending_source_generation" -> preferences.getLong(key, 0)
                 else -> preferences.getString(key, null)
             }
