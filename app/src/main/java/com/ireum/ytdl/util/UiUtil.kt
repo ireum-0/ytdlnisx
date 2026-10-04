@@ -55,6 +55,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.preference.PreferenceManager
 import com.afollestad.materialdialogs.utils.MDUtil.getStringArray
 import com.afollestad.materialdialogs.utils.MDUtil.textChanged
+import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.enums.DownloadType
@@ -2799,6 +2800,8 @@ object UiUtil {
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     fun showNewAppUpdateDialog(v: GithubRelease, context: Activity, preferences: SharedPreferences) {
+        if (BuildConfig.DEBUG) return
+
         if (context.isFinishing || context.isDestroyed) return
 
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
