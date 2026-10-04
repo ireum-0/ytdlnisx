@@ -30,9 +30,6 @@ jobs:
       - name: Grant execute permission for Gradle
         run: chmod +x gradlew
 
-      - name: Create CI local.properties
-        run: touch local.properties
-
       - name: Compile debug Kotlin
         run: ./gradlew :app:compileDebugKotlin -x lint
 
@@ -64,7 +61,6 @@ jobs:
         run: |
           printf '%s' "$BASE_64_SIGNING_KEY" | base64 --decode > app/release_keystore.jks
           printf '%s' "$KEYSTORE_PROPERTIES" > keystore.properties
-          touch local.properties
 
       - name: Grant execute permission for Gradle
         run: chmod +x gradlew
@@ -125,7 +121,7 @@ jobs:
 
       - name: Remove signing files
         if: ${{ always() }}
-        run: rm -f app/release_keystore.jks keystore.properties local.properties
+        run: rm -f app/release_keystore.jks keystore.properties
 
   notify:
     needs: release-build

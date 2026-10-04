@@ -8,6 +8,11 @@ plugins {
     id "org.jetbrains.kotlin.plugin.compose" version "2.3.0"
 }
 
+secrets {
+    propertiesFileName = "secrets.properties"
+    defaultPropertiesFileName = "local.defaults.properties"
+}
+
 def properties = new Properties()
 def versionMajor = 1
 def versionMinor = 8
