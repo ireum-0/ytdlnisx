@@ -77,6 +77,12 @@ sys.exit(1)
 """.trimIndent()
 
     fun install() {
+        runBlocking {
+            App.instance.startupYtdlpUpdater.stop()
+            if (!YtdlpNativeProcessBarrier.runtimeMutationDebtIsAbsent(context)) {
+                withContext(Dispatchers.IO) { YtdlpRuntimeAuthority.withMutation(context) { } }
+            }
+        }
         assertTrue(root.mkdirs())
         assertTrue("installed bundled Python is required", real.pythonBinary.isFile)
         assertTrue("installed bundled QuickJS is required", real.quickJsBinary.isFile)
@@ -166,6 +172,7 @@ class YtdlpRuntimeAuthorityProductionWiringTest {
             throw AssertionError("Previous real-worker isolation did not complete; shared state is retained", it)
         }
         context = ApplicationProvider.getApplicationContext()
+        App.instance.startupYtdlpUpdater.stop()
         awaitAppStartup()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
         originalValues = keys.associateWith { key ->

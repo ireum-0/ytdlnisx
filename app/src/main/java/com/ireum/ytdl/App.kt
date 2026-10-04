@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
+import com.ireum.ytdl.util.StartupYtdlpUpdateOwner
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
@@ -39,6 +40,8 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.File
@@ -48,6 +51,9 @@ import java.util.zip.ZipInputStream
 class App : Application() {
 
     private val runtimeInstallLock = Any()
+    private val startupUpdaterScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    internal lateinit var startupYtdlpUpdater: StartupYtdlpUpdateOwner
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -72,21 +78,23 @@ class App : Application() {
             }
             SchedulerSettingsTransitionCoordinator.reconcile(this@App)
         }
+        suspend fun initializeRuntime() {
+            setDefaultValues()
+            createNotificationChannels()
+            initLibraries()
+            val appVer = sharedPreferences.getString("version", "")!!
+            if (appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME) {
+                RestoreMutationAdmission.applyOrdinaryPreferences(
+                    this@App,
+                    sharedPreferences.edit().putString("version", BuildConfig.VERSION_NAME),
+                )
+            }
+        }
         val runtimeReadiness = applicationScope.async(Dispatchers.IO) {
             runStartupInitialization(
                 initialize = {
                     schedulerTransitionRecovery.await()
-                    setDefaultValues()
-                    createNotificationChannels()
-                    initLibraries()
-
-                    val appVer = sharedPreferences.getString("version", "")!!
-                    if (appVer.isEmpty() || appVer != BuildConfig.VERSION_NAME) {
-                        RestoreMutationAdmission.applyOrdinaryPreferences(
-                            this@App,
-                            sharedPreferences.edit().putString("version", BuildConfig.VERSION_NAME),
-                        )
-                    }
+                    initializeRuntime()
                 },
                 reportFailure = { failure ->
                     runCatching {
@@ -114,7 +122,7 @@ class App : Application() {
                 Log.w(TAG, "LocalAdd responsibility recovery failed", failure)
             }
         }
-        applicationScope.launch(Dispatchers.IO) {
+        val downloadExecutionRecovery = applicationScope.launch(Dispatchers.IO) {
             try {
                 restoreRecovery.await()
                 if (RestoreGate.isRestoreInProgress(this@App)) return@launch
@@ -241,6 +249,33 @@ class App : Application() {
             )
         }
         ThemeUtil.init(this)
+        var initialReadinessObserved = false
+        var runtimeReady = false
+        startupYtdlpUpdater = StartupYtdlpUpdateOwner(this, startupUpdaterScope) {
+            if (!initialReadinessObserved) {
+                runtimeReady = try {
+                    runtimeReadiness.await()
+                } catch (failure: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    false
+                }
+                initialReadinessObserved = true
+            }
+            // A failed/pending one-shot startup job is not a permanent veto.
+            // Retry the real prerequisites in this process without holding
+            // Restore mutation admission across library/network/native work.
+            RestoreTransactionCoordinator.recover(this@App)
+            check(!RestoreGate.isRestoreInProgress(this@App)) {
+                "Restore recovery remains pending before startup yt-dlp convergence"
+            }
+            if (!runtimeReady) {
+                SchedulerSettingsTransitionCoordinator.reconcile(this@App)
+                initializeRuntime()
+                runtimeReady = true
+            }
+            downloadExecutionRecovery.join()
+            DownloadExecutionRecovery.reconcile(this@App)
+        }
     }
     @Throws(YoutubeDLException::class)
     private fun initLibraries() {

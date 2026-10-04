@@ -7,6 +7,7 @@ import androidx.preference.PreferenceManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.GithubRelease
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRuntimeAuthority
@@ -177,9 +178,22 @@ class UpdateUtil(context: Context) {
         )
     }
 
+    internal suspend fun updateStartupGeneration(
+        requested: DesiredSource,
+        automaticUpdatesEnabled: Boolean,
+    ): YTDLPUpdateResponse = update(
+        requested,
+        skipWhenAlreadyCommitted = !automaticUpdatesEnabled,
+        requireDesiredAtCommit = true,
+    )
+
+    internal fun startupGenerationIsCommitted(requested: DesiredSource): Boolean =
+        desiredSource() == requested && committedMatches(requested) && !pendingMutationExists()
+
     private suspend fun update(
         requested: DesiredSource,
         skipWhenAlreadyCommitted: Boolean,
+        requireDesiredAtCommit: Boolean = false,
     ): YTDLPUpdateResponse {
         val coalesceWithAdmittedRequest = reserveUpdateRequest(requested)
         try {
@@ -208,6 +222,13 @@ class UpdateUtil(context: Context) {
 
                     val response = runInterruptible(Dispatchers.IO) {
                         YtdlpRuntimeAuthority.withMutation(context) { authority ->
+                            // A Restore may replace the published intent while this
+                            // request waits for real runtime consumers to release.
+                            if (RestoreGate.isRestoreInProgress(context) ||
+                                desiredSource() != current || !pendingMutationMatches(current)
+                            ) {
+                                return@withMutation YTDLPUpdateResponse(YTDLPUpdateStatus.SUPERSEDED)
+                            }
                             val nativeResponse = runBlocking {
                                 updaterForTesting?.invoke(context, current.source)
                                     ?: performYoutubeDLUpdate(current.source, authority)
@@ -227,7 +248,9 @@ class UpdateUtil(context: Context) {
                     if (response.status == YTDLPUpdateStatus.DONE ||
                         response.status == YTDLPUpdateStatus.ALREADY_UP_TO_DATE
                     ) {
-                        persistCommittedResult(current, response)
+                        if (!persistCommittedResult(current, response, requireDesiredAtCommit)) {
+                            return@withContext YTDLPUpdateResponse(YTDLPUpdateStatus.SUPERSEDED)
+                        }
                     }
                     response
                 }
@@ -279,6 +302,11 @@ class UpdateUtil(context: Context) {
             sharedPreferences.contains(PREF_PENDING_SOURCE)
     }
 
+    private fun pendingMutationMatches(desired: DesiredSource): Boolean = synchronized(stateLock) {
+        sharedPreferences.getLong(PREF_PENDING_GENERATION, -1L) == desired.generation &&
+            sharedPreferences.getString(PREF_PENDING_SOURCE, null) == desired.source
+    }
+
     private suspend fun beginMutation(desired: DesiredSource): Boolean =
         RestoreMutationAdmission.withOrdinaryMutation(context) {
             synchronized(stateLock) {
@@ -295,9 +323,15 @@ class UpdateUtil(context: Context) {
     private suspend fun persistCommittedResult(
         desired: DesiredSource,
         response: YTDLPUpdateResponse,
-    ) {
+        requireDesiredAtCommit: Boolean,
+    ): Boolean =
         RestoreMutationAdmission.withOrdinaryMutation(context) {
             synchronized(stateLock) {
+                // Restored state may have retired/replaced the exact pending
+                // intent. An old success cannot prove that newer generation.
+                if (!pendingMutationMatches(desired) ||
+                    (requireDesiredAtCommit && readDesiredSourceLocked() != desired)
+                ) return@withOrdinaryMutation false
                 val editor = sharedPreferences.edit()
                     .putLong(PREF_COMMITTED_GENERATION, desired.generation)
                     .putString(PREF_COMMITTED_SOURCE, desired.source)
@@ -310,9 +344,9 @@ class UpdateUtil(context: Context) {
                         .remove(PREF_PENDING_SOURCE)
                 }
                 check(editor.commit()) { "yt-dlp installed runtime provenance was not durable" }
+                true
             }
         }
-    }
 
     private fun performYoutubeDLUpdate(
         channel: String,

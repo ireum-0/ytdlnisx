@@ -5,12 +5,25 @@ import androidx.preference.PreferenceManager
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.ireum.ytdl.App
+import androidx.room.Room
+import com.ireum.ytdl.database.DBManager
+import com.ireum.ytdl.database.Converters
+import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.enums.DownloadType
+import com.ireum.ytdl.database.models.AudioPreferences
+import com.ireum.ytdl.database.models.VideoPreferences
+import com.ireum.ytdl.database.models.Format
+import com.ireum.ytdl.database.models.DownloadItem
+import com.ireum.ytdl.work.DownloadExecutionRecovery
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.yausername.aria2c.Aria2c
 import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
@@ -33,6 +46,8 @@ class UpdateUtilProductionWiringTest {
     private lateinit var preferences: android.content.SharedPreferences
     private lateinit var originalValues: Map<String, Any?>
     private lateinit var native: RuntimeAuthorityNativeFixture
+    private val startupOwners = mutableListOf<StartupYtdlpUpdateOwner>()
+    private val completionListeners = mutableListOf<android.content.SharedPreferences.OnSharedPreferenceChangeListener>()
 
     private val ownedPreferenceKeys = listOf(
         "ytdlp_source",
@@ -43,15 +58,19 @@ class UpdateUtilProductionWiringTest {
         "ytdlp_committed_result",
         "ytdlp_pending_source_generation",
         "ytdlp_pending_source",
+        "auto_update_ytdlp",
     )
 
     @Before
     fun setUp() = runBlocking {
         context = ApplicationProvider.getApplicationContext()
+        App.instance.startupYtdlpUpdater.stop()
         awaitRuntimeReadiness()
         preferences = PreferenceManager.getDefaultSharedPreferences(context)
         originalValues = ownedPreferenceKeys.associateWith { key ->
-            if (!preferences.contains(key)) null else if (key.endsWith("_generation")) {
+            if (!preferences.contains(key)) null else if (key == "auto_update_ytdlp") {
+                preferences.getBoolean(key, false)
+            } else if (key.endsWith("_generation")) {
                 preferences.getLong(key, 0)
             } else preferences.getString(key, null)
         }
@@ -66,6 +85,8 @@ class UpdateUtilProductionWiringTest {
     @After
     fun tearDown() {
         if (!::originalValues.isInitialized) return
+        runBlocking { startupOwners.forEach { it.stop() } }
+        completionListeners.forEach(preferences::unregisterOnSharedPreferenceChangeListener)
         if (::native.isInitialized) native.close()
         UpdateUtil.updaterForTesting = null
         UpdateUtil.updateRequestAdmittedForTesting = null
@@ -277,6 +298,278 @@ class UpdateUtilProductionWiringTest {
         assertEquals(1, calls.get())
     }
 
+
+    @Test
+    fun startupOwnerWaitsForReadinessAfterGenerationAdmission() = runBlocking {
+        val generation = UpdateUtil(context).selectSource("nightly", "Nightly")
+        val ready = CompletableDeferred<Unit>()
+        val observed = CompletableDeferred<UpdateUtil.DesiredSource>()
+        val committed = committedGeneration("nightly", generation)
+        val calls = AtomicInteger()
+        UpdateUtil.updaterForTesting = { _, _ ->
+            calls.incrementAndGet()
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "ready")
+        }
+        val owner = startupOwner(
+            observed = { observed.complete(it) },
+            prerequisites = { ready.await() },
+        )
+        assertEquals(UpdateUtil.DesiredSource("nightly", generation), withTimeout(10_000) { observed.await() })
+        assertEquals(0, calls.get())
+        assertFalse(preferences.contains("ytdlp_pending_source_generation"))
+
+        ready.complete(Unit)
+        withTimeout(30_000) { committed.await() }
+        owner.stop()
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun startupOwnerSurvivesStaleActiveRecoveryAndQueuedSnapshotInProcess() = runBlocking {
+        val db = Room.inMemoryDatabaseBuilder(context, DBManager::class.java)
+            .addTypeConverter(Converters()).allowMainThreadQueries().build()
+        val id = System.currentTimeMillis()
+        val activeId = db.downloadDao.insertRaw(staleDownload(id, "Active", "startup-stale-E1"))
+        val queuedId = db.downloadDao.insertRaw(staleDownload(id + 1, "Queued", ""))
+        val generation = UpdateUtil(context).selectSource("nightly", "Nightly")
+        val recoveryAllowed = CompletableDeferred<Unit>()
+        val observed = CompletableDeferred<Unit>()
+        val committed = committedGeneration("nightly", generation)
+        val calls = AtomicInteger()
+        UpdateUtil.updaterForTesting = { _, _ ->
+            assertTrue(db.downloadDao.getNullableDownloadById(activeId)?.status != "Active")
+            // A queued row is not native mutation authority or a permanent veto.
+            assertEquals("Queued", db.downloadDao.getNullableDownloadById(queuedId)?.status)
+            calls.incrementAndGet()
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "recovered")
+        }
+        val owner = startupOwner(
+            observed = { observed.complete(Unit) },
+            prerequisites = {
+                recoveryAllowed.await()
+                assertTrue(DownloadExecutionRecovery.reconcile(context, db).completedCleanly)
+            },
+        )
+        try {
+            withTimeout(10_000) { observed.await() }
+            assertEquals(2, db.downloadDao.getDownloadsCountByStatus(listOf("Active", "Queued")))
+            assertEquals(0, calls.get())
+            recoveryAllowed.complete(Unit)
+            withTimeout(30_000) { committed.await() }
+            owner.stop()
+            assertEquals(1, calls.get())
+            assertEquals(1, db.downloadDao.getDownloadsCountByStatus(listOf("Active", "Queued")))
+        } finally {
+            recoveryAllowed.complete(Unit)
+            owner.stop()
+            db.close()
+        }
+    }
+
+    @Test
+    fun startupOwnerCoalescesSameGenerationWakeupsWithoutDuplicateNativeUpdate() = runBlocking {
+        assertTrue(preferences.edit().putBoolean("auto_update_ytdlp", true).commit())
+        val generation = UpdateUtil(context).selectSource("stable", "Stable")
+        val committed = committedGeneration("stable", generation)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val duplicateDrained = CompletableDeferred<Unit>()
+        val observations = AtomicInteger()
+        val calls = AtomicInteger()
+        UpdateUtil.updaterForTesting = { _, _ ->
+            calls.incrementAndGet()
+            entered.countDown()
+            check(release.await(10, TimeUnit.SECONDS))
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "once")
+        }
+        val owner = startupOwner(observed = {
+            if (observations.incrementAndGet() >= 2) duplicateDrained.complete(Unit)
+        })
+        try {
+            assertTrue(entered.await(10, TimeUnit.SECONDS))
+            repeat(20) { owner.wake() }
+            release.countDown()
+            withTimeout(30_000) { committed.await() }
+            withTimeout(10_000) { duplicateDrained.await() }
+            owner.stop()
+            assertEquals(1, calls.get())
+        } finally {
+            release.countDown()
+            owner.stop()
+        }
+    }
+
+    @Test
+    fun startupOwnerFollowsRestoredGenerationAfterOlderPendingIntentIsRetired() = runBlocking {
+        val generationA = UpdateUtil(context).selectSource("stable", "Stable")
+        val enteredA = CountDownLatch(1)
+        val releaseA = CountDownLatch(1)
+        val responses = CopyOnWriteArrayList<Pair<UpdateUtil.DesiredSource, UpdateUtil.YTDLPUpdateStatus>>()
+        val calls = CopyOnWriteArrayList<String>()
+        val generationB = generationA + 1
+        val committedB = committedGeneration("nightly", generationB)
+        UpdateUtil.updaterForTesting = { _, source ->
+            calls += source
+            if (source == "stable") {
+                enteredA.countDown()
+                check(releaseA.await(10, TimeUnit.SECONDS))
+            } else {
+                assertFalse("A must not prove restored B", preferences.contains("ytdlp_committed_source"))
+                assertEquals(generationB, preferences.getLong("ytdlp_pending_source_generation", -1))
+            }
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, source)
+        }
+        val owner = startupOwner(completed = { desired, result -> responses += desired to result.status })
+        try {
+            assertTrue(enteredA.await(10, TimeUnit.SECONDS))
+            assertEquals(generationA, preferences.getLong("ytdlp_pending_source_generation", -1))
+            // Publish the same durable preference replacement through Restore's
+            // production admission boundary, without a fake direct updater claim.
+            RestoreMutationAdmission.withRestorePublication {
+                assertTrue(preferences.edit()
+                    .putString("ytdlp_source", "nightly")
+                    .putString("ytdlp_source_label", "Restored Nightly")
+                    .putLong("ytdlp_source_generation", generationB)
+                    .remove("ytdlp_pending_source_generation")
+                    .remove("ytdlp_pending_source")
+                    .commit())
+            }
+            releaseA.countDown()
+            withTimeout(30_000) { committedB.await() }
+            owner.stop()
+            assertEquals(listOf("stable", "nightly"), calls.toList())
+            assertTrue(responses.contains(
+                UpdateUtil.DesiredSource("stable", generationA) to UpdateUtil.YTDLPUpdateStatus.SUPERSEDED))
+            assertEquals("DONE:nightly", preferences.getString("ytdlp_committed_result", null))
+            assertFalse(preferences.contains("ytdlp_pending_source_generation"))
+        } finally {
+            releaseA.countDown()
+            owner.stop()
+        }
+    }
+
+    @Test
+    fun startupOwnerRechecksClearedPortableGraphWithoutPreferenceWakeup() = runBlocking {
+        val generation = UpdateUtil(context).selectSource("nightly", "Nightly")
+        val committedA = committedGeneration("nightly", generation)
+        val committedB = committedGeneration("stable", 0L)
+        val idleEntered = Channel<Unit>(Channel.UNLIMITED)
+        val idleTicks = Channel<Unit>(Channel.RENDEZVOUS)
+        val calls = CopyOnWriteArrayList<String>()
+        var snapshot: Map<String, Any?>? = null
+        UpdateUtil.updaterForTesting = { _, source ->
+            calls += source
+            if (source == "stable") {
+                assertEquals(UpdateUtil.DesiredSource("stable", 0L), UpdateUtil(context).desiredSource())
+                assertFalse(preferences.contains("ytdlp_committed_source"))
+            }
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, source)
+        }
+        val owner = startupOwner(idleWakeup = {
+            // Model the idle deadline deterministically, including an Android
+            // version with no clear notification. This controls waiting only;
+            // admission, native exclusion and durable proof remain production.
+            idleEntered.send(Unit)
+            idleTicks.receive()
+        })
+        try {
+            withTimeout(10_000) { idleEntered.receive() }
+            withTimeout(10_000) { idleTicks.send(Unit) }
+            withTimeout(30_000) { committedA.await() }
+            withTimeout(10_000) { idleEntered.receive() }
+            val beforeClear = preferences.all.toMap()
+            snapshot = beforeClear
+            RestoreMutationAdmission.withRestorePublication {
+                val editor = preferences.edit().clear()
+                // The real Reset publisher keeps destination-local keys but
+                // can replace portable settings with an empty settings array.
+                beforeClear.filterKeys { !BackupSettingsUtil.isPortablePreferenceKey(it) }
+                    .forEach { (key, value) -> putPreferenceValue(editor, key, value) }
+                assertTrue(editor.commit())
+            }
+            assertEquals(UpdateUtil.DesiredSource("stable", 0L), UpdateUtil(context).desiredSource())
+            assertEquals(listOf("nightly"), calls.toList())
+            // No callback is allowed to release the controlled idle wait.
+            withTimeout(10_000) { idleTicks.send(Unit) }
+            withTimeout(30_000) { committedB.await() }
+            withTimeout(10_000) { idleEntered.receive() }
+            repeat(2) {
+                withTimeout(10_000) { idleTicks.send(Unit) }
+                withTimeout(10_000) { idleEntered.receive() }
+            }
+            owner.stop()
+            assertEquals(listOf("nightly", "stable"), calls.toList())
+            assertEquals("DONE:stable", preferences.getString("ytdlp_committed_result", null))
+            assertFalse(preferences.contains("ytdlp_pending_source_generation"))
+            assertFalse(preferences.contains("ytdlp_pending_source"))
+        } finally {
+            owner.stop()
+            idleTicks.close()
+            idleEntered.close()
+            snapshot?.let { saved ->
+                RestoreMutationAdmission.withRestorePublication {
+                    val editor = preferences.edit().clear()
+                    saved.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
+                    assertTrue("full preference graph must be restored", editor.commit())
+                }
+            }
+        }
+    }
+
+    private fun putPreferenceValue(
+        editor: android.content.SharedPreferences.Editor,
+        key: String,
+        value: Any?,
+    ) {
+        when (value) {
+            is String -> editor.putString(key, value)
+            is Boolean -> editor.putBoolean(key, value)
+            is Int -> editor.putInt(key, value)
+            is Long -> editor.putLong(key, value)
+            is Float -> editor.putFloat(key, value)
+            is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            null -> editor.remove(key)
+            else -> error("Unsupported preference type for $key")
+        }
+    }
+
+    private fun startupOwner(
+        observed: ((UpdateUtil.DesiredSource) -> Unit)? = null,
+        completed: ((UpdateUtil.DesiredSource, UpdateUtil.YTDLPUpdateResponse) -> Unit)? = null,
+        idleWakeup: (suspend () -> Unit)? = null,
+        prerequisites: suspend () -> Unit = {},
+    ) = StartupYtdlpUpdateOwner(
+        context,
+        CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        generationObserved = observed,
+        attemptCompleted = completed,
+        awaitIdleWakeupForTesting = idleWakeup,
+        awaitPrerequisites = prerequisites,
+    ).also(startupOwners::add)
+
+    private fun committedGeneration(source: String, generation: Long): CompletableDeferred<Unit> {
+        val committed = CompletableDeferred<Unit>()
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+            if (preferences.getLong("ytdlp_committed_source_generation", -1) == generation &&
+                preferences.getString("ytdlp_committed_source", null) == source &&
+                !preferences.contains("ytdlp_pending_source_generation") &&
+                !preferences.contains("ytdlp_pending_source")
+            ) committed.complete(Unit)
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        completionListeners += listener
+        return committed
+    }
+
+    private fun staleDownload(id: Long, status: String, execution: String) = DownloadItem(
+        id = id, url = "https://example.invalid/startup", title = "startup", author = "",
+        thumb = "", duration = "", type = DownloadType.video, format = Format(),
+        container = "Default", downloadSections = "", allFormats = mutableListOf(),
+        downloadPath = context.cacheDir.absolutePath, website = "", downloadSize = "",
+        playlistTitle = "", audioPreferences = AudioPreferences(), videoPreferences = VideoPreferences(),
+        extraCommands = "", customFileNameTemplate = "", SaveThumb = false,
+        status = status, downloadStartTime = 0, logID = null, executionId = execution,
+    )
     @Test
     fun customUpdaterErrorOutputRemainsAnErrorResponse() {
         val update = UpdateUtil(context)

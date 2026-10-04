@@ -56,12 +56,9 @@ import com.google.android.material.elevation.SurfaceColors
 import com.google.android.material.navigation.NavigationBarView
 import com.google.android.material.navigation.NavigationView
 import com.google.android.material.navigationrail.NavigationRailView
-import com.google.android.material.snackbar.Snackbar
-import com.yausername.youtubedl_android.YoutubeDL
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -287,28 +284,6 @@ class MainActivity : BaseActivity() {
             handleIntents(launchIntent)
         }
 
-        val automaticYtdlpUpdates = preferences.getBoolean("auto_update_ytdlp", false)
-        CoroutineScope(SupervisorJob()).launch(Dispatchers.IO) {
-            kotlin.runCatching {
-                if (DBManager.getInstance(this@MainActivity).downloadDao
-                        .getDownloadsCountByStatus(listOf("Active", "Queued")) == 0
-                ) {
-                    if (UpdateUtil(this@MainActivity).updateOnStartup(automaticYtdlpUpdates).status ==
-                        UpdateUtil.YTDLPUpdateStatus.DONE
-                    ) {
-                        val version = YoutubeDL.getInstance().version(context)
-                        val snack = Snackbar.make(findViewById(R.id.frame_layout),
-                            this@MainActivity.getString(R.string.ytld_update_success) + " [${version}]",
-                            Snackbar.LENGTH_LONG)
-
-                        navigationBarView?.apply {
-                            snack.setAnchorView(this)
-                        }
-                        snack.show()
-                    }
-                }
-            }
-        }
     }
     override fun onSaveInstanceState(savedInstanceState: Bundle) {
         super.onSaveInstanceState(savedInstanceState)
