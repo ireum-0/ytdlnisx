@@ -59,6 +59,7 @@ import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.repository.SearchHistoryRepository
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.UpdateUtil
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.HistoryRedownloadMarker
@@ -555,7 +556,10 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             settings?.apply {
                 val prefs = this
                 RestoreMutationAdmission.withOrdinaryMutation(context) {
-                    val editor = PreferenceManager.getDefaultSharedPreferences(context).edit()
+                    UpdateUtil.withRestoredSourcePublication {
+                    val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+                    val snapshot = preferences.all.toMap()
+                    val editor = preferences.edit()
                     with(editor) {
                     if (resetData) {
                         clear()
@@ -618,7 +622,9 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                             )
                         }
                     }
+                    UpdateUtil.reconcileRestoredSource(editor, snapshot, prefs, reset = false)
                     check(editor.commit()) { "Merge preference persistence was not durable" }
+                }
                 }
             }
         }

@@ -31,6 +31,7 @@ import com.ireum.ytdl.util.storage.HistoryReferenceMutationCoordinator
 import android.content.SharedPreferences
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.UpdateUtil
 import com.ireum.ytdl.database.repository.HistoryReplacementDiagnostic
 import com.ireum.ytdl.database.repository.AutomaticKeywordObservationCoverage
 import com.ireum.ytdl.database.repository.AutomaticKeywordRuleScheduler
@@ -1365,11 +1366,11 @@ object RestoreTransactionCoordinator {
         context: Context,
         record: RestoreRecord,
         applied: AppliedState,
-    ) {
+    ) = UpdateUtil.withRestoredSourcePublication {
         val data = record.plan.data
         if (data.settings == null && applied.visibleGroups == null &&
             applied.visibleYoutubers == null && applied.visibleKeywords == null
-        ) return
+        ) return@withRestoredSourcePublication
 
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         val snapshot = preferences.all.toMap()
@@ -1392,6 +1393,9 @@ object RestoreTransactionCoordinator {
                 editor.putString("cleanup_leftover_downloads", record.journal.cleanupCadence)
             }
             data.settings.forEach { putPortable(editor, it) }
+            UpdateUtil.reconcileRestoredSource(
+                editor, snapshot, data.settings, reset = true,
+            )
         }
         applied.visibleGroups?.let { editor.putStringSet("history_visible_child_youtuber_groups", it) }
         applied.visibleYoutubers?.let { editor.putStringSet("history_visible_child_youtubers", it) }
@@ -1399,7 +1403,7 @@ object RestoreTransactionCoordinator {
 
         val committed = editor.commit()
         val accepted = preferenceCommitOverrideForTesting?.invoke(committed) ?: committed
-        if (accepted) return
+        if (accepted) return@withRestoredSourcePublication
 
         // SharedPreferences may update the process map before commit() reports
         // false.  Explicitly compensate, but never rely on compensation for

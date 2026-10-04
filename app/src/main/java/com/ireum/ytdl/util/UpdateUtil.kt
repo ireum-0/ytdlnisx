@@ -2,6 +2,7 @@
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.util.Log
 import androidx.preference.PreferenceManager
 import com.ireum.ytdl.BuildConfig
@@ -9,6 +10,7 @@ import com.ireum.ytdl.R
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.models.GithubRelease
+import com.ireum.ytdl.database.models.BackupSettingsItem
 import com.ireum.ytdl.util.extractors.ytdlp.YoutubeDLCompat
 import com.ireum.ytdl.util.extractors.ytdlp.YtdlpRuntimeAuthority
 import com.google.gson.Gson
@@ -184,7 +186,6 @@ class UpdateUtil(context: Context) {
     ): YTDLPUpdateResponse = update(
         requested,
         skipWhenAlreadyCommitted = !automaticUpdatesEnabled,
-        requireDesiredAtCommit = true,
     )
 
     internal fun startupGenerationIsCommitted(requested: DesiredSource): Boolean =
@@ -193,7 +194,6 @@ class UpdateUtil(context: Context) {
     private suspend fun update(
         requested: DesiredSource,
         skipWhenAlreadyCommitted: Boolean,
-        requireDesiredAtCommit: Boolean = false,
     ): YTDLPUpdateResponse {
         val coalesceWithAdmittedRequest = reserveUpdateRequest(requested)
         try {
@@ -248,7 +248,7 @@ class UpdateUtil(context: Context) {
                     if (response.status == YTDLPUpdateStatus.DONE ||
                         response.status == YTDLPUpdateStatus.ALREADY_UP_TO_DATE
                     ) {
-                        if (!persistCommittedResult(current, response, requireDesiredAtCommit)) {
+                        if (!persistCommittedResult(current, response)) {
                             return@withContext YTDLPUpdateResponse(YTDLPUpdateStatus.SUPERSEDED)
                         }
                     }
@@ -323,14 +323,13 @@ class UpdateUtil(context: Context) {
     private suspend fun persistCommittedResult(
         desired: DesiredSource,
         response: YTDLPUpdateResponse,
-        requireDesiredAtCommit: Boolean,
     ): Boolean =
         RestoreMutationAdmission.withOrdinaryMutation(context) {
             synchronized(stateLock) {
                 // Restored state may have retired/replaced the exact pending
                 // intent. An old success cannot prove that newer generation.
                 if (!pendingMutationMatches(desired) ||
-                    (requireDesiredAtCommit && readDesiredSourceLocked() != desired)
+                    readDesiredSourceLocked() != desired
                 ) return@withOrdinaryMutation false
                 val editor = sharedPreferences.edit()
                     .putLong(PREF_COMMITTED_GENERATION, desired.generation)
@@ -405,6 +404,48 @@ class UpdateUtil(context: Context) {
         private val stateLock = Any()
         private val updateMutex = Mutex()
         private val admittedRequests = mutableMapOf<DesiredSource, Int>()
+
+        internal fun isDestinationLocalPreferenceKey(key: String): Boolean =
+            key.startsWith("ytdlp_") && key != PREF_SOURCE && key != PREF_SOURCE_LABEL
+
+        // Callers hold RestoreMutationAdmission first. Keep the preference
+        // snapshot, source reconciliation and commit atomic to updater readers.
+        internal fun <T> withRestoredSourcePublication(block: () -> T): T =
+            synchronized(stateLock, block)
+
+        internal fun restoredSourceGeneration(
+            previousSource: String,
+            previousGeneration: Long,
+            restoredSource: String,
+        ): Long {
+            check(previousGeneration >= 0L) { "yt-dlp source generation is invalid" }
+            if (previousSource == restoredSource) return previousGeneration
+            check(previousGeneration < Long.MAX_VALUE) { "yt-dlp source generation exhausted" }
+            return previousGeneration + 1L
+        }
+
+        internal fun reconcileRestoredSource(
+            editor: SharedPreferences.Editor,
+            snapshot: Map<String, *>,
+            settings: List<BackupSettingsItem>,
+            reset: Boolean,
+        ) {
+            check(Thread.holdsLock(stateLock)) { "Restored source publication is not owned" }
+            val previousSource = snapshot[PREF_SOURCE] as String? ?: DEFAULT_SOURCE
+            val previousGeneration = snapshot[PREF_DESIRED_GENERATION] as Long? ?: 0L
+            val restoredSource = settings.lastOrNull { it.key == PREF_SOURCE }?.value
+                ?: if (reset) DEFAULT_SOURCE else previousSource
+            val generation = restoredSourceGeneration(previousSource, previousGeneration, restoredSource)
+            // Do not materialize an absent/default source or generation on a
+            // same-source restore. The existing local proof remains compatible.
+            if (previousSource == restoredSource) return
+            editor.putLong(PREF_DESIRED_GENERATION, generation)
+                .remove(PREF_COMMITTED_GENERATION)
+                .remove(PREF_COMMITTED_SOURCE)
+                .remove(PREF_COMMITTED_RESULT)
+                .remove(PREF_PENDING_GENERATION)
+                .remove(PREF_PENDING_SOURCE)
+        }
 
         @Volatile
         internal var updaterForTesting: (suspend (Context, String) -> YTDLPUpdateResponse)? = null

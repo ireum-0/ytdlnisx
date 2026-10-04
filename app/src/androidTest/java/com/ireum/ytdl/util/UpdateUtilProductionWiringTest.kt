@@ -9,6 +9,12 @@ import androidx.room.Room
 import com.ireum.ytdl.database.DBManager
 import com.ireum.ytdl.database.Converters
 import com.ireum.ytdl.database.RestoreMutationAdmission
+import com.ireum.ytdl.database.BackupRestoreParser
+import com.ireum.ytdl.database.RestoreGate
+import com.ireum.ytdl.database.RestoreOutcome
+import com.ireum.ytdl.database.models.BackupSettingsItem
+import com.ireum.ytdl.database.models.RestoreAppDataItem
+import com.ireum.ytdl.database.viewmodel.SettingsViewModel
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.AudioPreferences
 import com.ireum.ytdl.database.models.VideoPreferences
@@ -25,6 +31,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -199,7 +206,7 @@ class UpdateUtilProductionWiringTest {
         )
 
         allowSourceAToFinish.countDown()
-        assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, withTimeout(10_000) { requestA.await() }.status)
+        assertEquals(UpdateUtil.YTDLPUpdateStatus.SUPERSEDED, withTimeout(10_000) { requestA.await() }.status)
         assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, withTimeout(10_000) { requestB.await() }.status)
         assertEquals(listOf("stable", "nightly"), invocations.toList())
         assertEquals(generationB, preferences.getLong("ytdlp_source_generation", -1L))
@@ -423,17 +430,7 @@ class UpdateUtilProductionWiringTest {
         try {
             assertTrue(enteredA.await(10, TimeUnit.SECONDS))
             assertEquals(generationA, preferences.getLong("ytdlp_pending_source_generation", -1))
-            // Publish the same durable preference replacement through Restore's
-            // production admission boundary, without a fake direct updater claim.
-            RestoreMutationAdmission.withRestorePublication {
-                assertTrue(preferences.edit()
-                    .putString("ytdlp_source", "nightly")
-                    .putString("ytdlp_source_label", "Restored Nightly")
-                    .putLong("ytdlp_source_generation", generationB)
-                    .remove("ytdlp_pending_source_generation")
-                    .remove("ytdlp_pending_source")
-                    .commit())
-            }
+            restoreSource(importedSettings("nightly", "Restored Nightly"), reset = false)
             releaseA.countDown()
             withTimeout(30_000) { committedB.await() }
             owner.stop()
@@ -452,7 +449,7 @@ class UpdateUtilProductionWiringTest {
     fun startupOwnerRechecksClearedPortableGraphWithoutPreferenceWakeup() = runBlocking {
         val generation = UpdateUtil(context).selectSource("nightly", "Nightly")
         val committedA = committedGeneration("nightly", generation)
-        val committedB = committedGeneration("stable", 0L)
+        val committedB = committedGeneration("stable", generation + 1L)
         val idleEntered = Channel<Unit>(Channel.UNLIMITED)
         val idleTicks = Channel<Unit>(Channel.RENDEZVOUS)
         val calls = CopyOnWriteArrayList<String>()
@@ -460,7 +457,7 @@ class UpdateUtilProductionWiringTest {
         UpdateUtil.updaterForTesting = { _, source ->
             calls += source
             if (source == "stable") {
-                assertEquals(UpdateUtil.DesiredSource("stable", 0L), UpdateUtil(context).desiredSource())
+                assertEquals(UpdateUtil.DesiredSource("stable", generation + 1L), UpdateUtil(context).desiredSource())
                 assertFalse(preferences.contains("ytdlp_committed_source"))
             }
             UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, source)
@@ -479,15 +476,8 @@ class UpdateUtilProductionWiringTest {
             withTimeout(10_000) { idleEntered.receive() }
             val beforeClear = preferences.all.toMap()
             snapshot = beforeClear
-            RestoreMutationAdmission.withRestorePublication {
-                val editor = preferences.edit().clear()
-                // The real Reset publisher keeps destination-local keys but
-                // can replace portable settings with an empty settings array.
-                beforeClear.filterKeys { !BackupSettingsUtil.isPortablePreferenceKey(it) }
-                    .forEach { (key, value) -> putPreferenceValue(editor, key, value) }
-                assertTrue(editor.commit())
-            }
-            assertEquals(UpdateUtil.DesiredSource("stable", 0L), UpdateUtil(context).desiredSource())
+            restoreSource(emptyList(), reset = true)
+            assertEquals(UpdateUtil.DesiredSource("stable", generation + 1L), UpdateUtil(context).desiredSource())
             assertEquals(listOf("nightly"), calls.toList())
             // No callback is allowed to release the controlled idle wait.
             withTimeout(10_000) { idleTicks.send(Unit) }
@@ -512,6 +502,245 @@ class UpdateUtilProductionWiringTest {
                     saved.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
                     assertTrue("full preference graph must be restored", editor.commit())
                 }
+            }
+        }
+    }
+
+    @Test
+    fun backupAndLegacyImportKeepOnlyPortableSourceIntent() = runBlocking {
+        withPreferenceSnapshot {
+            seedDestination("stable", 41L)
+            assertTrue(preferences.edit().putString("ytdlp_future_runtime_authority", "local-only").commit())
+            val keys = BackupSettingsUtil.backupSettings(preferences).getOrThrow()
+                .map { it.asJsonObject.get("key").asString }.toSet()
+            assertTrue(keys.containsAll(listOf("ytdlp_source", "ytdlp_source_label")))
+            assertTrue(keys.none { UpdateUtil.isDestinationLocalPreferenceKey(it) })
+
+            val normalized = BackupRestoreParser.fromTyped(
+                RestoreAppDataItem(settings = importedSettings("stable", "Imported Stable")),
+            )
+            assertTrue(normalized.data.settings.orEmpty().none {
+                UpdateUtil.isDestinationLocalPreferenceKey(it.key)
+            })
+            val legacyJson = com.google.gson.Gson().toJson(com.google.gson.JsonObject().apply {
+                addProperty("app", "YTDLnisX_backup")
+                addProperty("backup_format_version", 4)
+                add("settings", BackupSettingsUtil.toJsonArray(importedSettings("stable", "Imported Stable")))
+            })
+            assertEquals(normalized.data.settings, BackupRestoreParser.parse(legacyJson).data.settings)
+            val restored = SettingsViewModel(context as android.app.Application)
+                .restorePlan(normalized, context)
+            assertTrue("normalized legacy merge must complete: $restored", restored is RestoreOutcome.Completed)
+            assertDestinationProof("stable", 41L)
+            assertEquals("local-only", preferences.getString("ytdlp_future_runtime_authority", null))
+        }
+    }
+
+    @Test
+    fun mergeSameSourcePreservesDestinationGenerationAndCompatibleProof() = runBlocking {
+        sameSourceRestorePreservesDestination(reset = false)
+    }
+
+    @Test
+    fun resetSameSourcePreservesDestinationGenerationAndCompatibleProof() = runBlocking {
+        sameSourceRestorePreservesDestination(reset = true)
+    }
+
+    @Test
+    fun mergeChangedSourceInvalidatesLocalProofAndConvergesWithAutomaticUpdatesOff() = runBlocking {
+        changedSourceRestoreConverges(reset = false)
+    }
+
+    @Test
+    fun resetChangedSourceInvalidatesLocalProofAndConvergesWithAutomaticUpdatesOff() = runBlocking {
+        changedSourceRestoreConverges(reset = true)
+    }
+
+    @Test
+    fun absentSourceMergesPreserveIntentAndResetsUseFreshLocalDefaultGeneration() = runBlocking {
+        withPreferenceSnapshot {
+            seedDestination("nightly", 41L)
+            restoreSource(emptyList(), reset = false)
+            assertDestinationProof("nightly", 41L)
+            restoreSource(emptyList(), reset = true)
+            assertEquals(UpdateUtil.DesiredSource("stable", 42L), UpdateUtil(context).desiredSource())
+            assertFalse(preferences.contains("ytdlp_source"))
+            assertFalse(preferences.contains("ytdlp_source_label"))
+            assertNoSourceProof()
+            restoreSource(emptyList(), reset = true)
+            assertEquals(UpdateUtil.DesiredSource("stable", 42L), UpdateUtil(context).desiredSource())
+            assertFalse(preferences.contains("ytdlp_source"))
+        }
+    }
+
+    @Test
+    fun sameAbsentDefaultRestorePreservesZeroGenerationProofWithoutMaterializingIntent() = runBlocking {
+        withPreferenceSnapshot {
+            seedDestination("stable", 0L)
+            assertTrue(preferences.edit().remove("ytdlp_source").remove("ytdlp_source_label")
+                .remove("ytdlp_source_generation").commit())
+            restoreSource(emptyList(), reset = false)
+            restoreSource(emptyList(), reset = true)
+            assertEquals(UpdateUtil.DesiredSource("stable", 0L), UpdateUtil(context).desiredSource())
+            assertFalse(preferences.contains("ytdlp_source"))
+            assertFalse(preferences.contains("ytdlp_source_generation"))
+            assertDestinationProof("stable", 0L)
+        }
+    }
+
+    @Test
+    fun inFlightManualAndStartupResultsCannotCommitAfterChangedSourceMerge() = runBlocking {
+        listOf(false, true).forEach { startup -> inFlightRestoreSupersedesResult(reset = false, startup = startup) }
+    }
+
+    @Test
+    fun inFlightManualAndStartupResultsCannotCommitAfterChangedSourceReset() = runBlocking {
+        listOf(false, true).forEach { startup -> inFlightRestoreSupersedesResult(reset = true, startup = startup) }
+    }
+
+    private suspend fun sameSourceRestorePreservesDestination(reset: Boolean) {
+        withPreferenceSnapshot {
+            seedDestination("nightly", 41L)
+            restoreSource(importedSettings("nightly", "Restored Nightly"), reset)
+            assertEquals(UpdateUtil.DesiredSource("nightly", 41L), UpdateUtil(context).desiredSource())
+            assertEquals("Restored Nightly", preferences.getString("ytdlp_source_label", null))
+            assertDestinationProof("nightly", 41L)
+        }
+    }
+
+    private suspend fun changedSourceRestoreConverges(reset: Boolean) {
+        withPreferenceSnapshot {
+            seedDestination("stable", 41L)
+            restoreSource(importedSettings("nightly", "Restored Nightly"), reset)
+            assertEquals(UpdateUtil.DesiredSource("nightly", 42L), UpdateUtil(context).desiredSource())
+            assertFalse(preferences.getBoolean("auto_update_ytdlp", true))
+            assertNoSourceProof()
+            val calls = CopyOnWriteArrayList<String>()
+            UpdateUtil.updaterForTesting = { _, source ->
+                calls += source
+                assertEquals("nightly", source)
+                assertEquals(42L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                assertEquals("nightly", preferences.getString("ytdlp_pending_source", null))
+                UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-nightly")
+            }
+            val committed = committedGeneration("nightly", 42L)
+            val owner = startupOwner()
+            try {
+                withTimeout(30_000) { committed.await() }
+                owner.stop()
+                assertEquals(listOf("nightly"), calls.toList())
+                assertTrue(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 42L)))
+                assertEquals("DONE:destination-nightly", preferences.getString("ytdlp_committed_result", null))
+            } finally {
+                owner.stop()
+            }
+        }
+    }
+
+    private suspend fun inFlightRestoreSupersedesResult(reset: Boolean, startup: Boolean) {
+        withPreferenceSnapshot {
+            coroutineScope {
+                val update = UpdateUtil(context)
+                val generationA = update.selectSource("stable", "Stable")
+                val entered = CountDownLatch(1)
+                val release = CountDownLatch(1)
+                val calls = CopyOnWriteArrayList<String>()
+                UpdateUtil.updaterForTesting = { _, source ->
+                    calls += source
+                    if (source == "stable") {
+                        entered.countDown()
+                        check(release.await(60, TimeUnit.SECONDS)) { "in-flight restore latch was not released" }
+                    }
+                    UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, source)
+                }
+                val requestA = async(Dispatchers.IO) {
+                    if (startup) update.updateOnStartup(false) else update.updateYoutubeDL(generationA)
+                }
+                try {
+                    assertTrue("A must reach real runtime mutation admission", entered.await(10, TimeUnit.SECONDS))
+                    assertEquals(generationA, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                    restoreSource(importedSettings("nightly", "Restored Nightly"), reset)
+                    val desiredB = UpdateUtil.DesiredSource("nightly", generationA + 1L)
+                    assertEquals(desiredB, update.desiredSource())
+                    assertNoSourceProof()
+                    assertEquals(listOf("stable"), calls.toList())
+                    release.countDown()
+                    assertEquals(UpdateUtil.YTDLPUpdateStatus.SUPERSEDED,
+                        withTimeout(30_000) { requestA.await() }.status)
+                    assertNoSourceProof()
+                    assertEquals(desiredB, update.desiredSource())
+                    assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, update.updateOnStartup(false).status)
+                    assertTrue(update.startupGenerationIsCommitted(desiredB))
+                    assertEquals("DONE:nightly", preferences.getString("ytdlp_committed_result", null))
+                    assertEquals(listOf("stable", "nightly"), calls.toList())
+                } finally {
+                    release.countDown()
+                }
+            }
+        }
+    }
+
+    private fun seedDestination(source: String, generation: Long) {
+        assertTrue(preferences.edit()
+            .putString("ytdlp_source", source)
+            .putString("ytdlp_source_label", "Destination $source")
+            .putLong("ytdlp_source_generation", generation)
+            .putString("ytdlp_committed_source", source)
+            .putLong("ytdlp_committed_source_generation", generation)
+            .putString("ytdlp_committed_result", "DONE:destination")
+            .putString("ytdlp_pending_source", source)
+            .putLong("ytdlp_pending_source_generation", generation)
+            .putBoolean("auto_update_ytdlp", false)
+            .commit())
+    }
+
+    private fun importedSettings(source: String, label: String) = listOf(
+        BackupSettingsItem("ytdlp_source", source, "String"),
+        BackupSettingsItem("ytdlp_source_label", label, "String"),
+        BackupSettingsItem("auto_update_ytdlp", "false", "Boolean"),
+        BackupSettingsItem("ytdlp_source_generation", "9999", "Long"),
+        BackupSettingsItem("ytdlp_committed_source_generation", "9999", "Long"),
+        BackupSettingsItem("ytdlp_committed_source", "foreign-proof", "String"),
+        BackupSettingsItem("ytdlp_committed_result", "DONE:foreign", "String"),
+        BackupSettingsItem("ytdlp_pending_source_generation", "9999", "Long"),
+        BackupSettingsItem("ytdlp_pending_source", "foreign-pending", "String"),
+    )
+
+    private suspend fun restoreSource(settings: List<BackupSettingsItem>, reset: Boolean) {
+        assertFalse("test must start outside Reset recovery", RestoreGate.isRestoreInProgress(context))
+        val outcome = withTimeout(45_000) {
+            SettingsViewModel(context as android.app.Application).restoreData(
+                RestoreAppDataItem(settings = settings), context, reset,
+            )
+        }
+        assertTrue("real restore must complete: $outcome", outcome is RestoreOutcome.Completed)
+        assertFalse("completed restore must retire its owner", RestoreGate.isRestoreInProgress(context))
+    }
+
+    private fun assertDestinationProof(source: String, generation: Long) {
+        assertEquals(source, preferences.getString("ytdlp_committed_source", null))
+        assertEquals(generation, preferences.getLong("ytdlp_committed_source_generation", -1L))
+        assertEquals("DONE:destination", preferences.getString("ytdlp_committed_result", null))
+        assertEquals(source, preferences.getString("ytdlp_pending_source", null))
+        assertEquals(generation, preferences.getLong("ytdlp_pending_source_generation", -1L))
+    }
+
+    private fun assertNoSourceProof() {
+        ownedPreferenceKeys.filter { UpdateUtil.isDestinationLocalPreferenceKey(it) }
+            .filterNot { it == "ytdlp_source_generation" }.forEach { key ->
+                assertFalse("no old/imported authority may survive: $key", preferences.contains(key))
+            }
+    }
+
+    private suspend fun withPreferenceSnapshot(block: suspend () -> Unit) {
+        val snapshot = preferences.all.toMap()
+        try {
+            block()
+        } finally {
+            RestoreMutationAdmission.withRestorePublication {
+                val editor = preferences.edit().clear()
+                snapshot.forEach { (key, value) -> putPreferenceValue(editor, key, value) }
+                assertTrue("full preference graph must be restored", editor.commit())
             }
         }
     }

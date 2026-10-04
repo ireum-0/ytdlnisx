@@ -77,6 +77,24 @@ class BackupSettingsUtilTest {
         BackupSettingsUtil.toJsonArray(listOf("not an object"))
     }
 
+    @Test
+    fun onlyYtdlpSourceAndLabelArePortableUpdaterIntent() {
+        assertTrue(BackupSettingsUtil.isPortablePreferenceKey("ytdlp_source"))
+        assertTrue(BackupSettingsUtil.isPortablePreferenceKey("ytdlp_source_label"))
+        assertTrue(BackupSettingsUtil.isPortablePreferenceKey("auto_update_ytdlp"))
+        listOf(
+            "ytdlp_source_generation",
+            "ytdlp_committed_source_generation",
+            "ytdlp_committed_source",
+            "ytdlp_committed_result",
+            "ytdlp_pending_source_generation",
+            "ytdlp_pending_source",
+            "ytdlp_future_runtime_authority",
+        ).forEach { key ->
+            assertFalse(key, BackupSettingsUtil.isPortablePreferenceKey(key))
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun keywordGroupDao(getGroups: () -> List<KeywordGroup>): KeywordGroupDao {
         return Proxy.newProxyInstance(

@@ -44,6 +44,7 @@ object BackupSettingsUtil {
 
     internal fun isPortablePreferenceKey(key: String): Boolean =
         key !in nonPortablePreferenceKeys &&
+            !UpdateUtil.isDestinationLocalPreferenceKey(key) &&
             !CleanupScheduleCoordinator.isCoordinatorOwnedPreferenceKey(key) &&
             !key.startsWith(PLAYBACK_POSITION_CACHE_PREFIX) &&
             !key.startsWith(LOCAL_ADD_RUNTIME_PREFIX) &&
