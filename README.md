@@ -13,6 +13,10 @@ The latest authoritative correctness-remediation status is:
 - final-heavy execution gate: **PASS**
 - final closure evidence:
   `evidence/FINAL_KNOWN_GOOD_BASELINE_2026-10-05_ADF2F347.md`
+- published Known-Good Baseline marker:
+  `checkpoint/pre-baseline-review@db29f63ce169176b4c8ade4cec01f66cc0307ec8`
+- immutable tag:
+  **PENDING** — preferred name `known-good-2026-10-05-adf2f347`
 
 `CURRENT_STATUS.md` contains the current authoritative override. Historical Finding-A closure text below is preserved for auditability and is not the current remediation verdict.
 
