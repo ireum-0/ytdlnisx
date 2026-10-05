@@ -1,5 +1,37 @@
 # Current Remediation Status
 
+## Final correctness-remediation closure — 2026-10-05
+
+This section is the latest authoritative status override.
+
+- Production source SHA independently accepted as CLEAN:
+  `checkpoint/pre-baseline-review@adf2f347ce9e20ec9f9376cf94053694353c9961`
+- Final completion review:
+  `review/remediation@5875b96679b7a011273fe39e19a17a64da5922e1`
+- Final closure evidence:
+  `evidence/FINAL_KNOWN_GOOD_BASELINE_2026-10-05_ADF2F347.md`
+- Canonical active-remediation blockers: **P0=0 / P1=0 / P2=0**
+- Canonical open roots: **NONE**
+- Waivers: **none**
+- Final high-effort independent source review: **PASS**
+- Final-heavy execution gate: **PASS**
+  - JVM: **737 PASS / 0 FAIL / 0 skipped**
+  - final instrumentation inventory: **100 PASS / 0 FAIL / 0 skipped**
+  - KSP / Kotlin / AndroidTest compile: **PASS**
+  - normal arm64 `assembleDebug`: **PASS**
+  - accepted x86_64 artifact proof: **PASS**
+- Current correctness-remediation verdict: **CLEAN**
+- Known-Good Baseline promotion: **AUTHORIZED**
+- Immutable baseline tag: **not yet recorded in this ledger**
+
+Closed final remediation roots:
+- BUG-UPDATER-02 — CLOSED
+- BUG-UPDATER-03 — CLOSED
+- BUG-HISTORY-05 — CLOSED
+
+The historical status material below remains preserved for auditability and is superseded for the current correctness-remediation verdict by this final closure section. Historical registry counts are not reinterpreted as current active-remediation blocker counts.
+
+
 This file is the current status overlay for the correctness-remediation ledger. It records status decisions already established by review/evidence without rewriting historical baseline, append-only finding records, or historical closure evidence.
 
 ## Authority
