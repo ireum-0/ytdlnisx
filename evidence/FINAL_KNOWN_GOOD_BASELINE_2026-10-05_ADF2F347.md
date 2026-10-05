@@ -54,10 +54,17 @@ It is one normal forward commit from adf2f347 and uses the exact same source tre
 
 The marker commit changes zero files and does not substitute for the exact execution SHA; it records that the adf2f347 tree passed the final gate.
 
-Preferred immutable baseline tag:
+Immutable baseline tag:
 known-good-2026-10-05-adf2f347
 
-The exact tag name was verified absent. Tag creation remains pending only because the currently available authenticated GitHub write interface in this review environment does not expose tag-ref/tag-object creation. No mutable branch is substituted for the immutable tag.
+The tag is created and verified in GitHub:
+- ref: refs/tags/known-good-2026-10-05-adf2f347
+- annotated tag object: c7e1ad432212baba1a0aa2dc19dfb895dfdde6f5
+- target type: commit
+- target: db29f63ce169176b4c8ade4cec01f66cc0307ec8
+- message: Known-Good correctness baseline adf2f347
+
+Governance sealing is complete.
 
 ## Execution evidence provenance
 
