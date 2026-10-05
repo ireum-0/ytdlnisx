@@ -1,5 +1,25 @@
 # Governing Source Artifacts
 
+## Final remediation closure authority — 2026-10-05
+
+- Final independently CLEAN source SHA:
+  `checkpoint/pre-baseline-review@adf2f347ce9e20ec9f9376cf94053694353c9961`
+- Final completion review:
+  `review/remediation@5875b96679b7a011273fe39e19a17a64da5922e1`
+- Final ledger evidence:
+  `evidence/FINAL_KNOWN_GOOD_BASELINE_2026-10-05_ADF2F347.md`
+- Current status authority:
+  `CURRENT_STATUS.md`
+- Governing Review Checklist v7 blob:
+  `e758358ff6d8952470ef3b07f5b18fb26ed4c05c`
+- Governing lens policy blob:
+  `49600871d632fd8612bbabec80dfaa996afb54d3`
+- Current remediation verdict: **CLEAN**
+- Known-Good Baseline promotion: **AUTHORIZED**
+
+Historical checklist/status identities below remain preserved for reproducibility.
+
+
 The correctness-remediation project uses the following documents as governing references. Historical checklist identities are preserved so earlier reviews remain reproducible.
 
 ## Master Plan
