@@ -23,7 +23,7 @@ This section is the latest authoritative status override.
 - Current correctness-remediation verdict: **CLEAN**
 - Known-Good Baseline marker: **PUBLISHED** at `checkpoint/pre-baseline-review@db29f63ce169176b4c8ade4cec01f66cc0307ec8`
 - Baseline marker tree: `5a548066be27295a76ee46547818935bc4add95a` — identical to the verified `adf2f347...` source tree
-- Immutable baseline tag: **PENDING** — preferred name `known-good-2026-10-05-adf2f347`; exact tag ref verified absent; current authenticated GitHub write interface does not expose tag creation
+- Immutable baseline tag: **CREATED AND VERIFIED** — `known-good-2026-10-05-adf2f347` → annotated tag object `c7e1ad432212baba1a0aa2dc19dfb895dfdde6f5` → baseline marker `db29f63ce169176b4c8ade4cec01f66cc0307ec8`
 
 Closed final remediation roots:
 - BUG-UPDATER-02 — CLOSED
