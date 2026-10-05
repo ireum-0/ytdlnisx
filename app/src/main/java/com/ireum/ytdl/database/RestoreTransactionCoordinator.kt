@@ -1366,7 +1366,7 @@ object RestoreTransactionCoordinator {
         context: Context,
         record: RestoreRecord,
         applied: AppliedState,
-    ) = UpdateUtil.withRestoredSourcePublication {
+    ) = UpdateUtil.withRestoredSourcePublication(context) {
         val data = record.plan.data
         if (data.settings == null && applied.visibleGroups == null &&
             applied.visibleYoutubers == null && applied.visibleKeywords == null

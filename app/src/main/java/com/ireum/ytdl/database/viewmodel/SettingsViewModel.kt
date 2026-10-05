@@ -556,7 +556,7 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
             settings?.apply {
                 val prefs = this
                 RestoreMutationAdmission.withOrdinaryMutation(context) {
-                    UpdateUtil.withRestoredSourcePublication {
+                    UpdateUtil.withRestoredSourcePublication(context) {
                     val preferences = PreferenceManager.getDefaultSharedPreferences(context)
                     val snapshot = preferences.all.toMap()
                     val editor = preferences.edit()

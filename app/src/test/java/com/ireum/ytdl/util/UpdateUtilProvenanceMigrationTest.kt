@@ -13,6 +13,7 @@ import org.junit.Test
 class UpdateUtilProvenanceMigrationTest {
     private val legacyEpochKey = "ytdlp_provenance_epoch"
     private val localEpochKey = "epoch"
+    private val generationDomainKey = "desired_generation_domain"
     private val proofKeys = setOf(
         "ytdlp_committed_source_generation", "ytdlp_committed_source", "ytdlp_committed_result",
         "ytdlp_pending_source_generation", "ytdlp_pending_source",
@@ -39,7 +40,7 @@ class UpdateUtilProvenanceMigrationTest {
     }
 
     @Test
-    fun oldDefaultEpochRetiresLegacyProofWithoutRebasingDesiredGeneration() {
+    fun oldDefaultEpochRetiresLegacyProofAndRebasesForeignDesiredGeneration() {
         assertLegacyRetired(legacyGraph() + (legacyEpochKey to 0))
     }
 
@@ -68,10 +69,10 @@ class UpdateUtilProvenanceMigrationTest {
     }
 
     @Test
-    fun currentIndependentEpochIsIdempotentAndPreservesFreshProofAcrossReopening() {
+    fun currentGenerationDomainIsIdempotentAndPreservesFreshProofAcrossReopening() {
         val fresh = legacyGraph() + ("ytdlp_committed_result" to "DONE:destination-runtime")
         val defaults = MemoryPreferences(fresh)
-        val local = MemoryPreferences(mapOf(localEpochKey to 1))
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
         migrate(defaults, local)
         migrate(defaults, local)
 
@@ -146,6 +147,8 @@ class UpdateUtilProvenanceMigrationTest {
 
         assertTrue(failure is IllegalStateException)
         assertEquals(1, local.memory[localEpochKey])
+        assertEquals(1, local.memory[generationDomainKey])
+        assertFalse(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(local.preferences))
         assertTrue(local.disk.isEmpty())
         assertTrue(defaults.disk.keys.none { it in proofKeys })
         assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
@@ -192,6 +195,124 @@ class UpdateUtilProvenanceMigrationTest {
             plan.data.settings.orEmpty().map { it.key }.toSet())
     }
 
+    @Test
+    fun wrongTypeLegacyGenerationIsNeverTypedReadAndConvergesDurably() {
+        listOf<Any>("83", 83, true, 83.0f, setOf("83")).forEach(::assertLegacyGeneration)
+    }
+
+    @Test
+    fun negativeLegacyGenerationIsRebased() = assertLegacyGeneration(-1L)
+
+    @Test
+    fun maximumLegacyGenerationIsRebased() = assertLegacyGeneration(Long.MAX_VALUE)
+
+    @Test
+    fun positiveForeignLegacyGenerationIsNotDestinationIdentity() = assertLegacyGeneration(9999L)
+
+    @Test
+    fun legacySourceIntentAndLabelSurviveAcrossSupportedSources() {
+        listOf("stable", "nightly", "master", "custom/repository").forEach { source ->
+            val defaults = MemoryPreferences(legacyGraph() + mapOf(
+                "ytdlp_source" to source, "ytdlp_source_label" to "User $source",
+            ))
+            val local = MemoryPreferences(emptyMap())
+            migrate(defaults, local)
+            assertEquals(source, defaults.disk["ytdlp_source"])
+            assertEquals("User $source", defaults.disk["ytdlp_source_label"])
+            assertEquals(1L, defaults.disk["ytdlp_source_generation"])
+        }
+    }
+
+    @Test
+    fun currentGenerationDomainMaximumIsPreservedAndStillExhaustsAllocation() {
+        val fresh = legacyGraph() + ("ytdlp_source_generation" to Long.MAX_VALUE)
+        val defaults = MemoryPreferences(fresh)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        migrate(defaults, local)
+        assertEquals(fresh, defaults.disk)
+        assertEquals(0, defaults.commits)
+        assertEquals(Long.MAX_VALUE, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+        assertEquals(Long.MAX_VALUE, UpdateUtil.restoredSourceGeneration("nightly", Long.MAX_VALUE, "nightly"))
+        assertTrue(runCatching {
+            UpdateUtil.restoredSourceGeneration("nightly", Long.MAX_VALUE, "stable")
+        }.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun failedDefaultCommitCannotBecomeAuthorityAndSameProcessRetryRepublishes() {
+        val defaults = MemoryPreferences(legacyGraph() + ("ytdlp_source_generation" to "foreign"), failCommit = 1)
+        val local = MemoryPreferences(emptyMap())
+        assertTrue(runCatching { migrate(defaults, local) }.exceptionOrNull() is IllegalStateException)
+        assertEquals("foreign", defaults.disk["ytdlp_source_generation"])
+        assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+        assertEquals(0, local.commits)
+        assertEquals(1L, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+        migrate(defaults, local)
+        assertEquals(2, defaults.commits)
+        assertMigrated(defaults, local)
+    }
+
+    @Test
+    fun oldPrivateProvenanceEpochCannotProveAnyGenerationRepresentation() {
+        listOf<Any>("83", 83, -1L, Long.MAX_VALUE, 83L).forEach { value ->
+            val defaults = MemoryPreferences(legacyGraph() + ("ytdlp_source_generation" to value))
+            val local = MemoryPreferences(mapOf(localEpochKey to 1))
+            assertFalse(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(local.preferences))
+            assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+            assertEquals(1L, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+            migrate(defaults, local)
+            assertMigrated(defaults, local)
+            val durable = defaults.disk
+            migrate(defaults, local)
+            assertEquals(durable, defaults.disk)
+            assertEquals(1, defaults.commits)
+        }
+    }
+
+    @Test
+    fun existingGenerationDomainSurvivesProvenancePublicationFailuresWithoutRebase() {
+        listOf(false, true).forEach { failLocal ->
+            val defaults = MemoryPreferences(legacyGraph() + ("ytdlp_source_generation" to Long.MAX_VALUE),
+                failCommit = if (failLocal) null else 1)
+            val local = MemoryPreferences(mapOf(generationDomainKey to 1),
+                failCommit = if (failLocal) 1 else null)
+            assertTrue(runCatching { migrate(defaults, local) }.exceptionOrNull() is IllegalStateException)
+            assertTrue(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(local.preferences))
+            assertFalse(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+            assertEquals(Long.MAX_VALUE, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+            migrate(defaults, local)
+            assertEquals(Long.MAX_VALUE, defaults.disk["ytdlp_source_generation"])
+            assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
+            assertTrue(defaults.disk.keys.none { it in proofKeys })
+        }
+    }
+
+    @Test
+    fun unsupportedFutureGenerationDomainFailsClosedWithoutErasingState() {
+        val defaults = MemoryPreferences(legacyGraph())
+        val future = mapOf(localEpochKey to 1, generationDomainKey to 2)
+        val local = MemoryPreferences(future)
+        assertTrue(runCatching { migrate(defaults, local) }.exceptionOrNull() is IllegalStateException)
+        assertEquals(legacyGraph(), defaults.disk)
+        assertEquals(future, local.disk)
+        assertEquals(0, defaults.commits)
+        assertEquals(0, local.commits)
+    }
+
+    private fun assertLegacyGeneration(value: Any) {
+        val defaults = MemoryPreferences(legacyGraph() + ("ytdlp_source_generation" to value))
+        val local = MemoryPreferences(emptyMap())
+        // A pre-read observes the owner's safe allocation, never the foreign
+        // representation. The direct fixture remains unmodified until migrate.
+        assertEquals(1L, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+        assertEquals(value, defaults.disk["ytdlp_source_generation"])
+        assertEquals(0, defaults.commits)
+        migrate(defaults, local)
+        assertMigrated(defaults, local)
+        assertEquals(1L, UpdateUtil.desiredSourceGeneration(defaults.preferences, local.preferences))
+        assertEquals(2L, UpdateUtil.restoredSourceGeneration("nightly", 1L, "master"))
+    }
+
     private fun assertLegacyRetired(graph: Map<String, Any?>) {
         // Direct old-state storage; no current writer creates the fixture.
         val defaults = MemoryPreferences(graph)
@@ -213,8 +334,9 @@ class UpdateUtilProvenanceMigrationTest {
         assertTrue(defaults.disk.keys.none { it in proofKeys })
         assertFalse(defaults.disk.containsKey(legacyEpochKey))
         assertEquals("nightly", defaults.disk["ytdlp_source"])
-        assertEquals(83L, defaults.disk["ytdlp_source_generation"])
+        assertEquals(1L, defaults.disk["ytdlp_source_generation"])
         assertEquals(1, local.disk[localEpochKey])
+        assertEquals(1, local.disk[generationDomainKey])
         assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(local.preferences))
     }
 
@@ -257,6 +379,14 @@ class UpdateUtilProvenanceMigrationTest {
                         value
                     }
                 }
+                "getLong" -> {
+                    val key = args!![0] as String
+                    if (!memory.containsKey(key)) args[1] else {
+                        val value = memory[key]
+                        if (value !is Long) throw ClassCastException("Non-Long value for " + key)
+                        value
+                    }
+                }
                 "edit" -> editor()
                 "toString" -> "MigrationMemoryPreferences"
                 else -> error("Unexpected preference method " + method.name)
@@ -270,7 +400,7 @@ class UpdateUtilProvenanceMigrationTest {
             ) { proxy, method, args ->
                 when (method.name) {
                     "remove" -> { changes[args!![0] as String] = removed; proxy }
-                    "putInt" -> { changes[args!![0] as String] = args[1]; proxy }
+                    "putInt", "putLong" -> { changes[args!![0] as String] = args[1]; proxy }
                     "commit" -> {
                         val next = memory.toMutableMap()
                         changes.forEach { (key, value) ->

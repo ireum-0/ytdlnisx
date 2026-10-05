@@ -627,7 +627,7 @@ class UpdateUtilProductionWiringTest {
             seedLegacyProvenance(includePending = false)
             val enteredPrerequisites = CompletableDeferred<Unit>()
             val ready = CompletableDeferred<Unit>()
-            val committed = committedGeneration("nightly", 83L)
+            val committed = committedGeneration("nightly", 1L)
             val calls = AtomicInteger()
             UpdateUtil.updaterForTesting = { _, source ->
                 assertEquals("nightly", source)
@@ -641,7 +641,7 @@ class UpdateUtilProductionWiringTest {
             })
             try {
                 withTimeout(10_000) { enteredPrerequisites.await() }
-                assertFalse(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 83L)))
+                assertFalse(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 1L)))
                 assertFalse(preferences.contains("ytdlp_provenance_epoch"))
                 assertEquals("DONE:foreign-runtime", preferences.getString("ytdlp_committed_result", null))
                 assertEquals(0, calls.get())
@@ -665,7 +665,7 @@ class UpdateUtilProductionWiringTest {
             val prepared = CountDownLatch(1)
             val releaseReset = CountDownLatch(1)
             val prerequisiteEntered = CompletableDeferred<Unit>()
-            val committedB = committedGeneration("master", 84L)
+            val committedB = committedGeneration("master", 2L)
             val calls = CopyOnWriteArrayList<String>()
             assertEquals(null, RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting)
             RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
@@ -675,7 +675,7 @@ class UpdateUtilProductionWiringTest {
             UpdateUtil.updaterForTesting = { _, source ->
                 calls += source
                 assertEquals("master", source)
-                assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
+                assertEquals(UpdateUtil.DesiredSource("master", 2L), UpdateUtil(context).desiredSource())
                 assertEquals("Restored Master", preferences.getString("ytdlp_source_label", null))
                 assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
                 assertFalse(preferences.contains("ytdlp_committed_result"))
@@ -712,7 +712,7 @@ class UpdateUtilProductionWiringTest {
                 withTimeout(30_000) { committedB.await() }
                 owner.stop()
                 assertEquals(listOf("master"), calls.toList())
-                assertEquals(UpdateUtil.DesiredSource("master", 84L), UpdateUtil(context).desiredSource())
+                assertEquals(UpdateUtil.DesiredSource("master", 2L), UpdateUtil(context).desiredSource())
                 assertEquals(1, provenancePreferences.getInt("epoch", 0))
                 assertEquals("DONE:destination-master", preferences.getString("ytdlp_committed_result", null))
             } finally {
@@ -750,17 +750,146 @@ class UpdateUtilProductionWiringTest {
         }
     }
 
+    @Test
+    fun legacyWrongTypeGenerationsConvergeThroughStartup() = runBlocking {
+        listOf<Any>("83", 83, true, 83.0f, setOf("83")).forEach { value ->
+            reproveLegacyGraph(includePending = false, legacyGeneration = value)
+        }
+    }
+
+    @Test
+    fun legacyNegativeGenerationConvergesThroughStartup() = runBlocking {
+        reproveLegacyGraph(includePending = false, legacyGeneration = -1L)
+    }
+
+    @Test
+    fun legacyMaximumGenerationConvergesThroughStartup() = runBlocking {
+        reproveLegacyGraph(includePending = false, legacyGeneration = Long.MAX_VALUE)
+    }
+
+    @Test
+    fun legacyForeignGenerationConvergesThroughStartup() = runBlocking {
+        reproveLegacyGraph(includePending = false, legacyGeneration = 9999L)
+    }
+
+    @Test
+    fun manualAdmissionConvergesLegacyWrongTypeGeneration() = runBlocking {
+        withPreferenceSnapshot {
+            seedLegacyProvenance(includePending = true, legacyGeneration = "foreign")
+            val calls = AtomicInteger()
+            UpdateUtil.updaterForTesting = { _, source ->
+                assertEquals("nightly", source)
+                assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
+                assertEquals(1L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                calls.incrementAndGet()
+                UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "manual-local")
+            }
+            assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE,
+                UpdateUtil(context).updateYoutubeDL(expectedGeneration = 1L).status)
+            assertEquals(1, calls.get())
+            assertTrue(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 1L)))
+            assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
+        }
+    }
+
+    @Test
+    fun sourceSelectionRebasesLegacyMaximumButPreservesCurrentExhaustion() = runBlocking {
+        withPreferenceSnapshot {
+            seedLegacyProvenance(includePending = true, legacyGeneration = Long.MAX_VALUE)
+            val update = UpdateUtil(context)
+            assertEquals(2L, update.selectSource("master", "Selected Master"))
+            assertEquals(UpdateUtil.DesiredSource("master", 2L), update.desiredSource())
+            assertEquals("Selected Master", preferences.getString("ytdlp_source_label", null))
+            assertNoSourceProof()
+            seedDestination("master", Long.MAX_VALUE)
+            assertEquals(Long.MAX_VALUE, update.selectSource("master", "Current Master"))
+            val current = preferences.all.toMap()
+            val failure = runCatching { update.selectSource("nightly", "Nightly") }.exceptionOrNull()
+            assertTrue(failure is IllegalStateException)
+            assertEquals("yt-dlp source generation exhausted", failure?.message)
+            assertEquals(current, preferences.all)
+            assertEquals(UpdateUtil.DesiredSource("master", Long.MAX_VALUE), update.desiredSource())
+        }
+    }
+
+    @Test
+    fun legacyGenerationsConvergeThroughRealMergeAndReset() = runBlocking {
+        listOf<Any>("foreign", -1L, Long.MAX_VALUE, 9999L).forEach { value ->
+            listOf(false, true).forEach { reset ->
+                withPreferenceSnapshot {
+                    seedLegacyProvenance(includePending = true, legacyGeneration = value)
+                    restoreSource(importedSettings("master", "Restored Master"), reset)
+                    val update = UpdateUtil(context)
+                    val desired = UpdateUtil.DesiredSource("master", 2L)
+                    assertEquals(desired, update.desiredSource())
+                    assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
+                    assertEquals("Restored Master", preferences.getString("ytdlp_source_label", null))
+                    assertNoSourceProof()
+                    val calls = AtomicInteger()
+                    UpdateUtil.updaterForTesting = { _, source ->
+                        assertEquals("master", source)
+                        assertEquals(2L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                        calls.incrementAndGet()
+                        UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "restored-local")
+                    }
+                    assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, update.updateOnStartup(false).status)
+                    assertEquals(1, calls.get())
+                    assertTrue(update.startupGenerationIsCommitted(desired))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun privateProvenanceEpochAloneCannotProvePositiveGenerationOrigin() = runBlocking {
+        reproveLegacyGraph(includePending = true, legacyGeneration = 9999L, localProvenanceEpoch = 1)
+    }
+
+    @Test
+    fun legacyGenerationsAtPrivateEpochConvergeThroughManualAdmission() = runBlocking {
+        listOf<Any>("foreign", 83, -1L, Long.MAX_VALUE, 9999L).forEach { value ->
+            withPreferenceSnapshot {
+                seedLegacyProvenance(includePending = true, legacyGeneration = value)
+                assertTrue(provenancePreferences.edit().putInt("epoch", 1).commit())
+                assertFalse(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(provenancePreferences))
+                val update = UpdateUtil(context)
+                assertEquals(UpdateUtil.DesiredSource("nightly", 1L), update.desiredSource())
+                assertEquals(value, preferences.all["ytdlp_source_generation"])
+                val calls = AtomicInteger()
+                UpdateUtil.updaterForTesting = { _, source ->
+                    assertEquals("nightly", source)
+                    assertTrue(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(provenancePreferences))
+                    assertEquals(1L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                    calls.incrementAndGet()
+                    UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "new-domain")
+                }
+                assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, update.updateYoutubeDL().status)
+                assertEquals(1, calls.get())
+                assertTrue(update.startupGenerationIsCommitted(UpdateUtil.DesiredSource("nightly", 1L)))
+                val durable = preferences.all.toMap()
+                update.migrateDestinationProvenance()
+                assertEquals(durable, preferences.all)
+                assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
+            }
+        }
+    }
+
     private suspend fun reproveLegacyGraph(
         includePending: Boolean,
         legacyEpoch: Any? = null,
         legacyResult: String = "DONE:foreign-runtime",
+        legacyGeneration: Any = 83L,
+        localProvenanceEpoch: Int? = null,
     ) {
         withPreferenceSnapshot {
-            seedLegacyProvenance(includePending, legacyEpoch, legacyResult)
+            seedLegacyProvenance(includePending, legacyEpoch, legacyResult, legacyGeneration)
+            localProvenanceEpoch?.let {
+                assertTrue(provenancePreferences.edit().putInt("epoch", it).commit())
+            }
             assertTrue("old-state fixture must not publish the independent discriminator",
-                provenancePreferences.all.isEmpty())
+                !provenancePreferences.contains("desired_generation_domain"))
             val update = UpdateUtil(context)
-            val desired = UpdateUtil.DesiredSource("nightly", 83L)
+            val desired = UpdateUtil.DesiredSource("nightly", 1L)
             assertEquals(desired, update.desiredSource())
             assertFalse(update.startupGenerationIsCommitted(desired))
             if (includePending) {
@@ -774,11 +903,11 @@ class UpdateUtilProductionWiringTest {
                 assertEquals("nightly", source)
                 assertTrue(UpdateUtil.destinationProvenanceEpochIsCurrent(provenancePreferences))
                 assertFalse(preferences.contains("ytdlp_committed_result"))
-                assertEquals(83L, preferences.getLong("ytdlp_pending_source_generation", -1L))
+                assertEquals(1L, preferences.getLong("ytdlp_pending_source_generation", -1L))
                 calls.incrementAndGet()
                 UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "destination-nightly")
             }
-            val committed = committedGeneration("nightly", 83L)
+            val committed = committedGeneration("nightly", 1L)
             val firstOwner = startupOwner()
             try {
                 withTimeout(30_000) { committed.await() }
@@ -788,6 +917,7 @@ class UpdateUtilProductionWiringTest {
                 assertEquals("User Nightly", preferences.getString("ytdlp_source_label", null))
                 assertEquals("DONE:destination-nightly", preferences.getString("ytdlp_committed_result", null))
                 assertEquals(1, provenancePreferences.getInt("epoch", 0))
+                assertEquals(1, provenancePreferences.getInt("desired_generation_domain", 0))
                 assertFalse(preferences.contains("ytdlp_provenance_epoch"))
                 val localFresh = provenancePreferences.all.toMap()
                 val fresh = preferences.all.filterKeys { it in ownedPreferenceKeys }
@@ -825,17 +955,18 @@ class UpdateUtilProductionWiringTest {
         includePending: Boolean,
         legacyEpoch: Any? = null,
         legacyResult: String = "DONE:foreign-runtime",
+        legacyGeneration: Any = 83L,
     ) {
         val editor = preferences.edit()
             .putString("ytdlp_source", "nightly")
             .putString("ytdlp_source_label", "User Nightly")
-            .putLong("ytdlp_source_generation", 83L)
             .putString("ytdlp_committed_source", "nightly")
             .putLong("ytdlp_committed_source_generation", 83L)
             .putString("ytdlp_committed_result", legacyResult)
             .remove("ytdlp_provenance_epoch")
             .putBoolean("auto_update_ytdlp", false)
         putPreferenceValue(editor, "ytdlp_provenance_epoch", legacyEpoch)
+        putPreferenceValue(editor, "ytdlp_source_generation", legacyGeneration)
         if (includePending) {
             editor.putString("ytdlp_pending_source", "nightly")
                 .putLong("ytdlp_pending_source_generation", 83L)
@@ -928,6 +1059,9 @@ class UpdateUtilProductionWiringTest {
     }
 
     private fun seedDestination(source: String, generation: Long) {
+        // Already allocated destination authority, unlike the legacy fixture.
+        assertTrue(provenancePreferences.edit().putInt("epoch", 1)
+            .putInt("desired_generation_domain", 1).commit())
         assertTrue(preferences.edit()
             .putString("ytdlp_source", source)
             .putString("ytdlp_source_label", "Destination $source")

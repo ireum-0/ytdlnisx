@@ -134,10 +134,11 @@ class UpdateUtil(context: Context) {
         require(selectedSource.isNotEmpty()) { "yt-dlp source must not be blank" }
         return RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
             synchronized(stateLock) {
+                retirePreChangeProvenance(sharedPreferences, provenancePreferences)
                 val previousSource = sharedPreferences.getString(PREF_SOURCE, DEFAULT_SOURCE)
                     ?: DEFAULT_SOURCE
                 val sourceWasPersisted = sharedPreferences.contains(PREF_SOURCE)
-                val previousGeneration = sharedPreferences.getLong(PREF_DESIRED_GENERATION, 0L)
+                val previousGeneration = desiredSourceGeneration(sharedPreferences, provenancePreferences)
                 val changed = !sourceWasPersisted || previousSource != selectedSource
                 val generation = if (changed) {
                     check(previousGeneration < Long.MAX_VALUE) { "yt-dlp source generation exhausted" }
@@ -295,8 +296,7 @@ class UpdateUtil(context: Context) {
         } else {
             DEFAULT_SOURCE
         }
-        val generation = sharedPreferences.getLong(PREF_DESIRED_GENERATION, 0L)
-        check(generation >= 0L) { "yt-dlp source generation is invalid" }
+        val generation = desiredSourceGeneration(sharedPreferences, provenancePreferences)
         return DesiredSource(source, generation)
     }
 
@@ -416,12 +416,15 @@ class UpdateUtil(context: Context) {
         private const val PROVENANCE_PREFERENCES = "ytdlp_provenance_migration"
         private const val PREF_LOCAL_PROVENANCE_EPOCH = "epoch"
         private const val CURRENT_PROVENANCE_EPOCH = 1
+        private const val PREF_DESIRED_GENERATION_DOMAIN = "desired_generation_domain"
+        private const val CURRENT_DESIRED_GENERATION_DOMAIN = 1
         private const val DEFAULT_SOURCE = "stable"
 
         private val stateLock = Any()
         private val updateMutex = Mutex()
         private val admittedRequests = mutableMapOf<DesiredSource, Int>()
         private var provenanceEpochPublicationUnconfirmed = false
+        private var desiredGenerationDomainPublicationUnconfirmed = false
 
         // Generic backup/restore publishes only the default preference graph.
         // This independent private file was never part of that legacy writer.
@@ -431,39 +434,85 @@ class UpdateUtil(context: Context) {
         internal fun destinationProvenanceEpochIsCurrent(localState: SharedPreferences): Boolean =
             synchronized(stateLock) {
                 !provenanceEpochPublicationUnconfirmed &&
-                    localState.getInt(PREF_LOCAL_PROVENANCE_EPOCH, 0) == CURRENT_PROVENANCE_EPOCH
+                    localState.getInt(PREF_LOCAL_PROVENANCE_EPOCH, 0) == CURRENT_PROVENANCE_EPOCH &&
+                    destinationDesiredGenerationDomainIsCurrent(localState)
             }
 
-        // The production caller holds RestoreMutationAdmission. No source or
-        // desired-generation value is rewritten by this one-time migration.
+        internal fun destinationDesiredGenerationDomainIsCurrent(localState: SharedPreferences): Boolean =
+            synchronized(stateLock) {
+                !desiredGenerationDomainPublicationUnconfirmed &&
+                    localState.getInt(PREF_DESIRED_GENERATION_DOMAIN, 0) == CURRENT_DESIRED_GENERATION_DOMAIN
+            }
+
+        private fun legacyDesiredGeneration(snapshot: Map<String, *>): Long =
+            if (snapshot.containsKey(PREF_SOURCE) || snapshot.containsKey(PREF_DESIRED_GENERATION)) 1L else 0L
+
+        internal fun desiredSourceGeneration(
+            preferences: SharedPreferences,
+            localState: SharedPreferences,
+        ): Long = synchronized(stateLock) {
+            if (!destinationDesiredGenerationDomainIsCurrent(localState)) {
+                // Request capture may precede startup recovery/Restore readiness.
+                // Observe only the generation the migration owner will publish;
+                // never typed-read or trust the foreign carrier. Mutation/proof
+                // admission still requires confirmed durable migration first.
+                return@synchronized legacyDesiredGeneration(preferences.all)
+            }
+            preferences.getLong(PREF_DESIRED_GENERATION, 0L).also {
+                check(it >= 0L) { "yt-dlp source generation is invalid" }
+            }
+        }
+
+        // The production caller holds RestoreMutationAdmission. Preserve source
+        // intent, but allocate ambiguous identity in the new generation domain.
         internal fun retirePreChangeProvenance(
             preferences: SharedPreferences,
             localState: SharedPreferences,
         ) = synchronized(stateLock) {
             val epoch = localState.getInt(PREF_LOCAL_PROVENANCE_EPOCH, 0)
+            val generationDomain = localState.getInt(PREF_DESIRED_GENERATION_DOMAIN, 0)
             check(epoch in 0..CURRENT_PROVENANCE_EPOCH) { "Unsupported yt-dlp provenance epoch" }
-            if (epoch == CURRENT_PROVENANCE_EPOCH && !provenanceEpochPublicationUnconfirmed) {
+            check(generationDomain in 0..CURRENT_DESIRED_GENERATION_DOMAIN) {
+                "Unsupported yt-dlp desired generation domain"
+            }
+            val rebaseGeneration = generationDomain != CURRENT_DESIRED_GENERATION_DOMAIN ||
+                desiredGenerationDomainPublicationUnconfirmed
+            if (epoch == CURRENT_PROVENANCE_EPOCH && !provenanceEpochPublicationUnconfirmed &&
+                !rebaseGeneration
+            ) {
                 return@synchronized
             }
             // commit() can publish its process map even when its disk write
             // fails. Keep such an epoch untrusted until a confirmed publication.
             provenanceEpochPublicationUnconfirmed = true
+            if (rebaseGeneration) desiredGenerationDomainPublicationUnconfirmed = true
             // Every default-file marker, including Int 1 and incompatible
             // legacy storage types, is ambiguous. Never read it as authority.
-            check(preferences.edit()
+            val snapshot = preferences.all
+            val editor = preferences.edit()
                 .remove(PREF_PROVENANCE_EPOCH)
                 .remove(PREF_COMMITTED_GENERATION)
                 .remove(PREF_COMMITTED_SOURCE)
                 .remove(PREF_COMMITTED_RESULT)
                 .remove(PREF_PENDING_GENERATION)
                 .remove(PREF_PENDING_SOURCE)
-                .commit()) { "Legacy yt-dlp provenance retirement was not durable" }
-            // A death between these commits leaves the old epoch with no
-            // proof; the next owner repeats retirement before completing it.
-            check(localState.edit().putInt(PREF_LOCAL_PROVENANCE_EPOCH, CURRENT_PROVENANCE_EPOCH).commit()) {
+            if (rebaseGeneration &&
+                (snapshot.containsKey(PREF_SOURCE) || snapshot.containsKey(PREF_DESIRED_GENERATION))
+            ) {
+                editor.putLong(PREF_DESIRED_GENERATION, legacyDesiredGeneration(snapshot))
+            }
+            check(editor.commit()) { "Legacy yt-dlp provenance retirement was not durable" }
+            // Old provenance epoch=1 did not prove generation origin. Publish
+            // the new private discriminator only after rebase/retirement is
+            // durable. Death or false commit replays without trusting memory.
+            check(localState.edit()
+                .putInt(PREF_LOCAL_PROVENANCE_EPOCH, CURRENT_PROVENANCE_EPOCH)
+                .putInt(PREF_DESIRED_GENERATION_DOMAIN, CURRENT_DESIRED_GENERATION_DOMAIN)
+                .commit()) {
                 "yt-dlp provenance epoch publication was not durable"
             }
             provenanceEpochPublicationUnconfirmed = false
+            desiredGenerationDomainPublicationUnconfirmed = false
         }
 
         internal fun isDestinationLocalPreferenceKey(key: String): Boolean =
@@ -471,8 +520,17 @@ class UpdateUtil(context: Context) {
 
         // Callers hold RestoreMutationAdmission first. Keep the preference
         // snapshot, source reconciliation and commit atomic to updater readers.
-        internal fun <T> withRestoredSourcePublication(block: () -> T): T =
-            synchronized(stateLock, block)
+        internal fun <T> withRestoredSourcePublication(context: Context, block: () -> T): T =
+            synchronized(stateLock) {
+                // Both real publishers already hold RestoreMutationAdmission.
+                // Make the destination snapshot safe before reconciliation or
+                // reset can copy/cast a previously imported generation.
+                retirePreChangeProvenance(
+                    PreferenceManager.getDefaultSharedPreferences(context),
+                    destinationProvenancePreferences(context),
+                )
+                block()
+            }
 
         internal fun restoredSourceGeneration(
             previousSource: String,
