@@ -1,5 +1,22 @@
 # Correctness Remediation Ledger
 
+## Current final remediation closure
+
+The latest authoritative correctness-remediation status is:
+
+- source SHA: `adf2f347ce9e20ec9f9376cf94053694353c9961`
+- verdict: **CLEAN**
+- active-remediation blockers: **P0=0 / P1=0 / P2=0**
+- open canonical roots: **NONE**
+- waivers: **none**
+- final high-effort independent source review: **PASS**
+- final-heavy execution gate: **PASS**
+- final closure evidence:
+  `evidence/FINAL_KNOWN_GOOD_BASELINE_2026-10-05_ADF2F347.md`
+
+`CURRENT_STATUS.md` contains the current authoritative override. Historical Finding-A closure text below is preserved for auditability and is not the current remediation verdict.
+
+
 This branch is a ledger-only record for correctness remediation. It is not a production-code branch and must not be merged into `checkpoint/pre-baseline-review`.
 
 ## Branch roles
