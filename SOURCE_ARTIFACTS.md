@@ -15,7 +15,9 @@
 - Governing lens policy blob:
   `49600871d632fd8612bbabec80dfaa996afb54d3`
 - Current remediation verdict: **CLEAN**
-- Known-Good Baseline promotion: **AUTHORIZED**
+- Known-Good Baseline marker: `checkpoint/pre-baseline-review@db29f63ce169176b4c8ade4cec01f66cc0307ec8`
+- Baseline marker tree: `5a548066be27295a76ee46547818935bc4add95a` (tree-identical to independently verified `adf2f347...`)
+- Immutable tag: **PENDING** — preferred name `known-good-2026-10-05-adf2f347`; no existing collision
 
 Historical checklist/status identities below remain preserved for reproducibility.
 
