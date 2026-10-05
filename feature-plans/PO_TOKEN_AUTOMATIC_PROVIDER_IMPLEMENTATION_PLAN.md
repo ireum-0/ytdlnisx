@@ -136,23 +136,27 @@ The default architecture is:
 
 Android app
   -> app-owned PoTokenProviderCoordinator
-      -> strict loopback-only local HTTP endpoint
+      -> strict loopback-only framed TCP endpoint
           -> PoTokenGenerationEngine
-              -> existing PoTokenWebView/BotGuard engine
+              -> hardened existing PoTokenWebView/BotGuard engine
 
 bundled yt-dlp
   -> bundled first-party YTDLnisX provider plugin
-      -> reads private endpoint configuration supplied by the app
-      -> POSTs a validated content-binding request to loopback endpoint
-      -> receives PO Token
+      -> reads private loopback endpoint configuration supplied by the app
+      -> opens one authenticated framed TCP connection per provider request
+      -> sends the exact validated content-binding request
+      -> receives one framed PO Token response
       -> returns PoTokenResponse to yt-dlp
 
 The provider plugin is small, first-party, version-pinned and packaged with the app.
+
+The transport is intentionally not HTTP in the MVP. A fixed length-prefixed JSON frame removes method/path/header/transfer-encoding parsing and reduces implementation volume and parser attack surface.
 
 BgUtils remains:
 - a behavioral/reference implementation;
 - a possible future alternative provider backend;
 - NOT a runtime dependency of the MVP.
+
 
 ## 6. Trust boundaries
 
@@ -607,13 +611,14 @@ suspend fun acquire(context, policy): Lease
 
 Lease exposes only:
 - pluginDir: File
-- host: String\n- port: Int
+- host: String
+- port: Int
 - generationId: String
 - secretFile: File
 
 Lease.close():
 - decrement reference count;
-- after 5-10 s idle grace, stop server and close WebView if no active lease.
+- after 5-10 s idle grace, stop server and close the generator-owned WebView if no active lease.
 
 Concurrency:
 - first caller starts once;
@@ -626,6 +631,11 @@ Process death:
 - no durable "provider is running" marker;
 - stale secret temp files cleaned on next acquire;
 - plugin materialization remains immutable and reusable.
+
+Compatibility:
+- coordinator/runtime cache keys include exact yt-dlp runtime identity + plugin hash/version + protocol version;
+- successful yt-dlp runtime mutation invalidates compatibility before the next AUTO acquire.
+
 
 ### 9.9 PoTokenProviderDiagnostics.kt
 
@@ -817,40 +827,51 @@ Required regression:
 
 ## 13. DownloadWorker retry ladder
 
-Current 403 handling can broadly fall back from authenticated/tokenized YouTube access to a clean public request.
+Do not add an independent retry ladder that competes with YoutubeMediaAccessPolicy/YoutubeMediaAttemptSet.
 
-With automatic provider mode, use a strict bounded ladder.
+DownloadWorker executes transitions authorized by that single state machine.
+
+AUTO sequence:
 
 Attempt 1:
-- AUTO_MWEB_GVS request;
-- ordinary yt-dlp provider cache behavior.
+- profile: AUTO_POT_MWEB_GVS;
+- generation kind: initial;
+- ordinary yt-dlp WebPO cache behavior.
 
 If and only if:
 - attempt reached native yt-dlp;
-- failure text matches current narrow YouTube 403 classifier;
+- failure is classified as the existing narrow eligible YouTube 403 kind;
 - no output was semantically published;
 - native generation is proven quiescent;
-then:
+- the attempt state says the fresh AUTO retry has not yet been consumed;
+then the same state machine may authorize:
 
 Attempt 2:
-- create a NEW yt-dlp invocation;
-- acquire a fresh provider execution generation;
+- profile: AUTO_POT_MWEB_GVS;
+- generation kind: fresh-retry;
+- NEW yt-dlp invocation;
+- NEW provider execution generation/secret;
 - no app token cache;
 - one automatic provider retry only.
 
 If Attempt 2 gives the same eligible 403:
-- existing clean public-client fallback may run if current canBuildCleanPublicRequest policy allows it.
+- transition to PUBLIC_DEFAULT only when the existing clean-public policy and ownership/quality constraints permit it.
 
 Never:
 - loop indefinitely;
-- retry unchanged within the same process just to seek green;
+- retry unchanged within the same native process just to seek green;
+- create a second ad-hoc boolean retry state outside YoutubeMediaAttemptSet;
 - mix automatic token with persisted stale automatic token;
-- fall back after partial publication.
+- fall back after partial semantic publication;
+- classify AUTO as AUTHENTICATED only because it used a PO Token.
 
-Record diagnostic reason:
+Required diagnostics:
 - AUTO_POT_INITIAL
 - AUTO_POT_FRESH_RETRY
 - PUBLIC_FALLBACK_AFTER_AUTO_POT
+
+The existing maximum completed-transfer and quality-routing invariants remain authoritative.
+
 
 ## 14. UI plan
 
