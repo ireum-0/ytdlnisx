@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import com.ireum.ytdl.database.enums.DownloadType
 import com.ireum.ytdl.database.models.Format
 import com.ireum.ytdl.database.models.HistoryItem
+import com.ireum.ytdl.database.models.HistoryKeywordAssignment
 import com.ireum.ytdl.database.models.Playlist
 import com.ireum.ytdl.database.models.PlaylistItemCrossRef
 import com.ireum.ytdl.database.repository.HistoryKeywordAssignmentRepository
@@ -147,19 +148,32 @@ class HistoryDuplicateIdentityProductionWiringTest {
 
     @Test
     fun duplicateAssignmentsRelationshipsAndHistoryDeleteRollbackAsOneTransaction() = runBlocking {
-        val (retainedId, duplicateId, playlistId) = seedDuplicatePair()
+        val (retainedId, duplicateId, playlistId) = seedDuplicatePair(sharedPlaylist = false)
+        val duplicatePlaylistId = database.playlistDao.getPlaylistItemsForHistory(duplicateId).single().playlistId
         val candidateGroups = candidateGroups()
+        val before = snapshotGraph()
         database.openHelper.writableDatabase.execSQL(
             """
             CREATE TRIGGER fail_duplicate_history_delete
             BEFORE DELETE ON history WHEN OLD.id = $duplicateId
-            BEGIN SELECT RAISE(ABORT, 'injected duplicate deletion failure'); END
+            BEGIN
+                SELECT CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM PlaylistItemCrossRef
+                    WHERE playlistId = $duplicatePlaylistId AND historyItemId = $retainedId
+                ) OR NOT EXISTS (
+                    SELECT 1 FROM history_keyword_assignments
+                    WHERE historyItemId = $retainedId AND keyword = 'DuplicateOnly'
+                ) THEN RAISE(ABORT, 'provisional relationship union missing') END;
+                SELECT RAISE(ABORT, 'injected duplicate deletion failure');
+            END
             """.trimIndent(),
         )
 
         val failure = runCatching { assignments.deleteDuplicateHistoryGroups(candidateGroups) }.exceptionOrNull()
 
         assertTrue("expected the injected history-row delete failure", failure != null)
+        assertTrue(failureMessages(failure).contains("injected duplicate deletion failure"))
+        assertEquals(before, snapshotGraph())
         assertEquals(setOf(retainedId, duplicateId), database.historyDao.getAllDownloaded().map { it.id }.toSet())
         assertEquals("RetainedOnly", database.historyDao.getItem(retainedId).keywords)
         assertEquals("DuplicateOnly", database.historyDao.getItem(duplicateId).keywords)
@@ -172,7 +186,7 @@ class HistoryDuplicateIdentityProductionWiringTest {
             database.automaticKeywordRuleDao.getAssignmentsRaw(duplicateId).map { it.keyword },
         )
         assertEquals(listOf(playlistId), database.playlistDao.getPlaylistItemsForHistory(retainedId).map { it.playlistId })
-        assertEquals(listOf(playlistId), database.playlistDao.getPlaylistItemsForHistory(duplicateId).map { it.playlistId })
+        assertEquals(listOf(duplicatePlaylistId), database.playlistDao.getPlaylistItemsForHistory(duplicateId).map { it.playlistId })
 
         database.openHelper.writableDatabase.execSQL("DROP TRIGGER fail_duplicate_history_delete")
         val newcomerId = database.historyDao.insertAndGetIdRaw(
@@ -198,6 +212,7 @@ class HistoryDuplicateIdentityProductionWiringTest {
         assertTrue(retainedKeywords.contains("DuplicateOnly"))
         assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(duplicateId).isEmpty())
         assertTrue(database.playlistDao.getPlaylistItemsForHistory(duplicateId).isEmpty())
+        assertEquals(setOf(playlistId, duplicatePlaylistId), playlistIds(retainedId))
         assertEquals("NewcomerOnly", database.historyDao.getItem(newcomerId).keywords)
         assertEquals(listOf(playlistId), database.playlistDao.getPlaylistItemsForHistory(newcomerId).map { it.playlistId })
 
@@ -215,7 +230,210 @@ class HistoryDuplicateIdentityProductionWiringTest {
         assertNull(database.historyDao.getNullableItem(duplicateId))
     }
 
-    private suspend fun seedDuplicatePair(): Triple<Long, Long, Long> {
+    @Test
+    fun asymmetricPlaylistMembershipsTransferAndCleanupIsIdempotent() = runBlocking {
+        val (retainedId, duplicateId, retainedPlaylistId) = seedDuplicatePair(sharedPlaylist = false)
+        val duplicatePlaylistId = playlistIds(duplicateId).single()
+        val playlists = database.playlistDao.getAllPlaylistsSync().sortedBy { it.id }
+        val candidates = candidateGroups()
+
+        assertEquals(1, assignments.deleteDuplicateHistoryGroups(candidates))
+
+        assertCollapsed(retainedId, listOf(duplicateId), setOf(retainedPlaylistId, duplicatePlaylistId),
+            setOf("RetainedOnly", "DuplicateOnly"))
+        assertEquals(playlists, database.playlistDao.getAllPlaylistsSync().sortedBy { it.id })
+        val converged = snapshotGraph()
+        assertEquals(0, assignments.deleteDuplicateHistoryGroups(candidates))
+        assertEquals(0, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+        assertEquals(converged, snapshotGraph())
+    }
+
+    @Test
+    fun sharedAndUniquePlaylistMembershipsMaterializeExactlyOnce() = runBlocking {
+        val (retainedId, duplicateId, sharedPlaylistId) = seedDuplicatePair()
+        val retainedOnly = addPlaylist("Retained playlist", retainedId)
+        val duplicateOnly = addPlaylist("Duplicate playlist", duplicateId)
+        val playlists = database.playlistDao.getAllPlaylistsSync().sortedBy { it.id }
+
+        assertEquals(1, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+
+        assertCollapsed(retainedId, listOf(duplicateId), setOf(retainedOnly, duplicateOnly, sharedPlaylistId),
+            setOf("RetainedOnly", "DuplicateOnly"))
+        assertEquals(playlists, database.playlistDao.getAllPlaylistsSync().sortedBy { it.id })
+    }
+
+    @Test
+    fun retainedWithoutPlaylistReceivesDuplicateMembership() = runBlocking {
+        val (retainedId, duplicateId, _) = seedDuplicatePair(sharedPlaylist = false)
+        val duplicatePlaylistId = playlistIds(duplicateId).single()
+        database.playlistDao.deletePlaylistItemsByHistoryIds(listOf(retainedId))
+        assertTrue(playlistIds(retainedId).isEmpty())
+
+        assertEquals(1, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+
+        assertCollapsed(retainedId, listOf(duplicateId), setOf(duplicatePlaylistId),
+            setOf("RetainedOnly", "DuplicateOnly"))
+    }
+
+    @Test
+    fun duplicateWithoutPlaylistPreservesRetainedMembership() = runBlocking {
+        val (retainedId, duplicateId, retainedPlaylistId) = seedDuplicatePair(sharedPlaylist = false)
+        database.playlistDao.deletePlaylistItemsByHistoryIds(listOf(duplicateId))
+        assertTrue(playlistIds(duplicateId).isEmpty())
+
+        assertEquals(1, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+
+        assertCollapsed(retainedId, listOf(duplicateId), setOf(retainedPlaylistId),
+            setOf("RetainedOnly", "DuplicateOnly"))
+    }
+
+    @Test
+    fun multipleDuplicatesPreserveFullPlaylistAndKeywordUnion() = runBlocking {
+        val (retainedId, duplicateId, sharedPlaylistId) = seedDuplicatePair()
+        val retainedOnly = addPlaylist("Retained playlist", retainedId)
+        val duplicateOnly = addPlaylist("Duplicate playlist", duplicateId)
+        val secondDuplicateId = addDuplicate("SecondDuplicateOnly", 30)
+        database.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(sharedPlaylistId, secondDuplicateId))
+        val secondOnly = addPlaylist("Second duplicate playlist", secondDuplicateId)
+        val playlists = database.playlistDao.getAllPlaylistsSync().sortedBy { it.id }
+
+        assertEquals(2, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+
+        assertCollapsed(retainedId, listOf(duplicateId, secondDuplicateId),
+            setOf(sharedPlaylistId, retainedOnly, duplicateOnly, secondOnly),
+            setOf("RetainedOnly", "DuplicateOnly", "SecondDuplicateOnly"))
+        assertEquals(playlists, database.playlistDao.getAllPlaylistsSync().sortedBy { it.id })
+        val converged = snapshotGraph()
+        assertEquals(0, assignments.deleteDuplicateHistoryGroups(candidateGroups()))
+        assertEquals(converged, snapshotGraph())
+    }
+
+    @Test
+    fun staleSourceCandidateDoesNotTransferDuplicateOnlyPlaylist() = runBlocking {
+        val (_, duplicateId, _) = seedDuplicatePair(sharedPlaylist = false)
+        val candidates = candidateGroups()
+        val duplicate = requireNotNull(database.historyDao.getNullableItem(duplicateId))
+        assertEquals(1, database.historyDao.updateRaw(duplicate.copy(url = "https://youtu.be/anotherVideo")))
+        val edited = snapshotGraph()
+
+        assertEquals(0, assignments.deleteDuplicateHistoryGroups(candidates))
+        assertEquals(edited, snapshotGraph())
+    }
+
+    @Test
+    fun staleTypeCandidateDoesNotTransferDuplicateOnlyPlaylist() = runBlocking {
+        val (_, duplicateId, _) = seedDuplicatePair(sharedPlaylist = false)
+        val candidates = candidateGroups()
+        val duplicate = requireNotNull(database.historyDao.getNullableItem(duplicateId))
+        assertEquals(1, database.historyDao.updateRaw(duplicate.copy(type = DownloadType.audio)))
+        val edited = snapshotGraph()
+
+        assertEquals(0, assignments.deleteDuplicateHistoryGroups(candidates))
+        assertEquals(edited, snapshotGraph())
+    }
+
+    @Test
+    fun playlistTransferInsertFailureRollsBackEarlierDuplicateAndEntireGraph() = runBlocking {
+        val (retainedId, duplicateId, _) = seedDuplicatePair(sharedPlaylist = false)
+        val firstTransferredPlaylistId = playlistIds(duplicateId).single()
+        val secondDuplicateId = addDuplicate("SecondDuplicateOnly", 30)
+        val failingPlaylistId = addPlaylist("Failing duplicate playlist", secondDuplicateId)
+        val candidates = candidateGroups()
+        val before = snapshotGraph()
+        database.openHelper.writableDatabase.execSQL(
+            """
+            CREATE TRIGGER fail_duplicate_playlist_transfer
+            BEFORE INSERT ON PlaylistItemCrossRef
+            WHEN NEW.playlistId = $failingPlaylistId AND NEW.historyItemId = $retainedId
+            BEGIN
+                SELECT CASE WHEN EXISTS (SELECT 1 FROM history WHERE id = $duplicateId)
+                    OR NOT EXISTS (
+                        SELECT 1 FROM PlaylistItemCrossRef
+                        WHERE playlistId = $firstTransferredPlaylistId AND historyItemId = $retainedId
+                    ) OR NOT EXISTS (
+                        SELECT 1 FROM history_keyword_assignments
+                        WHERE historyItemId = $retainedId AND keyword = 'DuplicateOnly'
+                    ) THEN RAISE(ABORT, 'earlier duplicate did not provisionally converge') END;
+                SELECT RAISE(ABORT, 'injected playlist transfer failure');
+            END
+            """.trimIndent(),
+        )
+
+        val failure = runCatching { assignments.deleteDuplicateHistoryGroups(candidates) }.exceptionOrNull()
+
+        assertTrue(failureMessages(failure).contains("injected playlist transfer failure"))
+        assertEquals(before, snapshotGraph())
+    }
+
+    @Test
+    fun inTransactionIdentityChangeAfterPlaylistTransferRollsBackAtFinalRecheck() = runBlocking {
+        val (retainedId, duplicateId, _) = seedDuplicatePair(sharedPlaylist = false)
+        val duplicatePlaylistId = playlistIds(duplicateId).single()
+        val candidates = candidateGroups()
+        val before = snapshotGraph()
+        database.openHelper.writableDatabase.execSQL(
+            """
+            CREATE TRIGGER change_duplicate_identity_after_transfer
+            AFTER INSERT ON PlaylistItemCrossRef
+            WHEN NEW.playlistId = $duplicatePlaylistId AND NEW.historyItemId = $retainedId
+            BEGIN UPDATE history SET url = 'https://youtu.be/anotherVideo' WHERE id = $duplicateId; END
+            """.trimIndent(),
+        )
+
+        val failure = runCatching { assignments.deleteDuplicateHistoryGroups(candidates) }.exceptionOrNull()
+
+        assertTrue(failureMessages(failure).contains("History duplicate identity changed during cleanup"))
+        assertEquals(before, snapshotGraph())
+    }
+
+    private data class GraphSnapshot(
+        val history: List<HistoryItem>,
+        val assignments: List<HistoryKeywordAssignment>,
+        val memberships: List<PlaylistItemCrossRef>,
+        val playlists: List<Playlist>,
+    )
+
+    private suspend fun snapshotGraph() = GraphSnapshot(
+        database.historyDao.getAllDownloaded().sortedBy { it.id },
+        database.automaticKeywordRuleDao.getAllAssignmentsRaw(),
+        database.playlistDao.getAllPlaylistItems().sortedWith(compareBy<PlaylistItemCrossRef> { it.playlistId }.thenBy { it.historyItemId }),
+        database.playlistDao.getAllPlaylistsSync().sortedBy { it.id },
+    )
+
+    private suspend fun playlistIds(historyId: Long): Set<Long> =
+        database.playlistDao.getPlaylistItemsForHistory(historyId).map { it.playlistId }.toSet()
+
+    private suspend fun addPlaylist(name: String, historyId: Long): Long {
+        val id = database.playlistDao.insertPlaylist(Playlist(name = name, description = null))
+        database.playlistDao.insertPlaylistItem(PlaylistItemCrossRef(id, historyId))
+        return id
+    }
+
+    private suspend fun addDuplicate(keyword: String, time: Long): Long {
+        val id = database.historyDao.insertAndGetIdRaw(history(0, "https://youtu.be/dQw4w9WgXcQ?t=30", "Another title", time))
+        assignments.replaceManualKeywords(id, listOf(keyword))
+        return id
+    }
+
+    private suspend fun assertCollapsed(retainedId: Long, removedIds: List<Long>, expectedPlaylists: Set<Long>, expectedKeywords: Set<String>) {
+        assertEquals(setOf(retainedId), database.historyDao.getAllDownloaded().map { it.id }.toSet())
+        assertEquals(expectedPlaylists, playlistIds(retainedId))
+        val refs = database.playlistDao.getPlaylistItemsForHistory(retainedId)
+        assertEquals(expectedPlaylists.size, refs.size)
+        assertEquals(expectedKeywords, database.automaticKeywordRuleDao.getAssignmentsRaw(retainedId).map { it.keyword }.toSet())
+        val materialized = database.historyDao.getItem(retainedId).keywords
+        expectedKeywords.forEach { assertTrue(materialized.contains(it)) }
+        removedIds.forEach { id ->
+            assertNull(database.historyDao.getNullableItem(id))
+            assertTrue(database.playlistDao.getPlaylistItemsForHistory(id).isEmpty())
+            assertTrue(database.automaticKeywordRuleDao.getAssignmentsRaw(id).isEmpty())
+        }
+    }
+
+    private fun failureMessages(failure: Throwable?): String =
+        generateSequence(failure) { it.cause }.joinToString(" ") { it.message.orEmpty() }
+
+    private suspend fun seedDuplicatePair(sharedPlaylist: Boolean = true): Triple<Long, Long, Long> {
         val retainedId = database.historyDao.insertAndGetIdRaw(
             history(
                 id = 0,
@@ -235,10 +453,12 @@ class HistoryDuplicateIdentityProductionWiringTest {
         assignments.replaceManualKeywords(retainedId, listOf("RetainedOnly"))
         assignments.replaceManualKeywords(duplicateId, listOf("DuplicateOnly"))
         val playlistId = database.playlistDao.insertPlaylist(Playlist(name = "Dedupe", description = null))
+        val duplicatePlaylistId = if (sharedPlaylist) playlistId else
+            database.playlistDao.insertPlaylist(Playlist(name = "Duplicate-only", description = null))
         database.playlistDao.insertPlaylistItems(
             listOf(
                 PlaylistItemCrossRef(playlistId, retainedId),
-                PlaylistItemCrossRef(playlistId, duplicateId),
+                PlaylistItemCrossRef(duplicatePlaylistId, duplicateId),
             ),
         )
         return Triple(retainedId, duplicateId, playlistId)

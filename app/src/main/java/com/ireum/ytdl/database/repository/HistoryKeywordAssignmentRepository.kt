@@ -378,6 +378,11 @@ class HistoryKeywordAssignmentRepository(private val db: DBManager) {
                                 ?: return@duplicateLoop
                             if (retainedKey != duplicateKey) return@duplicateLoop
 
+                            val copiedPlaylistItems = db.playlistDao.getPlaylistItemsForHistory(duplicate.id).map { item ->
+                                item.copy(historyItemId = retained.id)
+                            }
+                            if (copiedPlaylistItems.isNotEmpty()) db.playlistDao.insertPlaylistItems(copiedPlaylistItems)
+
                             val copiedAssignments = dao.getAssignmentsRaw(duplicate.id).map { assignment ->
                                 assignment.copy(historyItemId = retained.id)
                             }
