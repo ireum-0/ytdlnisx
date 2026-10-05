@@ -19,6 +19,10 @@ import com.ireum.ytdl.database.repository.HistoryRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.App
+import com.ireum.ytdl.database.models.BackupSettingsItem
+import com.ireum.ytdl.database.models.RestoreAppDataItem
+import com.ireum.ytdl.database.models.RestorePlan
 import com.google.gson.JsonParser
 import com.google.gson.Gson
 import com.google.gson.JsonArray
@@ -373,6 +377,106 @@ class BackupSettingsProductionWiringTest {
                 preferences.edit().putString("cache_path", original).commit()
             }
             isolatedRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun malformedUpdaterPlansRejectMergeAndResetBeforeAnyMutationOrOwnership() = runBlocking {
+        App.instance.startupYtdlpUpdater.stop()
+        database.historyDao.insertAndGetIdRaw(history())
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val snapshot = preferences.all.toMap()
+        val originalHistory = historyRepository.getAll()
+        val store = RestoreOperationStore.root(context)
+        val originalFiles = store.walkTopDown().filter { it.isFile }.map { it.relativeTo(store).path to it.readBytes().toList() }.toMap()
+        val valid = BackupRestoreParser.fromTyped(RestoreAppDataItem(settings = listOf(BackupSettingsItem("ytdlp_source", "stable", "String"))))
+        val malformed = listOf(
+            BackupSettingsItem("ytdlp_source", "", "String"),
+            BackupSettingsItem("ytdlp_source", " \t\n", "String"),
+            BackupSettingsItem("ytdlp_source", "1", "Int"),
+            BackupSettingsItem("ytdlp_source", "true", "Boolean"),
+            BackupSettingsItem("auto_update_ytdlp", "false", "String"),
+            BackupSettingsItem("ytdlp_source_label", "1", "Int"),
+        )
+        malformed.forEach { item ->
+            val plan = RestorePlan(valid.appMarker, valid.formatVersion, valid.compatibility, valid.capabilities,
+                RestoreAppDataItem(settings = listOf(item)))
+            listOf(false, true).forEach { reset ->
+                val outcome = SettingsViewModel(context as android.app.Application).restorePlan(plan, context, reset)
+                assertTrue("$item / reset=$reset", outcome is RestoreOutcome.RejectedBeforeOwnership)
+                assertEquals(snapshot, preferences.all)
+                assertEquals(originalHistory, historyRepository.getAll())
+                assertFalse(RestoreGate.isRestoreInProgress(context))
+                assertEquals(originalFiles, store.walkTopDown().filter { it.isFile }
+                    .map { it.relativeTo(store).path to it.readBytes().toList() }.toMap())
+            }
+        }
+    }
+
+    @Test
+    fun oldestLegacyAndCurrentRepresentationsShareUpdaterKeyAdmission() {
+        val malformed = listOf(
+            BackupSettingsItem("ytdlp_source", "", "String"), BackupSettingsItem("ytdlp_source", " \t\n", "String"),
+            BackupSettingsItem("ytdlp_source", "1", "Int"), BackupSettingsItem("ytdlp_source", "false", "Boolean"),
+            BackupSettingsItem("auto_update_ytdlp", "1", "Int"), BackupSettingsItem("ytdlp_source_label", "1", "Int"),
+        )
+        listOf("YTDLnisx_backup" to null, "YTDLnisX_backup" to null, "YTDLnisX_backup" to 3, "YTDLnisX_backup" to 4).forEach { (marker, version) ->
+            malformed.forEach { item ->
+                val root = JsonObject().apply {
+                    addProperty("app", marker)
+                    version?.let { addProperty("backup_format_version", it) }
+                    add("settings", Gson().toJsonTree(listOf(item)))
+                }
+                assertTrue(root.toString(), runCatching { BackupRestoreParser.parse(root) }.exceptionOrNull() is IllegalArgumentException)
+            }
+        }
+    }
+
+    @Test
+    fun validUpdaterMergeValuesRemainExactlyConsumableAndAbsenceIsAccepted() = runBlocking {
+        App.instance.startupYtdlpUpdater.stop()
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val original = preferences.all.toMap()
+        val local = com.ireum.ytdl.util.UpdateUtil.destinationProvenancePreferences(context)
+        val originalLocal = local.all.toMap()
+        try {
+            listOf<String?>(null, "stable", "nightly", "master", "  owner/custom branch  ").forEach { source ->
+                listOf(false, true).forEach { automatic ->
+                    val settings = mutableListOf(BackupSettingsItem("auto_update_ytdlp", automatic.toString(), "Boolean"),
+                        BackupSettingsItem("ytdlp_source_label", "Display label", "String"), BackupSettingsItem("updater03_unrelated", "1", "Int"))
+                    source?.let { settings += BackupSettingsItem("ytdlp_source", it, "String") }
+                    val plan = BackupRestoreParser.fromTyped(RestoreAppDataItem(settings = settings))
+                    assertEquals(settings, plan.data.settings)
+                    assertTrue(SettingsViewModel(context as android.app.Application).restorePlan(plan, context) is RestoreOutcome.Completed)
+                    source?.let { assertEquals(it, preferences.getString("ytdlp_source", null)) }
+                    assertEquals(automatic, preferences.getBoolean("auto_update_ytdlp", !automatic))
+                    assertEquals("Display label", preferences.getString("ytdlp_source_label", null))
+                    assertEquals(1, preferences.getInt("updater03_unrelated", -1))
+                }
+            }
+        } finally {
+            val editor = preferences.edit()
+            (preferences.all.keys + original.keys).filter { it.startsWith("ytdlp_") || it in setOf("auto_update_ytdlp", "updater03_unrelated") }.forEach { key ->
+                editor.remove(key)
+                putUpdaterTestValue(editor, key, original[key])
+            }
+            assertTrue(editor.commit())
+            val localEditor = local.edit().clear()
+            originalLocal.forEach { (key, value) -> putUpdaterTestValue(localEditor, key, value) }
+            assertTrue(localEditor.commit())
+        }
+    }
+
+    private fun putUpdaterTestValue(editor: android.content.SharedPreferences.Editor, key: String, value: Any?) {
+        when (value) {
+            null -> Unit
+            is String -> editor.putString(key, value)
+            is Boolean -> editor.putBoolean(key, value)
+            is Int -> editor.putInt(key, value)
+            is Long -> editor.putLong(key, value)
+            is Float -> editor.putFloat(key, value)
+            is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            else -> error("Unsupported test snapshot type")
         }
     }
 

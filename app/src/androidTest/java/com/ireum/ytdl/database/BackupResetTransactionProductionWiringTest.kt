@@ -27,6 +27,9 @@ import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.database.models.RestoreAppDataItem
 import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
+import com.ireum.ytdl.App
+import com.ireum.ytdl.util.UpdateUtil
+import com.ireum.ytdl.database.models.RestorePlan
 import com.ireum.ytdl.util.FileUtil
 import com.ireum.ytdl.util.terminal.TerminalCommandPlanFactory
 import com.ireum.ytdl.work.CleanUpLeftoverDownloads
@@ -60,6 +63,9 @@ class BackupResetTransactionProductionWiringTest {
     private lateinit var preferences: android.content.SharedPreferences
     private var originalAlarmPreferencePresent = false
     private var originalAlarmPreference = false
+
+    private var historicalPreferenceSnapshot: Map<String, *>? = null
+    private var historicalProvenanceSnapshot: Map<String, *>? = null
 
     @Before
     fun setUp() = runBlocking<Unit> {
@@ -99,6 +105,7 @@ class BackupResetTransactionProductionWiringTest {
             }
         }.commit()
         RestoreOperationStore.root(context).deleteRecursively()
+        restoreHistoricalFixturePreferences()
     }
 
     @Test
@@ -1237,6 +1244,299 @@ class BackupResetTransactionProductionWiringTest {
         assertEquals("restore-won", preferences.getString("f11_reset_marker", null))
         assertTrue(database.downloadDao.getQueuedDownloadsList().none { it.url.endsWith("114") })
     }
+    @Test
+    fun historicalMalformedUpdaterPlansRecoverAcrossEveryDurablePhaseWithoutRewritingPlan() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        val malformed = listOf(
+            BackupSettingsItem("ytdlp_source", "1", "Int"),
+            BackupSettingsItem("ytdlp_source", "true", "Boolean"),
+            BackupSettingsItem("ytdlp_source", " \t\n", "String"),
+            BackupSettingsItem("auto_update_ytdlp", "false", "String"),
+            BackupSettingsItem("ytdlp_source_label", "1", "Int"),
+        )
+        malformed.forEach { item ->
+            RestorePhase.entries.forEach { phase ->
+                val oldPublicationCells = if (phase == RestorePhase.APPLYING) listOf(false, true)
+                    else listOf(phase >= RestorePhase.DATA_COMMITTED)
+                oldPublicationCells.forEach { oldPublished ->
+                    clearHooks()
+                    database.historyDao.nuke()
+                    val settings = historicalSettings(item)
+                    val raw = historicalPlan(settings)
+                    val before = preferences.all.toMap()
+                    assertTrue(RestoreTransactionCoordinator.begin(context, raw) is RestoreOutcome.RejectedBeforeOwnership)
+                    assertEquals(before, preferences.all)
+                    assertFalse(RestoreGate.isRestoreInProgress(context))
+                    seedHistoricalDestination(settings, oldPublished)
+                    val postCommit = phase >= RestorePhase.DATA_COMMITTED
+                    if (postCommit) database.historyDao.insertAndGetIdRaw(history(9000L, "https://example.com/already-committed"))
+                    val record = seedHistoricalOwner(raw, phase)
+                    val bytes = File(record.operationDirectory, "plan.json").readBytes()
+                    val pointerBytes = File(RestoreOperationStore.root(context), "active.json").readBytes()
+                    assertHistoricalOwnerUnchanged(record, bytes, pointerBytes)
+                    assertOrdinaryHistoricalMutationDenied()
+                    if (postCommit) RestoreTransactionCoordinator.roomApplyFailureForTesting = {
+                        throw AssertionError("post-commit updater repair must not reapply Room")
+                    }
+                    var repairedWhileOwned = false
+                    RestoreTransactionCoordinator.preferenceCommitOverrideForTesting = { committed ->
+                        if (phase == RestorePhase.COMPLETE) {
+                            assertTrue(committed)
+                            assertHistoricalUpdaterImage(item)
+                            assertHistoricalOwnerUnchanged(record, bytes, pointerBytes)
+                            repairedWhileOwned = true
+                        }
+                        committed
+                    }
+                    RestoreTransactionCoordinator.afterCompleteBeforeRetirementForTesting = {
+                        assertHistoricalUpdaterImage(item)
+                        assertHistoricalOwnerUnchanged(record, bytes, pointerBytes)
+                        assertOrdinaryHistoricalMutationDenied()
+                        repairedWhileOwned = true
+                    }
+                    val outcome = RestoreTransactionCoordinator.recover(context)
+                    assertTrue("$item / $phase / oldPublished=$oldPublished: $outcome", outcome is RestoreOutcome.Completed)
+                    assertEquals(record.journal.operationId, (outcome as RestoreOutcome.Completed).operationId)
+                    assertTrue("repair must precede owner retirement", repairedWhileOwned)
+                    assertFalse(RestoreGate.isRestoreInProgress(context))
+                    assertNull(RestoreOperationStore.load(context))
+                    assertFalse(record.operationDirectory.exists())
+                    assertHistoricalUpdaterImage(item)
+                    val urls = database.historyDao.getAll().map { it.url }
+                    assertEquals(listOf(if (postCommit) "https://example.com/already-committed"
+                        else "https://example.com/historical-plan"), urls)
+                    val completed = preferences.all.toMap()
+                    val localCompleted = UpdateUtil.destinationProvenancePreferences(context).all.toMap()
+                    assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+                    UpdateUtil.recoverPersistedUpdaterPreferences(context)
+                    assertEquals(completed, preferences.all)
+                    assertEquals(localCompleted, UpdateUtil.destinationProvenancePreferences(context).all)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun historicalUpdaterRepairCommitFailureRetainsExactOwnerAndRestartDebt() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        listOf(RestorePhase.APPLYING, RestorePhase.DATA_COMMITTED, RestorePhase.RECONCILING, RestorePhase.COMPLETE).forEach { phase ->
+            clearHooks()
+            val item = BackupSettingsItem("ytdlp_source", "1", "Int")
+            val settings = historicalSettings(item)
+            seedHistoricalDestination(settings, oldPublished = true)
+            database.historyDao.nuke()
+            database.historyDao.insertAndGetIdRaw(history(9000L, "https://example.com/already-committed"))
+            val record = seedHistoricalOwner(historicalPlan(settings), phase)
+            val bytes = File(record.operationDirectory, "plan.json").readBytes()
+            val pointerBytes = File(RestoreOperationStore.root(context), "active.json").readBytes()
+            RestoreTransactionCoordinator.preferenceCommitOverrideForTesting = { false }
+            val failed = RestoreTransactionCoordinator.recover(context)
+            assertTrue("$phase: $failed", failed is RestoreOutcome.RecoveryPending || failed is RestoreOutcome.CommittedReconciliationPending)
+            assertHistoricalOwnerUnchanged(record, bytes, pointerBytes)
+            assertEquals(phase.name, requireNotNull(RestoreOperationStore.load(context)).journal.phase)
+            assertOrdinaryHistoricalMutationDenied()
+            // The first commit really reached memory; rejecting durability must
+            // not let this already-repaired map discharge the owned plan debt.
+            assertFalse(preferences.contains("ytdlp_source"))
+            var restartRepairCommitted = false
+            RestoreTransactionCoordinator.preferenceCommitOverrideForTesting = { committed ->
+                restartRepairCommitted = true
+                committed
+            }
+            if (phase >= RestorePhase.DATA_COMMITTED) RestoreTransactionCoordinator.roomApplyFailureForTesting = {
+                throw AssertionError("restart repair must not reapply committed Room")
+            }
+            assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.Completed)
+            assertTrue(restartRepairCommitted)
+            assertHistoricalUpdaterImage(item)
+            assertFalse(RestoreGate.isRestoreInProgress(context))
+        }
+    }
+
+    @Test
+    fun historicalValidSourceMaxRemainsExhaustedAndOwnedInsteadOfRebased() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        val settings = historicalSettings(null).map {
+            if (it.key == "ytdlp_source") it.copy(value = "nightly") else it
+        }
+        seedHistoricalDestination(historicalSettings(null), oldPublished = false)
+        val record = seedHistoricalOwner(historicalPlan(settings), RestorePhase.APPLYING)
+        val bytes = File(record.operationDirectory, "plan.json").readBytes()
+        val pointerBytes = File(RestoreOperationStore.root(context), "active.json").readBytes()
+        val outcome = RestoreTransactionCoordinator.recover(context)
+        assertTrue(outcome is RestoreOutcome.RecoveryPending)
+        assertEquals(Long.MAX_VALUE, preferences.getLong("ytdlp_source_generation", -1L))
+        assertEquals("  custom/source  ", preferences.getString("ytdlp_source", null))
+        assertEquals("DONE:old", preferences.getString("ytdlp_committed_result", null))
+        assertHistoricalOwnerUnchanged(record, bytes, pointerBytes)
+        assertOrdinaryHistoricalMutationDenied()
+    }
+
+    @Test
+    fun historicalUpdaterCompatibilityStillBlocksRawDigestMismatch() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        val raw = historicalPlan(historicalSettings(BackupSettingsItem("ytdlp_source", "1", "Int")))
+        val record = seedHistoricalOwner(raw, RestorePhase.PREPARED)
+        val planFile = File(record.operationDirectory, "plan.json")
+        planFile.appendText(" ", Charsets.UTF_8)
+        val corrupted = planFile.readBytes()
+        val before = preferences.all.toMap()
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.RecoveryPending)
+        assertEquals(before, preferences.all)
+        assertTrue(corrupted.contentEquals(planFile.readBytes()))
+        assertEquals(record.journal.planDigest, RestoreOperationStore.readJournal(record.operationDirectory).planDigest)
+        assertOrdinaryHistoricalMutationDenied()
+    }
+
+    @Test
+    fun historicalUpdaterCompatibilityStillBlocksGenericValueCorruptionWithMatchingDigest() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        val raw = historicalPlan(historicalSettings(BackupSettingsItem("auto_update_ytdlp", "1", "Boolean")))
+        val record = seedHistoricalOwner(raw, RestorePhase.PREPARED, load = false)
+        val planFile = File(record.operationDirectory, "plan.json")
+        val bytes = planFile.readBytes()
+        val before = preferences.all.toMap()
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.RecoveryPending)
+        assertEquals(before, preferences.all)
+        assertTrue(bytes.contentEquals(planFile.readBytes()))
+        assertEquals(record.journal.planDigest, RestoreOperationStore.digest(bytes))
+        assertOrdinaryHistoricalMutationDenied()
+    }
+
+    @Test
+    fun historicalUpdaterCompatibilityStillBlocksUnrecognizedPhase() = runBlocking {
+        beginHistoricalUpdaterFixture()
+        val raw = historicalPlan(historicalSettings(BackupSettingsItem("ytdlp_source", "1", "Int")))
+        val record = seedHistoricalOwner(raw, RestorePhase.PREPARED)
+        RestoreOperationStore.writeJournal(record.operationDirectory, record.journal.copy(phase = "UNRECOGNIZED"))
+        val before = preferences.all.toMap()
+        assertTrue(RestoreTransactionCoordinator.recover(context) is RestoreOutcome.RecoveryPending)
+        assertEquals(before, preferences.all)
+        assertEquals("UNRECOGNIZED", RestoreOperationStore.readJournal(record.operationDirectory).phase)
+        assertOrdinaryHistoricalMutationDenied()
+    }
+
+    private suspend fun beginHistoricalUpdaterFixture() {
+        App.instance.startupYtdlpUpdater.stop()
+        historicalPreferenceSnapshot = preferences.all.toMap()
+        historicalProvenanceSnapshot = UpdateUtil.destinationProvenancePreferences(context).all.toMap()
+    }
+
+    private fun historicalSettings(malformed: BackupSettingsItem?): List<BackupSettingsItem> = listOf(
+        BackupSettingsItem("ytdlp_source", "  custom/source  ", "String"),
+        BackupSettingsItem("ytdlp_source_label", "Exact label", "String"),
+        BackupSettingsItem("auto_update_ytdlp", "false", "Boolean"),
+        BackupSettingsItem("use_alarm_for_scheduling", "false", "Boolean"),
+        BackupSettingsItem("cleanup_leftover_downloads", "never", "String"),
+        BackupSettingsItem("f11_reset_marker", "historical-exact", "String"),
+    ).filterNot { it.key == malformed?.key } + listOfNotNull(malformed)
+
+    private fun historicalPlan(settings: List<BackupSettingsItem>): RestorePlan {
+        val strict = plan(history = history(9010L, "https://example.com/historical-plan"), settings = emptyList())
+        return RestorePlan(strict.appMarker, strict.formatVersion, strict.compatibility, strict.capabilities,
+            strict.data.copy(settings = settings))
+    }
+
+    private fun seedHistoricalDestination(settings: List<BackupSettingsItem>, oldPublished: Boolean) {
+        val editor = preferences.edit()
+            .putString("ytdlp_source", "  custom/source  ")
+            .putString("ytdlp_source_label", "Exact label")
+            .putBoolean("auto_update_ytdlp", false)
+            .putLong("ytdlp_source_generation", Long.MAX_VALUE)
+            .putLong("ytdlp_committed_source_generation", Long.MAX_VALUE)
+            .putString("ytdlp_committed_source", "  custom/source  ")
+            .putString("ytdlp_committed_result", "DONE:old")
+            .putLong("ytdlp_pending_source_generation", Long.MAX_VALUE)
+            .putString("ytdlp_pending_source", "  custom/source  ")
+            .remove("ytdlp_provenance_epoch")
+        if (oldPublished) settings.forEach { item ->
+            when (item.type) {
+                "String" -> editor.putString(item.key, item.value)
+                "Int" -> editor.putInt(item.key, item.value.toInt())
+                "Boolean" -> editor.putBoolean(item.key, item.value == "true")
+                else -> error("unexpected historical fixture type")
+            }
+        }
+        assertTrue(editor.commit())
+        assertTrue(UpdateUtil.destinationProvenancePreferences(context).edit().clear()
+            .putInt("epoch", 1).putInt("desired_generation_domain", 1).commit())
+    }
+
+    private fun seedHistoricalOwner(raw: RestorePlan, phase: RestorePhase, load: Boolean = true): RestoreRecord {
+        val operationId = java.util.UUID.randomUUID().toString()
+        val directory = RestoreOperationStore.createOperation(context, operationId)
+        // Direct historical durable carrier: deliberately do not use strict begin().
+        val digest = RestoreOperationStore.writePlan(directory, raw)
+        val journal = RestoreJournal(operationId, phase.name, digest, System.currentTimeMillis(),
+            quiescedWorkTags = if (phase == RestorePhase.PREPARED) null else emptyList())
+        RestoreOperationStore.writeJournal(directory, journal)
+        RestoreOperationStore.publishActive(context, RestorePointer(operationId, digest))
+        return if (load) requireNotNull(RestoreOperationStore.load(context)) else RestoreRecord(journal, raw, directory)
+    }
+
+    private fun assertHistoricalOwnerUnchanged(record: RestoreRecord, bytes: ByteArray, pointerBytes: ByteArray) {
+        assertTrue(bytes.contentEquals(File(record.operationDirectory, "plan.json").readBytes()))
+        assertTrue(pointerBytes.contentEquals(File(RestoreOperationStore.root(context), "active.json").readBytes()))
+        val current = requireNotNull(RestoreOperationStore.load(context))
+        assertEquals(record.journal.operationId, current.journal.operationId)
+        assertEquals(record.journal.planDigest, current.journal.planDigest)
+        assertEquals(record.journal.planDigest, RestoreOperationStore.digest(bytes))
+    }
+
+    private fun assertOrdinaryHistoricalMutationDenied() {
+        assertEquals(RestoreAdmission.DEFERRED, RestoreGate.admission(context))
+        val crossed = AtomicBoolean(false)
+        val failure = runCatching {
+            RestoreMutationAdmission.withOrdinaryMutationBlocking(context) { crossed.set(true) }
+        }.exceptionOrNull()
+        assertTrue(failure is IllegalStateException)
+        assertFalse(crossed.get())
+    }
+
+    private fun assertHistoricalUpdaterImage(item: BackupSettingsItem) {
+        if (item.key == "ytdlp_source") {
+            assertFalse(preferences.contains("ytdlp_source"))
+            assertFalse(preferences.contains("ytdlp_source_label"))
+            assertEquals(1L, preferences.getLong("ytdlp_source_generation", -1L))
+            listOf("ytdlp_committed_source_generation", "ytdlp_committed_source", "ytdlp_committed_result",
+                "ytdlp_pending_source_generation", "ytdlp_pending_source").forEach { assertFalse(preferences.contains(it)) }
+        } else {
+            assertEquals("  custom/source  ", preferences.getString("ytdlp_source", null))
+            assertEquals(Long.MAX_VALUE, preferences.getLong("ytdlp_source_generation", -1L))
+            assertEquals("DONE:old", preferences.getString("ytdlp_committed_result", null))
+        }
+        if (item.key == "auto_update_ytdlp") {
+            assertFalse(preferences.contains("auto_update_ytdlp"))
+            assertFalse(preferences.getBoolean("auto_update_ytdlp", false))
+        } else assertFalse(preferences.getBoolean("auto_update_ytdlp", true))
+        if (item.key == "ytdlp_source_label") {
+            assertFalse(preferences.contains("ytdlp_source_label"))
+            assertEquals("", preferences.getString("ytdlp_source_label", ""))
+        } else if (item.key != "ytdlp_source") assertEquals("Exact label", preferences.getString("ytdlp_source_label", null))
+        assertEquals(1, UpdateUtil.destinationProvenancePreferences(context).getInt("desired_generation_domain", -1))
+    }
+
+    private fun restoreHistoricalFixturePreferences() {
+        fun restore(preferences: android.content.SharedPreferences, snapshot: Map<String, *>) {
+            val editor = preferences.edit().clear()
+            snapshot.forEach { (key, value) ->
+                when (value) {
+                    is String -> editor.putString(key, value)
+                    is Boolean -> editor.putBoolean(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Float -> editor.putFloat(key, value)
+                    is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+                    null -> editor.remove(key)
+                    else -> error("unsupported historical fixture snapshot type")
+                }
+            }
+            assertTrue(editor.commit())
+        }
+        historicalPreferenceSnapshot?.let { restore(preferences, it) }
+        historicalProvenanceSnapshot?.let { restore(UpdateUtil.destinationProvenancePreferences(context), it) }
+    }
+
     private fun plan(
         history: HistoryItem? = null,
         thumbnail: BackupCustomThumbItem? = null,

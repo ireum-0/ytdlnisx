@@ -10,6 +10,7 @@ import androidx.preference.PreferenceManager
 import com.ireum.ytdl.util.NotificationUtil
 import com.ireum.ytdl.util.ThemeUtil
 import com.ireum.ytdl.util.StartupYtdlpUpdateOwner
+import com.ireum.ytdl.util.UpdateUtil
 import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
@@ -79,6 +80,7 @@ class App : Application() {
             SchedulerSettingsTransitionCoordinator.reconcile(this@App)
         }
         suspend fun initializeRuntime() {
+            UpdateUtil.recoverPersistedUpdaterPreferences(this@App)
             setDefaultValues()
             createNotificationChannels()
             initLibraries()

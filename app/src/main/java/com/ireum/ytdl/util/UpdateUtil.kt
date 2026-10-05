@@ -26,6 +26,7 @@ import kotlinx.coroutines.runInterruptible
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.IdentityHashMap
 
 
 class UpdateUtil(context: Context) {
@@ -134,6 +135,7 @@ class UpdateUtil(context: Context) {
         require(selectedSource.isNotEmpty()) { "yt-dlp source must not be blank" }
         return RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
             synchronized(stateLock) {
+                recoverPersistedUpdaterPreferences(sharedPreferences, provenancePreferences)
                 retirePreChangeProvenance(sharedPreferences, provenancePreferences)
                 val previousSource = sharedPreferences.getString(PREF_SOURCE, DEFAULT_SOURCE)
                     ?: DEFAULT_SOURCE
@@ -157,8 +159,11 @@ class UpdateUtil(context: Context) {
         }
     }
 
-    fun desiredSource(): DesiredSource = synchronized(stateLock) {
-        readDesiredSourceLocked()
+    fun desiredSource(): DesiredSource {
+        // Startup captures before readiness. Repair before that capture, without
+        // taking ordinary admission for an already valid, read-only observation.
+        recoverPersistedUpdaterPreferences(context)
+        return synchronized(stateLock) { readDesiredSourceLocked() }
     }
 
     /**
@@ -292,7 +297,7 @@ class UpdateUtil(context: Context) {
     private fun readDesiredSourceLocked(): DesiredSource {
         val source = if (sharedPreferences.contains(PREF_SOURCE)) {
             checkNotNull(sharedPreferences.getString(PREF_SOURCE, null))
-                .also { check(it.isNotBlank()) { "yt-dlp source preference is blank" } }
+                .also { check(isValidYtdlpSource(it)) { "yt-dlp source preference is blank" } }
         } else {
             DEFAULT_SOURCE
         }
@@ -403,9 +408,16 @@ class UpdateUtil(context: Context) {
         }
     }
 
+    internal data class OwnedUpdaterPreferenceRepair(
+        val sourceInvalid: Boolean,
+        val automaticInvalid: Boolean,
+        val labelInvalid: Boolean,
+    )
+
     companion object {
         private const val PREF_SOURCE = "ytdlp_source"
         private const val PREF_SOURCE_LABEL = "ytdlp_source_label"
+        private const val PREF_AUTOMATIC_UPDATE = "auto_update_ytdlp"
         private const val PREF_DESIRED_GENERATION = "ytdlp_source_generation"
         private const val PREF_COMMITTED_GENERATION = "ytdlp_committed_source_generation"
         private const val PREF_COMMITTED_SOURCE = "ytdlp_committed_source"
@@ -423,6 +435,78 @@ class UpdateUtil(context: Context) {
         private val stateLock = Any()
         private val updateMutex = Mutex()
         private val admittedRequests = mutableMapOf<DesiredSource, Int>()
+
+        internal fun isValidYtdlpSource(value: Any?): Boolean = value is String && value.isNotBlank()
+
+        // A false commit can publish a repaired memory image without repairing
+        // disk. Retain its exact repair obligation until a confirmed commit.
+        // This is process-local distrust, never a portable/version marker.
+        private data class PreferenceRepair(val removals: Set<String>, val sourceInvalid: Boolean)
+        private val unconfirmedPreferenceRepairs = IdentityHashMap<SharedPreferences, PreferenceRepair>()
+
+        private fun preferenceRepair(
+            preferences: SharedPreferences,
+            ownedPlan: OwnedUpdaterPreferenceRepair? = null,
+        ): PreferenceRepair? {
+            val raw = preferences.all
+            val sourceInvalid = ownedPlan?.sourceInvalid == true ||
+                (raw.containsKey(PREF_SOURCE) && !isValidYtdlpSource(raw[PREF_SOURCE]))
+            val removals = mutableSetOf<String>()
+            if (sourceInvalid) {
+                removals += PREF_SOURCE
+                // A valid label cannot identify an unknowable malformed source.
+                removals += PREF_SOURCE_LABEL
+            }
+            if (ownedPlan?.labelInvalid == true ||
+                (raw.containsKey(PREF_SOURCE_LABEL) && raw[PREF_SOURCE_LABEL] !is String)
+            ) removals += PREF_SOURCE_LABEL
+            if (ownedPlan?.automaticInvalid == true ||
+                (raw.containsKey(PREF_AUTOMATIC_UPDATE) && raw[PREF_AUTOMATIC_UPDATE] !is Boolean)
+            ) removals += PREF_AUTOMATIC_UPDATE
+            val pending = unconfirmedPreferenceRepairs[preferences]
+            pending?.let { removals += it.removals }
+            return if (removals.isEmpty()) null else PreferenceRepair(removals, sourceInvalid || pending?.sourceInvalid == true)
+        }
+
+        /** Ordinary repair never bypasses an active Reset or spans native work. */
+        internal fun recoverPersistedUpdaterPreferences(context: Context) {
+            val preferences = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
+            if (synchronized(stateLock) { preferenceRepair(preferences) == null }) return
+            RestoreMutationAdmission.withOrdinaryMutationBlocking(context) {
+                recoverPersistedUpdaterPreferences(preferences, destinationProvenancePreferences(context))
+            }
+        }
+
+        // Production callers own ordinary/Restore-publication admission first;
+        // the preferences overload also permits disk/memory failure fixtures.
+        internal fun recoverPersistedUpdaterPreferences(
+            preferences: SharedPreferences,
+            localState: SharedPreferences,
+            ownedPlan: OwnedUpdaterPreferenceRepair? = null,
+            commitConfirmation: ((Boolean) -> Boolean)? = null,
+        ) = synchronized(stateLock) {
+            val repair = preferenceRepair(preferences, ownedPlan) ?: return@synchronized
+            unconfirmedPreferenceRepairs[preferences] = repair
+            if (repair.sourceInvalid) retirePreChangeProvenance(preferences, localState)
+            val editor = preferences.edit()
+            repair.removals.forEach(editor::remove)
+            if (repair.sourceInvalid) {
+                // No valid composite DesiredSource existed, even if its numeric
+                // carrier was current-domain MAX. Establish canonical local 1;
+                // valid-source MAX never enters this branch.
+                editor.putLong(PREF_DESIRED_GENERATION, 1L)
+                    .remove(PREF_COMMITTED_GENERATION)
+                    .remove(PREF_COMMITTED_SOURCE)
+                    .remove(PREF_COMMITTED_RESULT)
+                    .remove(PREF_PENDING_GENERATION)
+                    .remove(PREF_PENDING_SOURCE)
+            }
+            val committed = editor.commit()
+            check(commitConfirmation?.invoke(committed) ?: committed) {
+                "Malformed yt-dlp preference recovery was not durable"
+            }
+            unconfirmedPreferenceRepairs.remove(preferences)
+        }
         private var provenanceEpochPublicationUnconfirmed = false
         private var desiredGenerationDomainPublicationUnconfirmed = false
 
@@ -522,6 +606,10 @@ class UpdateUtil(context: Context) {
         // snapshot, source reconciliation and commit atomic to updater readers.
         internal fun <T> withRestoredSourcePublication(context: Context, block: () -> T): T =
             synchronized(stateLock) {
+                recoverPersistedUpdaterPreferences(
+                    PreferenceManager.getDefaultSharedPreferences(context),
+                    destinationProvenancePreferences(context),
+                )
                 // Both real publishers already hold RestoreMutationAdmission.
                 // Make the destination snapshot safe before reconciliation or
                 // reset can copy/cast a previously imported generation.

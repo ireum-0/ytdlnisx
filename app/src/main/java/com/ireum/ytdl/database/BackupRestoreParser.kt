@@ -37,6 +37,7 @@ import com.ireum.ytdl.database.repository.DownloadRepository
 import com.ireum.ytdl.database.repository.ObserveSourcesRepository
 import com.ireum.ytdl.util.AutomaticKeywordNormalizer
 import com.ireum.ytdl.util.BackupSettingsUtil
+import com.ireum.ytdl.util.UpdateUtil
 import java.util.Locale
 
 /** The single schema and validation authority for backup restore input. */
@@ -140,6 +141,45 @@ internal object BackupRestoreParser {
             capabilities = typedCapabilities(normalized),
             data = normalized,
         )
+    }
+
+    internal data class OwnedResetRecovery(
+        val plan: RestorePlan,
+        val updaterRepair: UpdateUtil.OwnedUpdaterPreferenceRepair,
+    )
+
+    /** Pure adapter used only AFTER the active owner and raw digest are proven. */
+    internal fun recoverOwnedResetPlan(plan: RestorePlan): OwnedResetRecovery {
+        validatePlanMetadata(plan.appMarker, plan.formatVersion, plan.compatibility)
+        // Preserve readPlan's existing typed normalization followed by its
+        // persisted compatibility/metadata checks. Only updater schema differs.
+        val typed = normalize(plan.data, BackupCompatibility.TYPED_PROGRAMMATIC, historicalUpdaterRecovery = true)
+        val normalized = normalize(typed, plan.compatibility, historicalUpdaterRecovery = true)
+        require(plan.capabilities == typedCapabilities(normalized)) {
+            "Restore capability declaration does not match the normalized payload"
+        }
+        val settings = normalized.settings.orEmpty()
+        fun finalItem(key: String) = settings.lastOrNull { it.key == key }
+        val source = finalItem("ytdlp_source")
+        val automatic = finalItem("auto_update_ytdlp")
+        val label = finalItem("ytdlp_source_label")
+        val repair = UpdateUtil.OwnedUpdaterPreferenceRepair(
+            sourceInvalid = source != null && (source.type != "String" || !UpdateUtil.isValidYtdlpSource(source.value)),
+            automaticInvalid = automatic != null && automatic.type != "Boolean",
+            labelInvalid = label != null && label.type != "String",
+        )
+        val effectiveSettings = normalized.settings?.filter { item ->
+            when (item.key) {
+                "ytdlp_source" -> !repair.sourceInvalid && item.type == "String" && UpdateUtil.isValidYtdlpSource(item.value)
+                "auto_update_ytdlp" -> !repair.automaticInvalid && item.type == "Boolean"
+                "ytdlp_source_label" -> !repair.sourceInvalid && !repair.labelInvalid && item.type == "String"
+                else -> true
+            }
+        }
+        val effective = RestorePlan(plan.appMarker, plan.formatVersion, plan.compatibility,
+            plan.capabilities, normalized.copy(settings = effectiveSettings))
+        // The effective image still satisfies every strict current contract.
+        return OwnedResetRecovery(validatePlan(effective), repair)
     }
 
     /** Compatibility helper retained for existing playlist production tests. */
@@ -259,10 +299,11 @@ internal object BackupRestoreParser {
     private fun normalize(
         input: RestoreAppDataItem,
         compatibility: BackupCompatibility,
+        historicalUpdaterRecovery: Boolean = false,
     ): RestoreAppDataItem {
         val settings = input.settings
             ?.filter { BackupSettingsUtil.isPortablePreferenceKey(it.key) }
-            ?.also(::validateSettings)
+            ?.also { validateSettings(it, enforceUpdaterSchema = !historicalUpdaterRecovery) }
         val history = input.downloads?.map { item ->
             require(item.id > 0L) { "History backup identity must be positive" }
             require(item.url.isNotBlank()) { "History URL must not be blank" }
@@ -519,9 +560,20 @@ internal object BackupRestoreParser {
         )
     }
 
-    private fun validateSettings(settings: List<BackupSettingsItem>) {
+    private fun validateSettings(settings: List<BackupSettingsItem>, enforceUpdaterSchema: Boolean = true) {
         settings.forEach { item ->
             require(item.key.isNotBlank()) { "Preference key must not be blank" }
+            if (enforceUpdaterSchema) when (item.key) {
+                "ytdlp_source" -> require(item.type == "String" && UpdateUtil.isValidYtdlpSource(item.value)) {
+                    "yt-dlp source must be a nonblank String"
+                }
+                "auto_update_ytdlp" -> require(item.type == "Boolean") {
+                    "yt-dlp automatic update preference must be Boolean"
+                }
+                "ytdlp_source_label" -> require(item.type == "String") {
+                    "yt-dlp source label must be String"
+                }
+            }
             when (val type = item.type) {
                 "String" -> Unit
                 "Boolean" -> require(item.value == "true" || item.value == "false") {

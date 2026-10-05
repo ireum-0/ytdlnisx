@@ -327,6 +327,135 @@ class UpdateUtilProvenanceMigrationTest {
         assertEquals(retired, defaults.disk)
     }
 
+    @Test
+    fun malformedSourceRebasesCompositeInvalidCurrentMaxAndRetiresProof() {
+        listOf<Any>(1, true, "", " \t\n", setOf("nightly")).forEach { value ->
+            val defaults = MemoryPreferences(legacyGraph() + mapOf(
+                "ytdlp_source" to value, "ytdlp_source_generation" to Long.MAX_VALUE,
+            ))
+            val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+            UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+            assertFalse(defaults.disk.containsKey("ytdlp_source"))
+            assertFalse(defaults.disk.containsKey("ytdlp_source_label"))
+            assertEquals(1L, defaults.disk["ytdlp_source_generation"])
+            proofKeys.forEach { assertFalse(defaults.disk.containsKey(it)) }
+            assertEquals(false, defaults.disk["auto_update_ytdlp"])
+            assertEquals("preserved", defaults.disk["unrelated_setting"])
+            assertEquals(0, local.commits)
+            UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+            assertEquals(1, defaults.commits)
+        }
+    }
+
+    @Test
+    fun malformedLabelAndAutomaticKeysRecoverToAbsenceWithoutChangingSourceAuthority() {
+        val original = legacyGraph() + mapOf(
+            "ytdlp_source" to "  owner/custom  ", "ytdlp_source_generation" to Long.MAX_VALUE,
+            "auto_update_ytdlp" to "false", "ytdlp_source_label" to 1,
+        )
+        val defaults = MemoryPreferences(original)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(original - setOf("auto_update_ytdlp", "ytdlp_source_label"), defaults.disk)
+        assertEquals(0, local.commits)
+        assertTrue(runCatching {
+            UpdateUtil.restoredSourceGeneration("  owner/custom  ", Long.MAX_VALUE, "stable")
+        }.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun failedRecoveryMemoryPublicationRemainsUntrustedAndRetryWritesDisk() {
+        val original = legacyGraph() + ("ytdlp_source_label" to 1)
+        val defaults = MemoryPreferences(original, failCommit = 1)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        assertTrue(runCatching {
+            UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        }.exceptionOrNull() is IllegalStateException)
+        assertFalse(defaults.memory.containsKey("ytdlp_source_label"))
+        assertEquals(original, defaults.disk)
+        // A fresh process rediscovers the unchanged disk, without a marker.
+        val reopened = MemoryPreferences(defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(reopened.preferences, local.preferences)
+        assertEquals(original - "ytdlp_source_label", reopened.disk)
+        // Same-process retry must commit despite its already repaired memory.
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(2, defaults.commits)
+        assertEquals(reopened.disk, defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(2, defaults.commits)
+    }
+
+    @Test
+    fun failedSourceRecoveryAtMaxReplaysDiskAndDoesNotTrustRepairedMemory() {
+        val original = legacyGraph() + mapOf("ytdlp_source" to 1, "ytdlp_source_generation" to Long.MAX_VALUE)
+        val defaults = MemoryPreferences(original, failCommit = 1)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        assertTrue(runCatching {
+            UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        }.exceptionOrNull() is IllegalStateException)
+        assertEquals(original, defaults.disk)
+        assertFalse(defaults.memory.containsKey("ytdlp_source"))
+        assertEquals(1L, defaults.memory["ytdlp_source_generation"])
+        val restarted = MemoryPreferences(defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(restarted.preferences, local.preferences)
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(restarted.disk, defaults.disk)
+        assertEquals(2, defaults.commits)
+        val secondStartup = MemoryPreferences(defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(secondStartup.preferences, local.preferences)
+        assertEquals(0, secondStartup.commits)
+    }
+
+    @Test
+    fun validInstalledValuesIncludingCurrentMaxRemainByteEquivalentAndDoNotCommit() {
+        val original = legacyGraph() + mapOf("ytdlp_source" to "  custom/nonblank  ", "ytdlp_source_generation" to Long.MAX_VALUE)
+        val defaults = MemoryPreferences(original)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(original, defaults.disk)
+        assertEquals(0, defaults.commits)
+        assertEquals(0, local.commits)
+    }
+
+    @Test
+    fun provenOwnedMalformedSourceIntentRebasesMaxEvenBeforeOldPreferencePublication() {
+        val original = legacyGraph() + ("ytdlp_source_generation" to Long.MAX_VALUE)
+        val defaults = MemoryPreferences(original, failCommit = 1)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        val intent = UpdateUtil.OwnedUpdaterPreferenceRepair(true, false, false)
+        assertTrue(runCatching {
+            UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences, intent)
+        }.exceptionOrNull() is IllegalStateException)
+        assertEquals(original, defaults.disk)
+        val restarted = MemoryPreferences(defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(restarted.preferences, local.preferences, intent)
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences, intent)
+        assertEquals(restarted.disk, defaults.disk)
+        assertEquals(1L, defaults.disk["ytdlp_source_generation"])
+        assertFalse(defaults.disk.containsKey("ytdlp_source"))
+        assertFalse(defaults.disk.containsKey("ytdlp_source_label"))
+        proofKeys.forEach { assertFalse(defaults.disk.containsKey(it)) }
+        assertEquals(0, local.commits)
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences, intent)
+        assertEquals(restarted.disk, defaults.disk)
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences)
+        assertEquals(3, defaults.commits)
+    }
+
+    @Test
+    fun ownedLabelAndAutomaticRepairDoesNotRebaseValidMaxOrRetireItsProof() {
+        val original = legacyGraph() + ("ytdlp_source_generation" to Long.MAX_VALUE)
+        val defaults = MemoryPreferences(original)
+        val local = MemoryPreferences(mapOf(localEpochKey to 1, generationDomainKey to 1))
+        UpdateUtil.recoverPersistedUpdaterPreferences(defaults.preferences, local.preferences,
+            UpdateUtil.OwnedUpdaterPreferenceRepair(false, true, true))
+        assertEquals(original - setOf("auto_update_ytdlp", "ytdlp_source_label"), defaults.disk)
+        assertEquals(0, local.commits)
+        assertTrue(runCatching {
+            UpdateUtil.restoredSourceGeneration("nightly", Long.MAX_VALUE, "stable")
+        }.exceptionOrNull() is IllegalStateException)
+    }
+
     private fun migrate(defaults: MemoryPreferences, local: MemoryPreferences) =
         UpdateUtil.retirePreChangeProvenance(defaults.preferences, local.preferences)
 

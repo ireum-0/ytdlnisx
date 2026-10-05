@@ -3,6 +3,7 @@ package com.ireum.ytdl.ui.more.settings.updating
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.widget.TextView
 import androidx.lifecycle.ViewModelProvider
@@ -13,12 +14,16 @@ import androidx.preference.PreferenceManager
 import com.ireum.ytdl.BuildConfig
 import com.ireum.ytdl.R
 import com.ireum.ytdl.database.viewmodel.SettingsViewModel
+import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreGate
 import com.ireum.ytdl.database.viewmodel.YTDLPViewModel
 import com.ireum.ytdl.ui.more.settings.BaseSettingsFragment
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.util.UpdateUtil
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -36,6 +41,34 @@ class UpdateSettingsFragment : BaseSettingsFragment() {
     private lateinit var settingsViewModel: SettingsViewModel
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+        // Inflation itself consumes the Boolean XML preference. Keep it behind
+        // the same repair as direct source/label readers, and drive pending
+        // Restore off the UI thread before ordinary repair can be admitted.
+        preferenceScreen = preferenceManager.createPreferenceScreen(requireContext())
+        val applicationContext = requireContext().applicationContext
+        lifecycleScope.launch {
+            while (true) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        RestoreTransactionCoordinator.recover(applicationContext)
+                        check(!RestoreGate.isRestoreInProgress(applicationContext)) {
+                            "Restore recovery remains pending before updater settings"
+                        }
+                        UpdateUtil.recoverPersistedUpdaterPreferences(applicationContext)
+                    }
+                    break
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Log.w("UpdateSettingsFragment", "Updater settings recovery deferred", failure)
+                    delay(2_000L)
+                }
+            }
+            loadPreferences(rootKey)
+        }
+    }
+
+    private fun loadPreferences(rootKey: String?) {
         setPreferencesFromResource(R.xml.updating_preferences, rootKey)
         updateUtil = UpdateUtil(requireContext())
         preferences = PreferenceManager.getDefaultSharedPreferences(requireContext())

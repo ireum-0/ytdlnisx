@@ -1155,6 +1155,84 @@ class UpdateUtilProductionWiringTest {
         }
     }
 
+    @Test
+    fun malformedInstalledSourceIncludingCurrentMaxRecoversBeforeDesiredCapture() {
+        listOf<Any>(1, true, "", " \t\n", setOf("nightly")).forEach { malformed ->
+            seedDestination("1", Long.MAX_VALUE)
+            val editor = preferences.edit()
+            putPreferenceValue(editor, "ytdlp_source", malformed)
+            assertTrue(editor.commit())
+            val update = UpdateUtil(context)
+            assertEquals(UpdateUtil.DesiredSource("stable", 1L), update.desiredSource())
+            assertFalse(preferences.contains("ytdlp_source"))
+            assertFalse(preferences.contains("ytdlp_source_label"))
+            listOf("ytdlp_committed_source_generation", "ytdlp_committed_source", "ytdlp_committed_result",
+                "ytdlp_pending_source_generation", "ytdlp_pending_source").forEach {
+                assertFalse(preferences.contains(it))
+            }
+            assertEquals(1, provenancePreferences.getInt("desired_generation_domain", -1))
+            val snapshot = preferences.all.toMap()
+            assertEquals(update.desiredSource(), UpdateUtil(context).desiredSource())
+            assertEquals(snapshot, preferences.all)
+        }
+    }
+
+    @Test
+    fun installedLabelAndAutomaticRecoveryPreservesValidSourceProofAndExhaustion() {
+        seedDestination("  custom/source  ", Long.MAX_VALUE)
+        assertTrue(preferences.edit().putInt("ytdlp_source_label", 1).putString("auto_update_ytdlp", "false").commit())
+        val original = preferences.all.toMap()
+        val local = provenancePreferences.all.toMap()
+        val update = UpdateUtil(context)
+        assertEquals(UpdateUtil.DesiredSource("  custom/source  ", Long.MAX_VALUE), update.desiredSource())
+        assertEquals(original - setOf("auto_update_ytdlp", "ytdlp_source_label"), preferences.all)
+        assertEquals(local, provenancePreferences.all)
+        assertEquals("", preferences.getString("ytdlp_source_label", ""))
+        assertFalse(preferences.getBoolean("auto_update_ytdlp", false))
+        assertTrue("valid-source MAX remains exhausted", runCatching {
+            update.selectSource("stable", "Stable")
+        }.exceptionOrNull() is IllegalStateException)
+        assertEquals(UpdateUtil.DesiredSource("  custom/source  ", Long.MAX_VALUE), update.desiredSource())
+    }
+
+    @Test
+    fun realStartupOwnerRepairsAllMalformedKeysBeforePrerequisitesAndMakesProgress() = runBlocking {
+        seedDestination("1", Long.MAX_VALUE)
+        assertTrue(preferences.edit().putInt("ytdlp_source", 1).putString("auto_update_ytdlp", "false")
+            .putInt("ytdlp_source_label", 1).commit())
+        val completed = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        var prerequisitesObserved = false
+        UpdateUtil.updaterForTesting = { _, source ->
+            assertEquals("stable", source)
+            calls.incrementAndGet()
+            UpdateUtil.YTDLPUpdateResponse(UpdateUtil.YTDLPUpdateStatus.DONE, "recovered")
+        }
+        val owner = startupOwner(prerequisites = {
+            assertEquals(UpdateUtil.DesiredSource("stable", 1L), UpdateUtil(context).desiredSource())
+            assertFalse(preferences.contains("ytdlp_source"))
+            assertFalse(preferences.contains("auto_update_ytdlp"))
+            assertEquals("", preferences.getString("ytdlp_source_label", ""))
+            prerequisitesObserved = true
+        }, completed = { desired, response ->
+            assertEquals(UpdateUtil.DesiredSource("stable", 1L), desired)
+            assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, response.status)
+            completed.complete(Unit)
+        })
+        try {
+            withTimeout(30_000) { completed.await() }
+            owner.stop()
+            assertTrue(prerequisitesObserved)
+            assertEquals(1, calls.get())
+            assertTrue(UpdateUtil(context).startupGenerationIsCommitted(UpdateUtil.DesiredSource("stable", 1L)))
+            val snapshot = preferences.all.toMap()
+            UpdateUtil.recoverPersistedUpdaterPreferences(context)
+            assertEquals(snapshot, preferences.all)
+        } finally {
+            owner.stop()
+        }
+    }
+
     private fun startupOwner(
         observed: ((UpdateUtil.DesiredSource) -> Unit)? = null,
         completed: ((UpdateUtil.DesiredSource, UpdateUtil.YTDLPUpdateResponse) -> Unit)? = null,

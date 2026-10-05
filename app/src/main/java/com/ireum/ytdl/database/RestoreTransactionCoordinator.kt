@@ -125,6 +125,7 @@ internal data class RestoreRecord(
     val journal: RestoreJournal,
     val plan: RestorePlan,
     val operationDirectory: File,
+    val updaterRepair: UpdateUtil.OwnedUpdaterPreferenceRepair? = null,
 )
 
 private data class PersistedRestorePlan(
@@ -226,11 +227,21 @@ internal object RestoreOperationStore {
             require(directory.isDirectory) { "operation directory is missing" }
             val journal = readJournal(directory)
             require(journal.operationId == pointer.operationId) { "operation owner mismatch" }
-            val (plan, digest) = readPlan(directory)
+            RestorePhase.valueOf(journal.phase)
+            // Compatibility is recovery authority only after immutable raw
+            // bytes match BOTH durable owners, never an admission bypass.
+            val bytes = readAtomic(File(directory, PLAN_FILE))
+            val digest = digest(bytes)
             require(digest == journal.planDigest && digest == pointer.planDigest) {
                 "plan integrity mismatch"
             }
-            RestoreRecord(journal, plan, directory)
+            val persisted = gson.fromJson(bytes.toString(Charsets.UTF_8), PersistedRestorePlan::class.java)
+                ?: throw IllegalArgumentException("restore plan is null")
+            val recovery = BackupRestoreParser.recoverOwnedResetPlan(
+                RestorePlan(persisted.appMarker, persisted.formatVersion, persisted.compatibility,
+                    persisted.capabilities, persisted.data),
+            )
+            RestoreRecord(journal, recovery.plan, directory, recovery.updaterRepair)
         } catch (error: Exception) {
             throw RestoreRecoveryBlockedException("Active restore journal is malformed", error)
         }
@@ -528,6 +539,7 @@ object RestoreTransactionCoordinator {
                         record = capturePostCommitSidecars(context, record)
                         val applied = applyAuthoritativeState(context, record)
                         RestoreMutationAdmission.withRestoreMutation {
+                            repairOwnedUpdaterPreferences(context, record)
                             publishPreferences(context, record, applied)
                         }
                         afterRoomCommitBeforeJournalForTesting?.invoke()
@@ -538,6 +550,7 @@ object RestoreTransactionCoordinator {
                         record = capturePostCommitSidecars(context, record)
                         val applied = applyAuthoritativeState(context, record)
                         RestoreMutationAdmission.withRestoreMutation {
+                            repairOwnedUpdaterPreferences(context, record)
                             publishPreferences(context, record, applied)
                         }
                         afterRoomCommitBeforeJournalForTesting?.invoke()
@@ -545,9 +558,11 @@ object RestoreTransactionCoordinator {
                         afterDataCommittedBeforeReconciliationForTesting?.invoke()
                     }
                     RestorePhase.DATA_COMMITTED -> {
+                        RestoreMutationAdmission.withRestoreMutation { repairOwnedUpdaterPreferences(context, record) }
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.RECONCILING)
                     }
                     RestorePhase.RECONCILING -> {
+                        RestoreMutationAdmission.withRestoreMutation { repairOwnedUpdaterPreferences(context, record) }
                         reconcilePostCommit(context, record)
                         afterReconciliationBeforeCompleteForTesting?.invoke()
                         record = RestoreOperationStore.updatePhase(record, RestorePhase.COMPLETE)
@@ -557,6 +572,7 @@ object RestoreTransactionCoordinator {
                         return RestoreOutcome.Completed(record.journal.operationId)
                     }
                     RestorePhase.COMPLETE -> {
+                        RestoreMutationAdmission.withRestoreMutation { repairOwnedUpdaterPreferences(context, record) }
                         RestoreOperationStore.clearActiveIfOwned(context, record.journal.operationId)
                         RestoreOperationStore.retireOperation(record)
                         return RestoreOutcome.Completed(record.journal.operationId)
@@ -1361,6 +1377,22 @@ object RestoreTransactionCoordinator {
         } else {
             value
         }
+
+    // operationMutex + Restore mutation admission are already held. Re-prove
+    // the exact active owner/phase/digest before using its compatibility intent.
+    private fun repairOwnedUpdaterPreferences(context: Context, record: RestoreRecord) {
+        val owner = RestoreOperationStore.load(context) ?: error("Restore updater repair has no active owner")
+        check(owner.journal.operationId == record.journal.operationId &&
+            owner.journal.planDigest == record.journal.planDigest &&
+            owner.journal.phase == record.journal.phase
+        ) { "Restore updater repair owner changed" }
+        UpdateUtil.recoverPersistedUpdaterPreferences(
+            PreferenceManager.getDefaultSharedPreferences(context),
+            UpdateUtil.destinationProvenancePreferences(context),
+            owner.updaterRepair,
+            preferenceCommitOverrideForTesting,
+        )
+    }
 
     private fun publishPreferences(
         context: Context,
