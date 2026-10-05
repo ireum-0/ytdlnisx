@@ -230,6 +230,7 @@ class UpdateUtilProductionWiringTest {
 
     @Test
     fun startupReconcilesPersistedDesiredGenerationAfterCoordinatorRecreation() = runBlocking {
+        assertFalse(provenancePreferences.contains("desired_generation_domain"))
         assertTrue(
             preferences.edit()
                 .putString("ytdlp_source", "nightly")
@@ -250,9 +251,13 @@ class UpdateUtilProductionWiringTest {
 
         assertEquals(UpdateUtil.YTDLPUpdateStatus.DONE, result.status)
         assertEquals(1, calls.get())
-        assertEquals(8L, preferences.getLong("ytdlp_committed_source_generation", -1L))
+        assertEquals("nightly", preferences.getString("ytdlp_source", null))
+        assertEquals(1L, preferences.getLong("ytdlp_source_generation", -1L))
+        assertEquals(1L, preferences.getLong("ytdlp_committed_source_generation", -1L))
         assertEquals("nightly", preferences.getString("ytdlp_committed_source", null))
         assertEquals("DONE:nightly@recovered", preferences.getString("ytdlp_committed_result", null))
+        assertEquals(1, provenancePreferences.getInt("desired_generation_domain", 0))
+        assertTrue(UpdateUtil.destinationDesiredGenerationDomainIsCurrent(provenancePreferences))
     }
 
     @Test
