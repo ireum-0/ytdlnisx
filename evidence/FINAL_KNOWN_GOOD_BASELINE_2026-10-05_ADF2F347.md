@@ -45,9 +45,19 @@ Canonical closure records and final-heavy completion review are preserved on rev
 
 Known-Good Baseline promotion is authorized for the exact source tree at adf2f347.
 
-A tree-identical baseline marker commit may follow on checkpoint/pre-baseline-review after a fresh HEAD check. That marker does not substitute for the exact execution SHA; it records that the adf2f347 tree passed the final gate.
+A tree-identical baseline marker commit has been published on checkpoint/pre-baseline-review:
 
-An immutable baseline tag may be created only after the ledger and baseline marker are verified.
+db29f63ce169176b4c8ade4cec01f66cc0307ec8
+
+It is one normal forward commit from adf2f347 and uses the exact same source tree:
+5a548066be27295a76ee46547818935bc4add95a
+
+The marker commit changes zero files and does not substitute for the exact execution SHA; it records that the adf2f347 tree passed the final gate.
+
+Preferred immutable baseline tag:
+known-good-2026-10-05-adf2f347
+
+The exact tag name was verified absent. Tag creation remains pending only because the currently available authenticated GitHub write interface in this review environment does not expose tag-ref/tag-object creation. No mutable branch is substituted for the immutable tag.
 
 ## Execution evidence provenance
 
