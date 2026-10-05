@@ -253,14 +253,18 @@ Required change before provider production use:
 ### 6.6 Exact runtime/plugin compatibility identity
 
 Provider compatibility is keyed to:
-- exact bundled yt-dlp runtime identity/version;
+- the exact currently executable yt-dlp runtime artifact used by YoutubeDLCompat, not updater source preference/generation alone;
+- verified yt-dlp --version plus SHA-256 of the resolved ytdlpBinary, or an equally exact mutation-owned content identity;
 - provider plugin version/blob/hash;
 - provider protocol version.
 
-A prior compatibility result must not be reused after yt-dlp runtime mutation/update or plugin replacement.
+The compatibility verdict is process-local by default. If a future implementation persists it, the persisted key must carry the full exact runtime/plugin/protocol identity and must not trust source label, update channel, or desired-generation equality as proof of executable content equality.
+
+A prior compatibility result must not be reused after yt-dlp runtime mutation/update, executable-content change, or plugin replacement.
 
 If yt-dlp self-update changes the runtime:
 - discard any cached provider-compatibility verdict;
+- recompute the exact runtime identity after the mutation has completed under existing runtime authority;
 - re-run cheap provider import/discovery compatibility before the next AUTO request;
 - fail closed to provider unavailable rather than silently executing an incompatible plugin.
 
@@ -704,8 +708,9 @@ Caching:
 
 Compatibility:
 - manifest records protocol version and provider plugin hash;
-- runtime records/observes the exact yt-dlp version or another deterministic runtime identity available from the bundled executable;
-- after yt-dlp self-update, invalidate provider discovery compatibility before the next AUTO request.
+- runtime derives compatibility identity from the exact currently executable yt-dlp artifact used by YoutubeDLCompat; updater source/channel/generation alone is insufficient;
+- prefer verified --version + SHA-256 of the resolved ytdlpBinary, or an equally exact mutation-owned content identity;
+- after yt-dlp self-update, invalidate provider discovery compatibility before the next AUTO request and recompute identity only after mutation completion.
 
 Preference:
 - register a provider preference high enough to select YTDLnisX local provider when auto mode explicitly installs its plugin path;
@@ -955,6 +960,10 @@ MVP success does not imply PLAYER or SUBS correctness.
 
 ## 18. Accelerated single-run implementation
 
+Governance boundary:
+- this section describes execution behavior only after a separate governing authorization/launch state has authorized production implementation of this plan;
+- this PROPOSED plan does not by itself authorize production source writes, commits, pushes, or a launch-ready implementation handoff.
+
 The preferred execution model is one continuous implementation run, not a sequence of user-gated waves.
 
 The implementation agent should proceed through the internal stages below without stopping for renewed approval after each successful stage. Each stage remains independently reviewable and should normally end in a small normal-forward commit or equivalent durable checkpoint, but those commits are internal checkpoints inside one continuous run.
@@ -1125,7 +1134,7 @@ Required live acceptance:
   2. MWEB/GVS/VISITOR_DATA request reached the app;
   3. PoTokenWebView generated the token;
   4. yt-dlp accepted the token for the request;
-  5. a usable GVS format URL was obtained and download began or completed according to the test contract;
+  5. a usable GVS format URL was obtained and actual media transfer began with positive byte/progress evidence, or the controlled download completed;
   6. no raw token, binding or secret appeared in evidence.
 
 If deterministic closure passes but the exact-final-SHA live acceptance cannot be completed because of an external outage:
@@ -1175,7 +1184,9 @@ PoTokenProviderRuntimeTest
 - manifest parse;
 - plugin hash match/mismatch;
 - exact yt-dlp runtime compatibility key;
+- updater source/generation equality with changed ytdlpBinary content -> compatibility miss;
 - runtime mutation invalidates compatibility;
+- no persisted/restarted compatibility reuse without full exact artifact identity match;
 - atomic materialization;
 - no path traversal;
 - interrupted publication keeps old known-good runtime.
@@ -1477,7 +1488,7 @@ Before acceptance, independent review should explicitly trace:
 
 The gates below are continuation checkpoints inside one accelerated implementation run.
 
-A PASS automatically authorizes proceeding to the next gate within the already-approved plan. The agent must not stop merely to ask whether it should continue.
+After a separate governing authorization launches an implementation run for this plan, a PASS authorizes proceeding to the next internal gate of that already-authorized run. Gate PASS does not create the initial production-write authorization. The agent must not stop merely to ask whether it should continue once that launch authorization exists.
 
 Gate 0 — architecture
 PASS only if:
@@ -1526,7 +1537,7 @@ Deterministic implementation closure requires:
 - independent source/completion review.
 
 Feature ACCEPTED additionally requires:
-- successful exact-final-SHA live token-use proof through actual GVS format acquisition/download start.
+- successful exact-final-SHA live token-use proof through actual GVS format acquisition plus positive media-transfer evidence, or controlled download completion.
 
 If deterministic closure passes but external conditions prevent that live proof:
 - status = IMPLEMENTED_NOT_RUNTIME_ACCEPTED;
