@@ -785,37 +785,52 @@ Before adding either:
 
 MVP success does not imply PLAYER or SUBS correctness.
 
-## 18. Commit / implementation waves
+## 18. Accelerated single-run implementation
 
-Each wave should be independently reviewable and normal-forward only.
+The preferred execution model is one continuous implementation run, not a sequence of user-gated waves.
 
-### Wave A — provider contract POC, no production selection
+The implementation agent should proceed through the internal stages below without stopping for renewed approval after each successful stage. Each stage remains independently reviewable and should normally end in a small normal-forward commit or equivalent durable checkpoint, but those commits are internal checkpoints inside one continuous run.
 
-Expected changes:
+The agent should continue automatically when a stage's acceptance checks pass.
+
+The agent should stop only for a material blocker that cannot be safely resolved within the plan, including:
+- current bundled yt-dlp cannot load the public provider API or the bundled first-party plugin without an incompatible runtime replacement;
+- implementing the feature would require weakening YtdlpRuntimeAuthority, native process finalization, protected output ownership, or other existing Known-Good invariants;
+- the provider can only be made to work by executing unpinned external code or by introducing runtime master/latest installation contrary to this plan;
+- the loopback provider cannot be confined to app-owned loopback/private-secret boundaries;
+- exact production semantics diverge materially from this plan in a way that makes the intended support contract ambiguous;
+- live evidence shows the first-party WebView-backed provider architecture is fundamentally incompatible with current YouTube behavior rather than merely requiring an ordinary implementation correction.
+
+Ordinary compile failures, test failures, protocol bugs, plugin import mistakes, lifecycle races, UI wiring errors, and other implementation defects are not stop reasons by themselves. Fix them within the same run, add regression coverage, and continue.
+
+Do not squash, amend, rebase, or rewrite the internal stage history merely to make it look like one implementation action.
+
+### Stage A — provider contract and plugin discovery
+
+Implement:
 - bundled Python provider asset;
 - manifest;
 - PoTokenProviderRuntime;
 - fake local provider test harness;
-- tests proving yt-dlp plugin discovery.
-
-Production automatic mode remains unreachable/off.
+- tests proving current bundled yt-dlp plugin discovery.
 
 Acceptance:
-- current yt-dlp loads YtdlnisxLocalPTP from verified app-owned plugin dir;
+- current bundled yt-dlp loads YtdlnisxLocalPTP from verified app-owned plugin dir;
 - fake endpoint returns a fixed non-secret test token;
 - request context/client/binding shape reaches fake endpoint;
-- no current download request behavior changes with feature disabled.
+- no default production download behavior changes while the feature remains disabled.
 
-### Wave B — loopback protocol + generation engine
+On PASS:
+continue immediately to Stage B.
 
-Expected changes:
+### Stage B — loopback protocol + generation engine
+
+Implement:
 - PoTokenProviderProtocol;
 - PoTokenLoopbackServer;
 - PoTokenGenerationEngine;
 - PoTokenProviderCoordinator;
 - tests.
-
-No YTDLPUtil production selection yet.
 
 Acceptance:
 - strict parser tests;
@@ -825,74 +840,118 @@ Acceptance:
 - generatePoToken(binding) fake/controlled instrumentation test;
 - no token persistence.
 
-### Wave C — YoutubeDLCompat trusted provider execution wiring
+On PASS:
+continue immediately to Stage C.
 
-Expected changes:
-- YoutubeDLCompat;
-- provider request marker;
-- environment/plugin-dir wiring;
+### Stage C — YoutubeDLCompat trusted provider execution wiring
+
+Implement:
+- trusted provider request marker;
+- exact app-owned plugin-dir injection;
+- provider environment wiring;
+- lease/finalization integration;
 - exact execution/finalization tests.
 
 Acceptance:
-- no marker -> byte/semantic-equivalent current command/environment;
-- marker -> exact plugin dir + private environment present;
-- secret not in command line;
+- no marker -> current command/environment semantics unchanged;
+- marker -> exact verified plugin dir + private environment present;
+- secret absent from command line;
 - provider lease survives until exact native finalization;
 - start failure and unresolved finalization preserve existing authority semantics;
 - user-provided --plugin-dirs remains restricted by existing argument policy.
 
-### Wave D — opt-in YTDLPUtil AUTO_MWEB_GVS
+On PASS:
+continue immediately to Stage D.
 
-Expected changes:
+### Stage D — opt-in AUTO_MWEB_GVS production policy and UI
+
+Implement:
 - YoutubePoTokenMode;
 - YoutubePoTokenPolicy;
-- YTDLPUtil;
+- YTDLPUtil integration;
 - settings UI;
+- diagnostics;
 - policy/JVM tests.
 
 Acceptance:
-- default/manual mode exact old behavior;
-- auto eligible request selects mweb and provider marker;
+- default/manual mode preserves current behavior;
+- eligible auto request selects mweb and provider marker;
 - proxy/cookies/raw unsupported requests do not pretend to be supported;
-- no stored po_token is injected into same auto media request;
-- manual data remains untouched.
+- no stored po_token is injected into the same automatic media request;
+- existing manual data remains untouched;
+- no automatic mode is silently enabled for existing users.
 
-### Wave E — real exact-SHA live GVS proof
+On PASS:
+continue immediately to Stage E.
 
-No broad feature expansion.
+### Stage E — exact-SHA provider/runtime proof
 
-Controlled live smoke:
-- current exact published SHA;
-- one public YouTube video;
-- auto mode;
-- provider discovery proven;
-- provider generation line proven without token value;
-- actual GVS format URL obtained/download begins or completes according to test contract;
-- generated binding/token not logged;
-- compare with manual mode control.
+Run the deterministic and runtime verification required to prove the production wiring before adding retry semantics.
 
-A live YouTube smoke is evidence, not a deterministic CI substitute.
+Acceptance:
+- focused JVM tests PASS;
+- production compile PASS;
+- AndroidTest compile PASS;
+- bundled yt-dlp discovers the real bundled provider plugin;
+- app loopback provider receives the expected MWEB/GVS request shape;
+- controlled WebView/BotGuard generation succeeds or, if the external service is temporarily unavailable, the deterministic production-wiring path is still proven and the live failure is preserved as environment evidence;
+- token, binding and secret values are absent from logs/evidence.
 
-### Wave F — bounded 403 fresh-provider retry
+For the live portion, use one public YouTube video and prove that the provider was actually invoked, not merely listed.
 
-Expected changes:
+A transient external/network failure does not by itself terminate the implementation run if the implementation defect can be ruled out with deterministic evidence. Preserve the failure and continue only where the remaining stage can be validated safely.
+
+On sufficient PASS:
+continue immediately to Stage F.
+
+### Stage F — bounded fresh-provider 403 retry
+
+Implement:
 - DownloadWorker retry ladder;
+- typed retry diagnostics;
 - policy tests;
 - production-wiring runtime tests.
 
 Acceptance:
 - one fresh automatic retry maximum;
-- only after quiescence/no-publication;
-- then existing clean public fallback;
+- retry only after exact native quiescence and before semantic output publication;
+- second eligible 403 may enter the existing clean public fallback only when current policy permits;
 - no retry on unrelated failure;
-- no output ownership regression.
+- no output ownership regression;
+- no third retry or loop.
 
-### Wave G — stabilization / default decision
+On PASS:
+continue immediately to Stage G.
 
-After sufficient live evidence:
-- decide whether AUTO_MWEB_GVS remains experimental opt-in;
-- do not change default automatically in same implementation wave;
-- any default change requires a separate review.
+### Stage G — full regression and exact-final-SHA closure
+
+Publish the completed implementation normally, then verify the exact published SHA.
+
+Required closure:
+- all new focused JVM tests PASS;
+- complete production compilation gates PASS;
+- AndroidTest compilation PASS;
+- existing blocker-relevant download/runtime regression classes PASS;
+- complete PoTokenProviderProductionWiringTest PASS, nonzero, zero skip;
+- artifact proof on exact published SHA;
+- controlled live provider smoke attempted and evidence preserved;
+- clean worktree/index;
+- exact remote equality;
+- independent completion review before feature acceptance.
+
+Do not stop after an earlier stage merely because that stage is independently valid. The target of the accelerated run is the complete MVP through Stage G.
+
+### Stage H — post-implementation default decision
+
+This is NOT part of the accelerated implementation run's production behavior change.
+
+After the feature has independent exact-SHA closure:
+- keep AUTO_MWEB_GVS opt-in initially;
+- collect real usage evidence;
+- decide separately whether automatic mode should ever become default.
+
+Any default change requires its own later review and must not be silently bundled into the accelerated implementation run.
+
 
 ## 19. Test matrix
 
@@ -1148,13 +1207,17 @@ Before acceptance, independent review should explicitly trace:
 
 ## 26. Decision gates
 
+The gates below are continuation checkpoints inside one accelerated implementation run.
+
+A PASS automatically authorizes proceeding to the next gate within the already-approved plan. The agent must not stop merely to ask whether it should continue.
+
 Gate 0 — architecture
 PASS only if:
 - provider-first remains preferred;
-- no external runtime downloader required.
+- no external runtime downloader is required.
 
-Gate 1 — plugin discovery POC
-PASS only if bundled current yt-dlp loads the app-owned provider plugin from a pinned verified path.
+Gate 1 — plugin discovery
+PASS only if current bundled yt-dlp loads the app-owned provider plugin from a pinned verified path.
 
 Gate 2 — Android generator protocol
 PASS only if content binding from yt-dlp can be minted by PoTokenWebView and returned without persistent token storage.
@@ -1162,44 +1225,74 @@ PASS only if content binding from yt-dlp can be minted by PoTokenWebView and ret
 Gate 3 — safe process integration
 PASS only if provider execution does not weaken YtdlpRuntimeAuthority/native finalization.
 
-Gate 4 — opt-in real download
-PASS only if exact-SHA live evidence shows the provider was actually invoked, not merely discovered.
+Gate 4 — opt-in production policy
+PASS only if MANUAL remains unchanged by default and AUTO_MWEB_GVS is narrowly selected only for eligible requests.
 
-Gate 5 — retry integration
+Gate 5 — real provider invocation
+PASS only if exact-SHA evidence proves the provider was actually invoked, not merely discovered.
+
+Gate 6 — retry integration
 PASS only if retry remains bounded and ownership-safe.
 
-Gate 6 — feature acceptance
-PASS only after independent source review + exact-SHA runtime closure.
+Gate 7 — accelerated implementation closure
+PASS only after:
+- complete focused/regression execution;
+- exact published-SHA runtime/artifact proof;
+- clean repository state;
+- independent source/completion review.
 
-Failure at any gate does not reopen the historical Known-Good baseline. It simply leaves this new feature unaccepted.
+A failed gate should first be corrected inside the same implementation run when the failure is an ordinary implementation defect.
 
-## 27. Recommended first implementation prompt scope
+Hard-stop only when the failure demonstrates one of the material blockers listed in Section 18.
 
-The first implementation agent should NOT attempt the whole plan.
+Failure of this new feature path does not reopen the historical Known-Good baseline. Until Gate 7 passes, the new feature is simply not accepted.
 
-First prompt should implement Wave A only:
 
-"Create the bundled, pinned first-party yt-dlp PO Token provider plugin runtime and deterministic fake endpoint discovery proof. Do not select it for production downloads, do not modify player-client policy, do not implement WebView generation, and do not modify DownloadWorker."
+## 27. Recommended implementation execution scope
 
-Expected Wave A changed files:
-- new provider asset + manifest;
-- new PoTokenProviderManifest.kt;
-- new PoTokenProviderRuntime.kt;
-- focused tests;
-- minimal test-only/production seam to pass an app-owned plugin directory to an explicit verification request if required.
+Use one implementation agent for the complete MVP.
 
-Stop after:
-- plugin discovered by exact bundled yt-dlp;
-- provider request reaches fake endpoint;
-- no default production behavior change.
+The execution instruction should cover Stages A through G in one run:
 
-This isolates the highest compatibility uncertainty — whether the bundled current yt-dlp and Android runtime can load and execute the provider plugin exactly as expected — before introducing WebView/server/download policy complexity.
+"Implement the complete Automatic YouTube PO Token Provider MVP described by this plan. Proceed continuously through provider plugin discovery, loopback protocol/server, WebView-backed generation, YoutubeDLCompat trusted wiring, AUTO_MWEB_GVS opt-in policy/UI, exact provider/runtime proof, bounded fresh-provider 403 retry, and final exact-SHA regression closure. Use small normal-forward internal commits/checkpoints as useful, but do not stop for approval after successful intermediate stages. Fix ordinary implementation/test failures within the same run. Stop only for a material blocker explicitly defined by the plan."
+
+Required implementation constraints for the single run:
+- default mode remains MANUAL;
+- AUTO_MWEB_GVS only;
+- unauthenticated/default-network only;
+- no proxy support;
+- no PLAYER/SUBS support;
+- no Node/Deno requirement;
+- no BgUtils runtime integration;
+- no runtime master/latest download;
+- no pip install -U;
+- no generated-token persistence;
+- no removal of manual PO Token UI/data;
+- no default-mode promotion;
+- no weakening of runtime/output/provenance invariants.
+
+The implementation agent may create several commits during the run. The speed goal is fewer handoffs and fewer repeated bootstraps, not fewer evidence boundaries.
+
+Before each production write/push:
+- use current exact repository state;
+- keep normal-forward history;
+- preserve protected evidence;
+- run the stage-appropriate focused verification.
+
+At the end:
+- publish the complete MVP;
+- run the final exact-SHA verification set;
+- report implementation evidence;
+- stop for independent review.
+
+No intermediate user interaction is required unless a Section 18 hard-stop condition is reached.
+
 
 ## 28. Final recommendation
 
-Proceed with the feature, but keep the first release narrow.
+Proceed with one accelerated implementation run for the complete narrow MVP.
 
-Preferred MVP:
+The MVP remains intentionally constrained:
 - first-party bundled provider plugin;
 - app-internal loopback server;
 - existing PoTokenWebView as generation engine;
@@ -1211,6 +1304,22 @@ Preferred MVP:
 - one bounded fresh-provider retry after eligible 403;
 - manual mode preserved unchanged.
 
+Acceleration means:
+- one implementation owner;
+- continuous Stages A-G;
+- automatic continuation after passing internal gates;
+- small reviewable normal-forward commits;
+- one final exact-SHA closure and independent review.
+
+Acceleration does NOT mean:
+- one giant unreviewable commit;
+- skipping tests;
+- weakening exact-SHA evidence;
+- hiding failed attempts;
+- broadening MVP scope;
+- bypassing hard-stop conditions.
+
 Do not start with BgUtils runtime integration.
 
-If the first-party WebView-backed provider proves unreliable under real current YouTube behavior, the second architecture option is a separately pinned BgUtils backend using the same provider policy/lifecycle interfaces. That fallback should be evaluated as a new implementation wave, not silently substituted into the MVP.
+If the first-party WebView-backed provider proves fundamentally unreliable under current YouTube behavior after deterministic wiring has been proven, the second architecture option is a separately pinned BgUtils backend using the same provider policy/lifecycle interfaces. That alternative requires a later plan/update and must not be silently substituted during this accelerated run.
+
