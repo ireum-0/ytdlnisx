@@ -97,7 +97,7 @@ class ScheduledDownloadWindowTest {
         val now = clock(2, 17, 43, 987)
         val window = ScheduledDownloadWindow("22:00", "05:00")
         assertEquals(clock(22, 0).timeInMillis, window.nextStart(now).timeInMillis)
-        assertEquals(clock(5, 0).timeInMillis, window.nextEnd(now).timeInMillis)
+        assertEquals(clock(5, 1).timeInMillis, window.nextEnd(now).timeInMillis)
         assertEquals(clock(2, 17, 43, 987).timeInMillis, now.timeInMillis)
     }
 
@@ -107,7 +107,7 @@ class ScheduledDownloadWindowTest {
         val window = ScheduledDownloadWindow("22:00", "05:00")
         for ((actual, expected) in listOf(
             window.nextStart(now) to clock(22, 0),
-            window.nextEnd(now) to clock(5, 0),
+            window.nextEnd(now) to clock(5, 1),
         )) {
             expected.add(Calendar.DATE, 1)
             assertEquals(expected.timeInMillis, actual.timeInMillis)
@@ -115,10 +115,10 @@ class ScheduledDownloadWindowTest {
     }
 
     @Test
-    fun currentBoundaryMinuteKeepsExistingSameDaySelection() {
+    fun currentEndMinutePublishesItsFollowingMinute() {
         val now = clock(5, 0, 43, 987)
         assertEquals(
-            clock(5, 0).timeInMillis,
+            clock(5, 1).timeInMillis,
             ScheduledDownloadWindow("22:00", "05:00").nextEnd(now).timeInMillis,
         )
     }
@@ -131,7 +131,7 @@ class ScheduledDownloadWindowTest {
         assertEquals(now.get(Calendar.YEAR), boundary.get(Calendar.YEAR))
         assertEquals(now.get(Calendar.DAY_OF_YEAR), boundary.get(Calendar.DAY_OF_YEAR))
         assertEquals(15, boundary.get(Calendar.HOUR_OF_DAY))
-        assertEquals(30, boundary.get(Calendar.MINUTE))
+        assertEquals(31, boundary.get(Calendar.MINUTE))
     }
 
     @Test
@@ -150,7 +150,35 @@ class ScheduledDownloadWindowTest {
         }
     }
 
-    private fun time(minute: Int) = "${minute / 60}:${minute % 60}"
+    @Test
+    fun endEffectFollowsEveryInclusiveEndInstantForRepresentativeWindows() {
+        for ((start, end) in listOf(555 to 1050, 1320 to 300, 1320 to 930,
+            1439 to 0, 0 to 1439, 0 to 0, 555 to 555, 1439 to 1439)) {
+            val window = ScheduledDownloadWindow(time(start), time(end))
+            for ((second, millis) in listOf(0 to 0, 0 to 1, 59 to 999)) {
+                val now = clock(end / 60, end % 60, second, millis)
+                val expected = clock(end / 60, end % 60).apply { add(Calendar.MINUTE, 1) }
+                assertTrue(window.contains(now))
+                assertEquals(expected.timeInMillis, window.nextEnd(now).timeInMillis)
+                assertTrue(window.nextEnd(now).timeInMillis > now.timeInMillis)
+                if (start != 0 || end != 1439) assertFalse(window.contains(expected))
+            }
+        }
+    }
+
+    @Test
+    fun endPublicationNeverPrecedesAnyActiveMinuteIncludingMidnightRollover() {
+        for ((start, end) in listOf(555 to 1050, 1320 to 300, 1320 to 930,
+            1439 to 0, 0 to 1439, 0 to 0, 555 to 555, 1439 to 1439)) {
+            val window = ScheduledDownloadWindow(time(start), time(end))
+            for (minute in 0 until 1440) {
+                val now = clock(minute / 60, minute % 60, 59, 999)
+                if (window.contains(now)) assertTrue(window.nextEnd(now).timeInMillis > now.timeInMillis)
+            }
+        }
+    }
+
+    private fun time(minute: Int) = "%02d:%02d".format(minute / 60, minute % 60)
 
     private fun clock(hour: Int, minute: Int, second: Int = 0, millis: Int = 0): Calendar =
         Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {

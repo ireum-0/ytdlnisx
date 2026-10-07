@@ -1020,23 +1020,33 @@ class DownloadWorker(
 
         withDownloadWorkerExecutionLock {
             snapshot.workerExecutionIds.forEach { (downloadId, executionId) ->
-                // Release only this exact dead attempt.  A newer worker may
-                // have claimed the same Download ID while cleanup was waiting.
-                if (
-                    workerExecutionIds[downloadId] == executionId &&
-                    (
-                        downloadId in releasedIds ||
-                            downloadId in recoveryEligibleIds ||
-                            downloadId in recoveryPublicationFailedIds
-                    )
-                ) {
+                // Child cleanup can retain Active E1 before scheduler END
+                // requeues it. Re-read that exact stopped snapshot here rather
+                // than requiring running-only cleanup to have handled the row.
+                if (workerExecutionIds[downloadId] != executionId) return@forEach
+                val cleanupAllowsRelease = downloadId in releasedIds ||
+                    downloadId in recoveryEligibleIds ||
+                    downloadId in recoveryPublicationFailedIds
+                val current = if (cleanupAllowsRelease) null else {
+                    dao.getNullableDownloadById(downloadId)?.let {
+                        AbandonedDownloadExecution(it.id, it.executionId, it.status)
+                    }
+                }
+                if (retireStoppedDownloadExecutionOwner(
+                        downloadId = downloadId,
+                        executionId = executionId,
+                        current = current,
+                        cleanupAllowsRelease = cleanupAllowsRelease,
+                        hasNativeRegistryEntry = { id, token ->
+                            hasNativeProcessRegistryEntry(id, token).also { retained ->
+                                if (retained) recoveryEligibleIds += id
+                            }
+                        },
+                    )) {
+                    if (!cleanupAllowsRelease) releasedIds += downloadId
                     workerExecutionIds.remove(downloadId, executionId)
                     workerDownloadIds.remove(downloadId)
                     workerCleanupDownloadIds.remove(downloadId)
-                    DownloadWorkerExecutionOwners.release(downloadId, executionId)
-                    if (!hasNativeProcessRegistryEntry(downloadId, executionId)) {
-                        DownloadWorkerProcessOwners.release(downloadId, executionId)
-                    }
                     workerAuthoritativeIssues.remove(downloadId)
                 }
             }

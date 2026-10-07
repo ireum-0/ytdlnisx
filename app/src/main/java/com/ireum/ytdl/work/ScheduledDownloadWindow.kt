@@ -22,7 +22,12 @@ internal class ScheduledDownloadWindow(start: String, end: String) {
 
     fun nextStart(now: Calendar): Calendar = nextBoundary(startMinute, now)
 
-    fun nextEnd(now: Calendar): Calendar = nextBoundary(endMinute, now)
+    fun nextEnd(now: Calendar): Calendar = nextBoundary(endMinute, now).apply {
+        // Membership includes the whole configured end minute. Select its
+        // calendar day first, then cross that minute (including 23:59 rollover).
+        add(Calendar.MINUTE, 1)
+        if (timeInMillis < now.timeInMillis) add(Calendar.DATE, 1)
+    }
 
     private fun nextBoundary(minute: Int, now: Calendar): Calendar =
         (now.clone() as Calendar).apply {

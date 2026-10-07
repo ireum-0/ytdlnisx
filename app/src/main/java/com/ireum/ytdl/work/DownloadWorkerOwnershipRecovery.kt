@@ -110,6 +110,31 @@ internal object DownloadWorkerExecutionOwners {
 }
 
 /**
+ * Called under the claim/publication lock for an exact stopped-worker snapshot.
+ * A fresh absent, superseded, or non-running row retires only that token; a
+ * still-running same-token row needs the existing cleanup/recovery authority.
+ * Native registry debt keeps its separate process owner and recovery fence.
+ */
+internal fun retireStoppedDownloadExecutionOwner(
+    downloadId: Long,
+    executionId: String,
+    current: AbandonedDownloadExecution?,
+    cleanupAllowsRelease: Boolean,
+    hasNativeRegistryEntry: (Long, String) -> Boolean,
+): Boolean {
+    val noLongerRunning = executionId.isNotBlank() &&
+        (current == null || current.executionId != executionId ||
+            current.status !in setOf("Active", "PostProcessing"))
+    if (!cleanupAllowsRelease && !noLongerRunning) return false
+
+    DownloadWorkerExecutionOwners.release(downloadId, executionId)
+    if (!hasNativeRegistryEntry(downloadId, executionId)) {
+        DownloadWorkerProcessOwners.release(downloadId, executionId)
+    }
+    return true
+}
+
+/**
  * Native Download work is addressed by numeric Download ID.  Keep the exact
  * execution token in process memory so a stale attempt cannot destroy a
  * newer attempt's process after the database row has been reused.  The owner
