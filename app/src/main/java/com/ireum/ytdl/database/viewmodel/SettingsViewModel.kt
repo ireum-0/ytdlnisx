@@ -514,7 +514,9 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
         return if (restoreMergeData(validatedPlan.data, context, resetData = false)) {
             RestoreOutcome.Completed("merge-${System.currentTimeMillis()}")
         } else {
-            RestoreOutcome.RejectedBeforeOwnership("Merge restore failed")
+            com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator.pendingMergeRestore(context)?.let {
+                RestoreOutcome.RecoveryPending(it.id, null, "Merge scheduler reconciliation remains pending")
+            } ?: RestoreOutcome.RejectedBeforeOwnership("Merge restore failed")
         }
     }
 
@@ -623,7 +625,13 @@ class SettingsViewModel(private val application: Application) : AndroidViewModel
                         }
                     }
                     UpdateUtil.reconcileRestoredSource(editor, snapshot, prefs, reset = false)
+                    com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator.prepareRestoredPreferences(
+                        context, editor, prefs,
+                    )
                     check(editor.commit()) { "Merge preference persistence was not durable" }
+                    com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator.reconcilePendingWithinOrdinaryMutation(context) {
+                        com.ireum.ytdl.work.AlarmScheduler(context).applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+                    }
                 }
                 }
             }

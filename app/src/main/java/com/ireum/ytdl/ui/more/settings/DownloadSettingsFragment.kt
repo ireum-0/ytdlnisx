@@ -20,6 +20,7 @@ import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.util.UiUtil
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveStore
 import com.ireum.ytdl.work.AlarmScheduler
+import com.ireum.ytdl.work.SchedulerSettingsValidation
 import com.ireum.ytdl.work.CleanupScheduleCoordinator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -127,7 +128,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             UiUtil.showTimePicker(parentFragmentManager, preferences) {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
-                val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
+                val formattedTime = SchedulerSettingsValidation.formatTime(hr, mn)
                 if (scheduler.updateScheduleBoundary("schedule_start", formattedTime)) {
                     scheduleStart.summary = formattedTime
                 }
@@ -139,7 +140,7 @@ class DownloadSettingsFragment : BaseSettingsFragment() {
             UiUtil.showTimePicker(parentFragmentManager, preferences) {
                 val hr = it.get(Calendar.HOUR_OF_DAY)
                 val mn = it.get(Calendar.MINUTE)
-                val formattedTime = String.format("%02d", hr) + ":" + String.format("%02d", mn)
+                val formattedTime = SchedulerSettingsValidation.formatTime(hr, mn)
                 if (scheduler.updateScheduleBoundary("schedule_end", formattedTime)) {
                     scheduleEnd.summary = formattedTime
                 }

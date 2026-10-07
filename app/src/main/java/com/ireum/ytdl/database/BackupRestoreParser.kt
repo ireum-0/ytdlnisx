@@ -563,6 +563,7 @@ internal object BackupRestoreParser {
     private fun validateSettings(settings: List<BackupSettingsItem>, enforceUpdaterSchema: Boolean = true) {
         settings.forEach { item ->
             require(item.key.isNotBlank()) { "Preference key must not be blank" }
+            com.ireum.ytdl.work.SchedulerSettingsValidation.validatePortable(item.key, item.type, item.value)
             if (enforceUpdaterSchema) when (item.key) {
                 "ytdlp_source" -> require(item.type == "String" && UpdateUtil.isValidYtdlpSource(item.value)) {
                     "yt-dlp source must be a nonblank String"

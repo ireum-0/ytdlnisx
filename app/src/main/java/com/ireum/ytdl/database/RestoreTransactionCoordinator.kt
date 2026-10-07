@@ -1428,6 +1428,9 @@ object RestoreTransactionCoordinator {
             UpdateUtil.reconcileRestoredSource(
                 editor, snapshot, data.settings, reset = true,
             )
+            com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator.prepareRestoredPreferences(
+                context, editor, data.settings, record.journal.operationId,
+            )
         }
         applied.visibleGroups?.let { editor.putStringSet("history_visible_child_youtuber_groups", it) }
         applied.visibleYoutubers?.let { editor.putStringSet("history_visible_child_youtubers", it) }
@@ -1494,12 +1497,16 @@ object RestoreTransactionCoordinator {
     private suspend fun reconcilePostCommit(context: Context, record: RestoreRecord) {
         reconciliationFailureForTesting?.invoke()
         val authority = RestoreTransactionCoordinator.currentReconciliationAuthority(context)
-        // A scheduler transition that predates this Restore is destination
-        // runtime authority, not portable settings.  Once the restored
-        // preference image is authoritative, supersede that old transition
-        // explicitly before publishing any replacement scheduler owners.
-        com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator
-            .supersedeForRestore(context, authority)
+        if (record.plan.data.settings != null) {
+            // Supersede only when Reset published a replacement settings
+            // image. A partial Reset that omits settings must preserve the
+            // existing scheduler decision and its ordinary recovery owner.
+            com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator
+                .supersedeForRestore(context, authority)
+            RestoreMutationAdmission.withRestoreMutation {
+                com.ireum.ytdl.work.SchedulerSettingsTransitionCoordinator.reconcileForRestore(context, authority)
+            }
+        }
         val notificationUtil = NotificationUtil(context)
         record.journal.supersededDownloadNotificationIds.forEach { id ->
             notificationUtil.cancelDownloadNotifications(id.toInt())

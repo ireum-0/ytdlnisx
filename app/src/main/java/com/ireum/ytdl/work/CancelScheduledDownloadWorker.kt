@@ -21,6 +21,10 @@ class CancelScheduledDownloadWorker(
     private val context: Context,
     workerParams: WorkerParameters
 ) : CoroutineWorker(context, workerParams) {
+    companion object {
+        @Volatile
+        internal var beforeCancellationAdmissionForTesting: (() -> Unit)? = null
+    }
     @SuppressLint("RestrictedApi")
     override suspend fun doWork(): Result {
         if (RestoreGate.isRestoreInProgress(applicationContext)) return Result.retry()
@@ -42,29 +46,39 @@ class CancelScheduledDownloadWorker(
             WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.PENDING -> return Result.retry()
             WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT -> Unit
         }
-        try {
+        beforeCancellationAdmissionForTesting?.invoke()
+        val dbManager = DBManager.getInstance(context)
+        val dao = dbManager.downloadDao
+        val repository = DownloadRepository(dbManager)
+        val runningDownloads = try {
             RestoreMutationAdmission.withOrdinaryMutation(applicationContext) {
+                // A restored owner can win after the initial observation.
+                // Validate at the actual transport/target boundary and freeze
+                // exact execution targets before releasing this admission.
+                if (WorkManagerHandoffRecovery.schedulerWorkRequestDisposition(
+                        applicationContext, handoffId, requestId,
+                        inputData.getString(WorkManagerHandoffRecovery.INPUT_GENERATION_ID).orEmpty(),
+                        inputData.getString(WorkManagerHandoffRecovery.INPUT_BOUNDARY).orEmpty(),
+                        WorkManagerHandoffCarrier.SCHEDULE_END, id.toString(),
+                    ) != WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT
+                ) return@withOrdinaryMutation null
                 WorkManager.getInstance(context).cancelAllWorkByTag("download")
                     .result
                     .get(10L, TimeUnit.SECONDS)
+                withDownloadWorkerExecutionLock { dao.getActiveAndPostProcessingDownloadsList() }
             }
         } catch (blocked: IllegalStateException) {
             if (blocked.message == "Restore transaction is active") return Result.retry()
             throw blocked
         }
+        if (runningDownloads == null) return Result.success()
         if (isStopped) return Result.success()
-        val dbManager = DBManager.getInstance(context)
-        val dao = dbManager.downloadDao
-        val repository = DownloadRepository(dbManager)
 
         withContext(Dispatchers.IO + NonCancellable) {
             // Snapshot under the global claim/publication lock, then release
             // it before waiting for a per-download side-effect lease.  Holding
             // the locks in the opposite order creates the same AB/BA cycle as
             // worker post-processing and cancellation paths.
-            val runningDownloads = withDownloadWorkerExecutionLock {
-                dao.getActiveAndPostProcessingDownloadsList()
-            }
             var firstFailure: Exception? = null
             fun retainRecoveryResponsibility(downloadId: Long) {
                 runCatching {

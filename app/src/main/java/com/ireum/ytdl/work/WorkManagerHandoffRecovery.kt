@@ -859,6 +859,27 @@ internal object WorkManagerHandoffRecovery {
         check(!RestoreGate.isRestoreInProgress(context)) {
             "Restore transaction is active"
         }
+        cancelSchedulerBoundariesWithinMutation(context)
+    }
+
+    internal const val RESTORED_WINDOW_START = "RESTORED_WINDOW_START"
+    internal const val RESTORED_WINDOW_END = "RESTORED_WINDOW_END"
+
+    private fun requireSchedulerMutationAuthority(context: Context, authority: RestoreReconciliationAuthority?) {
+        if (authority == null) check(!RestoreGate.isRestoreInProgress(context)) { "Restore transaction is active" }
+        else RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+    }
+
+    /** Caller already holds Merge admission or exact Reset mutation admission. */
+    internal fun cancelSchedulerForRestoredSettingsWithinMutation(
+        context: Context,
+        authority: RestoreReconciliationAuthority?,
+    ) {
+        requireSchedulerMutationAuthority(context, authority)
+        cancelSchedulerBoundariesWithinMutation(context)
+    }
+
+    private fun cancelSchedulerBoundariesWithinMutation(context: Context) {
         markBoundaryCancelledWithinOrdinaryMutation(
             context,
             WorkManagerHandoffCarrier.SCHEDULE_START,
@@ -881,6 +902,80 @@ internal object WorkManagerHandoffRecovery {
             WorkManagerHandoffCarrier.SCHEDULE_END,
             WorkManagerHandoffCarrier.END_BOUNDARY,
         )
+        for ((kind, boundary, name) in listOf(
+            Triple(WorkManagerHandoffCarrier.SCHEDULE_START, RESTORED_WINDOW_START, RESTORED_START_WORK_NAME),
+            Triple(WorkManagerHandoffCarrier.SCHEDULE_END, RESTORED_WINDOW_END, RESTORED_END_WORK_NAME),
+        )) {
+            markBoundaryCancelledWithinOrdinaryMutation(context, kind, boundary)
+            cancelUniqueWorkAndAwait(context, name)
+            deleteBoundaryAfterExternalCancellation(context, kind, boundary)
+        }
+    }
+
+    /** A restored daily window must not overwrite Restore's dated one-shot START owner. */
+    internal fun prepareRestoredWindowBoundaryWithinMutation(
+        context: Context,
+        boundary: String,
+        at: Long,
+        ownerId: String,
+        authority: RestoreReconciliationAuthority?,
+    ): String {
+        requireSchedulerMutationAuthority(context, authority)
+        check(boundary == RESTORED_WINDOW_START || boundary == RESTORED_WINDOW_END)
+        val kind = if (boundary == RESTORED_WINDOW_START) WorkManagerHandoffCarrier.SCHEDULE_START
+            else WorkManagerHandoffCarrier.SCHEDULE_END
+        val id = UUID.nameUUIDFromBytes("restored-window|$ownerId|$boundary".toByteArray(StandardCharsets.UTF_8)).toString()
+        val now = System.currentTimeMillis()
+        val carrier = WorkManagerHandoffCarrier(handoffId = id, kind = kind, generationId = id,
+            requestId = UUID.randomUUID().toString(),
+            uniqueWorkName = if (boundary == RESTORED_WINDOW_START) RESTORED_START_WORK_NAME else RESTORED_END_WORK_NAME,
+            boundary = boundary, notBeforeAt = at, createdAt = now, updatedAt = now)
+        replaceOutstandingAndInsertLocked(context, carrier, authority)
+        val retained = blocking { database(context).workManagerHandoffCarrierDao.get(id) }
+        check(retained?.notBeforeAt == at) { "Restored window boundary changed" }
+        return id
+    }
+
+    /**
+     * Bounded acceptance while the settings mutation admission is already held.
+     * No convergenceScope child reacquires admission; delayed requests are
+     * installed now and retain their exact durable carrier through worker terminal.
+     */
+    internal fun acceptRestoredWindowFallbackWithinMutation(
+        context: Context,
+        handoffId: String,
+        authority: RestoreReconciliationAuthority?,
+    ) {
+        requireSchedulerMutationAuthority(context, authority)
+        val dao = database(context).workManagerHandoffCarrierDao
+        var carrier = blocking { dao.get(handoffId) } ?: error("Restored window carrier missing")
+        check(carrier.boundary in setOf(RESTORED_WINDOW_START, RESTORED_WINDOW_END))
+        check(isCurrentGeneration(carrier) && blocking { isDurablyCurrentRetainedCarrier(context, carrier) }) {
+            "Restored window carrier is stale"
+        }
+        val work = blocking {
+            workInfoOverrideForTesting?.invoke(carrier.requestId)
+                ?: workManager(context).getWorkInfoById(UUID.fromString(carrier.requestId)).get(5L, TimeUnit.SECONDS)
+        }
+        if (work?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED)) {
+            val newRequestId = UUID.randomUUID().toString()
+            check(blocking { dao.advanceRetry(carrier.handoffId, carrier.requestId, newRequestId,
+                carrier.attempt + 1, System.currentTimeMillis()) } == 1)
+            carrier = requireNotNull(blocking { dao.get(handoffId) })
+        }
+        if (work == null || work.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED)) {
+            enqueueUniqueWork(context, carrier.uniqueWorkName, buildRequest(context, carrier))
+                .result.get(10L, TimeUnit.SECONDS)
+        }
+        requireSchedulerMutationAuthority(context, authority)
+        check(isCurrentGeneration(carrier) && blocking { isDurablyCurrentRetainedCarrier(context, carrier) })
+        blocking {
+            dao.markAccepted(carrier.handoffId, carrier.requestId, System.currentTimeMillis())
+            val accepted = dao.get(carrier.handoffId)
+            check(accepted?.requestId == carrier.requestId && accepted.state == WorkManagerHandoffCarrier.ACCEPTED) {
+                "Restored window fallback acceptance was not durable"
+            }
+        }
     }
 
     fun enqueueAndObserve(
@@ -2551,6 +2646,8 @@ internal object WorkManagerHandoffRecovery {
     internal const val INPUT_BOUNDARY = "handoffBoundary"
     private const val TERMINAL_DISPATCH_DECISION = "EXECUTE"
     private const val CANCELLED_GENERATION = "__CANCELLED__"
+    private const val RESTORED_START_WORK_NAME = "restored_scheduler_window_start"
+    private const val RESTORED_END_WORK_NAME = "restored_scheduler_window_end"
 
     private fun database(context: Context): DBManager =
         databaseForTesting ?: DBManager.getInstance(context)

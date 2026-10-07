@@ -246,7 +246,66 @@ class AlarmScheduler(
                     enqueueDisableSuccessorWithinOrdinaryMutation(transition)
                 }
             }
+            SchedulerSettingsTransitionCoordinator.Kind.RESTORE ->
+                applyRestoredSchedulerEffectWithinMutation(transition, null)
         }
+    }
+
+    /** Exact Merge/Reset owner; never recursively enters ordinary admission. */
+    internal fun applyRestoredSchedulerEffectWithinMutation(
+        transition: SchedulerSettingsTransitionCoordinator.Transition,
+        authority: RestoreReconciliationAuthority?,
+    ) {
+        if (authority != null) {
+            com.ireum.ytdl.database.RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+            check(transition.restoreOperationId == authority.operationId)
+        } else check(transition.restoreOperationId.isBlank())
+        var current = transition
+        if (!current.priorOwnersRevoked) {
+            WorkManagerHandoffRecovery.cancelSchedulerForRestoredSettingsWithinMutation(context, authority)
+            cancelAlarmsWithinOrdinaryMutation()
+            current = current.copy(priorOwnersRevoked = true)
+            SchedulerSettingsTransitionCoordinator.persistRestoreProgress(context, current)
+            schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_CANCELLATION)
+        }
+        if (current.targetUseScheduler) {
+            if (!current.startPublished) {
+                publishRestoredBoundary(WorkManagerHandoffRecovery.RESTORED_WINDOW_START,
+                    current.startAt, current.id, ScheduleAlarmReceiver::class.java, authority)
+                current = current.copy(startPublished = true)
+                SchedulerSettingsTransitionCoordinator.persistRestoreProgress(context, current)
+                schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_START_PUBLICATION)
+            }
+            if (!current.endPublished) {
+                publishRestoredBoundary(WorkManagerHandoffRecovery.RESTORED_WINDOW_END,
+                    current.endAt, current.id, CancelScheduleAlarmReceiver::class.java, authority)
+                current = current.copy(endPublished = true)
+                SchedulerSettingsTransitionCoordinator.persistRestoreProgress(context, current)
+                schedulerTransitionStepForTesting?.invoke(TRANSITION_STEP_AFTER_END_PUBLICATION)
+            }
+        }
+        SchedulerSettingsTransitionCoordinator.completeRestore(context, current)
+    }
+
+    private fun publishRestoredBoundary(
+        boundary: String,
+        at: Long,
+        ownerId: String,
+        receiver: Class<out android.content.BroadcastReceiver>,
+        authority: RestoreReconciliationAuthority?,
+    ) {
+        val id = WorkManagerHandoffRecovery.prepareRestoredWindowBoundaryWithinMutation(
+            context, boundary, at, ownerId, authority,
+        )
+        val pending = pendingIntent(receiver, 0, id)
+        // Re-publication of the same PendingIntent/timestamp is idempotent.
+        // Fallback is durably accepted before the settings owner completes.
+        val published = try { publishExactAlarm(at, pending) }
+        catch (failure: Throwable) {
+            if (failure is CancellationException) throw failure
+            false
+        }
+        if (!published) WorkManagerHandoffRecovery.acceptRestoredWindowFallbackWithinMutation(context, id, authority)
     }
 
     /**

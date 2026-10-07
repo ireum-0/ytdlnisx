@@ -48,6 +48,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Production-wiring proof for ordinary handoff-carrier final mutations. */
 @RunWith(AndroidJUnit4::class)
@@ -85,7 +86,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
 
     @Test
     fun schedulerOrdinaryCarrierMutationCompletesBeforeRestorePublication(): Unit = runBlocking {
-        ordinaryWriterWins {
+        ordinaryWriterWins(schedulerSettingsReset = true) {
             WorkManagerHandoffRecovery.prepareSchedulerBoundary(
                 context,
                 WorkManagerHandoffCarrier.START_BOUNDARY,
@@ -133,7 +134,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         val fingerprint = WorkManagerHandoffRecovery.observeConfigFingerprint(
             requireNotNull(database.observeSourcesDao.getByIDOrNull(702L)),
         )
-        resetWins {
+        resetWins(diagnosePublication = true) {
             WorkManagerHandoffRecovery.prepareObserveRetryDownload(
                 context,
                 sourceId = 702L,
@@ -234,7 +235,10 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         )
     }
 
-    private suspend fun ordinaryWriterWins(create: () -> String) {
+    private suspend fun ordinaryWriterWins(
+        schedulerSettingsReset: Boolean = false,
+        create: () -> String,
+    ) {
         val scope = CoroutineScope(currentCoroutineContext())
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -264,13 +268,53 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         assertFalse(reset.isCompleted)
         release.countDown()
         writer.await()
-        assertTrue(reset.await() is RestoreOutcome.Completed)
+        val resetOutcome = reset.await()
+        assertTrue(resetOutcome is RestoreOutcome.Completed)
         assertEquals(3, events.get())
         val persistedId = requireNotNull(handoffId)
-        assertTrue(database.workManagerHandoffCarrierDao.get(persistedId) != null)
+        if (schedulerSettingsReset) {
+            assertRestoredSchedulerAuthority(
+                persistedId,
+                (resetOutcome as RestoreOutcome.Completed).operationId,
+            )
+        } else {
+            assertTrue(database.workManagerHandoffCarrierDao.get(persistedId) != null)
+        }
     }
 
-    private suspend fun resetWins(create: () -> String) {
+    private suspend fun assertRestoredSchedulerAuthority(oldHandoffId: String, resetOperationId: String) {
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        assertEquals("00:00", preferences.getString("schedule_start", null))
+        assertEquals("05:00", preferences.getString("schedule_end", null))
+        assertTrue(preferences.contains("use_scheduler"))
+        assertFalse(preferences.getBoolean("use_scheduler", true))
+        val restored = requireNotNull(SchedulerSettingsTransitionCoordinator.readForTesting(context))
+        assertEquals(resetOperationId, restored.id)
+        assertEquals(resetOperationId, restored.restoreOperationId)
+        assertEquals(SchedulerSettingsTransitionCoordinator.Kind.RESTORE, restored.checkedKind())
+        assertEquals("COMPLETE", restored.phase)
+        assertEquals("00:00", restored.targetScheduleStart)
+        assertEquals("05:00", restored.targetScheduleEnd)
+        assertFalse(restored.targetUseScheduler)
+        assertTrue(restored.priorOwnersRevoked)
+        assertFalse(restored.startPublished)
+        assertFalse(restored.endPublished)
+        assertNull(database.workManagerHandoffCarrierDao.get(oldHandoffId))
+        assertTrue(database.workManagerHandoffCarrierDao.getOutstanding().none {
+            it.kind == WorkManagerHandoffCarrier.SCHEDULE_START ||
+                it.kind == WorkManagerHandoffCarrier.SCHEDULE_END
+        })
+        for (name in listOf("scheduled_download_start", "scheduled_download_end")) {
+            val work = WorkManager.getInstance(context).getWorkInfosForUniqueWork(name)
+                .get(20, TimeUnit.SECONDS)
+            assertTrue(work.all { it.state.isFinished })
+        }
+    }
+
+    private suspend fun resetWins(
+        diagnosePublication: Boolean = false,
+        create: () -> String,
+    ) {
         val publicationEntered = CountDownLatch(1)
         val writerStarted = CountDownLatch(1)
         val ordinaryEntered = CountDownLatch(1)
@@ -278,6 +322,33 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         val first = AtomicBoolean(true)
         lateinit var writer: Deferred<Result<String>>
         val writerScope = CoroutineScope(currentCoroutineContext())
+        val diagnosticStartedAt = android.os.SystemClock.elapsedRealtime()
+        val beforeActiveReached = AtomicBoolean(false)
+        val diagnosticPhase = AtomicReference("reset_not_started")
+        val resetOutcome = AtomicReference<RestoreOutcome?>(null)
+        val resetException = AtomicReference<Throwable?>(null)
+        val resetReference = AtomicReference<Deferred<RestoreOutcome>?>(null)
+        fun recordDiagnostic(event: String) {
+            if (diagnosePublication) {
+                recordResetPublicationDiagnostic(
+                    event, diagnosticStartedAt, diagnosticPhase.get(),
+                    beforeActiveReached.get(), publicationEntered.count == 0L,
+                    resetReference.get()?.isCompleted ?: false,
+                    resetOutcome.get(), resetException.get(),
+                )
+            }
+        }
+        if (diagnosePublication) {
+            RestoreTransactionCoordinator.beforeActivePublicationForTesting = {
+                beforeActiveReached.set(true)
+                diagnosticPhase.set("before_active_publication")
+                recordDiagnostic("before_active_publication")
+            }
+            RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
+                diagnosticPhase.set("prepared_before_quiescence")
+                recordDiagnostic("prepared_before_quiescence")
+            }
+        }
         RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = {
             if (first.compareAndSet(true, false)) {
                 ordinaryEntered.countDown()
@@ -285,17 +356,36 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
             }
         }
         RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = {
+            diagnosticPhase.set("publication_authority_acquired")
             publicationEntered.countDown()
+            recordDiagnostic("publication_authority_acquired")
             writer = writerScope.async(Dispatchers.IO) {
                 writerStarted.countDown()
                 runCatching { create() }
             }
         }
 
+        recordDiagnostic("before_reset_launch")
         val reset = writerScope.async(Dispatchers.IO) {
-            RestoreTransactionCoordinator.begin(context, plan())
+            diagnosticPhase.set("begin_entered")
+            recordDiagnostic("begin_entered")
+            try {
+                RestoreTransactionCoordinator.begin(context, plan()).also {
+                    resetOutcome.set(it)
+                    diagnosticPhase.set("begin_returned")
+                    recordDiagnostic("begin_returned")
+                }
+            } catch (failure: Throwable) {
+                resetException.set(failure)
+                diagnosticPhase.set("begin_threw")
+                recordDiagnostic("begin_threw")
+                throw failure
+            }
         }
-        assertTrue(publicationEntered.await(20, TimeUnit.SECONDS))
+        resetReference.set(reset)
+        val publicationObserved = publicationEntered.await(20, TimeUnit.SECONDS)
+        recordDiagnostic("publication_wait_finished")
+        assertTrue("Restore publication was not observed; see F11HandoffDiagnostic", publicationObserved)
         assertTrue(writerStarted.await(20, TimeUnit.SECONDS))
         assertTrue(ordinaryEntered.await(20, TimeUnit.SECONDS))
         releaseOrdinary.countDown()
@@ -303,6 +393,47 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
         assertTrue(failure is IllegalStateException)
         assertTrue(reset.await() is RestoreOutcome.Completed)
         assertTrue(database.workManagerHandoffCarrierDao.getOutstanding().isEmpty())
+    }
+
+    private fun recordResetPublicationDiagnostic(
+        event: String,
+        startedAt: Long,
+        phase: String,
+        beforeActive: Boolean,
+        publication: Boolean,
+        resetCompleted: Boolean,
+        outcome: RestoreOutcome?,
+        failure: Throwable?,
+    ) {
+        val pointer = java.io.File(RestoreOperationStore.root(context), "active.json")
+        val pointerExists = pointer.exists()
+        val record = runCatching { RestoreOperationStore.load(context) }
+        val journal = record.getOrNull()?.journal
+        android.util.Log.i(
+            "F11HandoffDiagnostic",
+            "event=$event elapsedMs=${android.os.SystemClock.elapsedRealtime() - startedAt}" +
+                " boundary=$phase beforeActive=$beforeActive publication=$publication" +
+                " resetCompleted=$resetCompleted outcome=$outcome" +
+                " exception=${failure?.javaClass?.name}:${failure?.message}" +
+                " activePointerExists=$pointerExists operation=${journal?.operationId}" +
+                " journalPhase=${journal?.phase}" +
+                " recordReadException=${record.exceptionOrNull()?.javaClass?.name}:" +
+                "${record.exceptionOrNull()?.message}",
+        )
+        if (event == "publication_wait_finished" && !publication && !resetCompleted) {
+            Thread.getAllStackTraces().entries.filter { (_, stack) ->
+                stack.any {
+                    it.className.contains("RestoreTransactionCoordinator") ||
+                        it.className.contains("RestoreMutationAdmission")
+                }
+            }.take(10).forEach { (thread, stack) ->
+                android.util.Log.i(
+                    "F11HandoffDiagnostic",
+                    "blockedThread=${thread.name} state=${thread.state} stack=" +
+                        stack.take(60).joinToString(" | "),
+                )
+            }
+        }
     }
 
     private fun plan(): RestorePlan = BackupRestoreParser.fromTyped(
@@ -373,6 +504,7 @@ class F11HandoffCarrierMutationAdmissionProductionWiringTest {
     private fun clearHooks() {
         RestoreMutationAdmission.ordinaryAuthorityAcquiredForTesting = null
         RestoreMutationAdmission.restorePublicationAuthorityAcquiredForTesting = null
+        RestoreTransactionCoordinator.beforeActivePublicationForTesting = null
         RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = null
         RestoreTransactionCoordinator.afterQuiescedBeforeFilesReadyForTesting = null
         RestoreTransactionCoordinator.afterFilesReadyBeforeApplyForTesting = null

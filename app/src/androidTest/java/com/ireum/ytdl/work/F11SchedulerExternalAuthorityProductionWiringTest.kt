@@ -124,9 +124,15 @@ class F11SchedulerExternalAuthorityProductionWiringTest {
             System.currentTimeMillis() + 60_000L,
         )
         var cancelReturned = false
+        var stateAfterBlockedOrdinaryCancel: androidx.work.WorkInfo.State? = null
+        var oldCarrierSurvivedBlockedOrdinaryCancel = false
         RestoreTransactionCoordinator.afterPreparedBeforeQuiescenceForTesting = {
             AlarmScheduler(context).cancel()
             cancelReturned = true
+            stateAfterBlockedOrdinaryCancel =
+                workManager.getWorkInfoById(request.id).get(10, TimeUnit.SECONDS)?.state
+            oldCarrierSurvivedBlockedOrdinaryCancel =
+                runBlocking { database.workManagerHandoffCarrierDao.get(handoffId) != null }
         }
 
         val outcome = RestoreTransactionCoordinator.begin(
@@ -136,11 +142,18 @@ class F11SchedulerExternalAuthorityProductionWiringTest {
 
         assertTrue(outcome is RestoreOutcome.Completed)
         assertTrue(cancelReturned)
+        assertEquals(androidx.work.WorkInfo.State.ENQUEUED, stateAfterBlockedOrdinaryCancel)
+        assertTrue(oldCarrierSurvivedBlockedOrdinaryCancel)
         assertEquals(
-            androidx.work.WorkInfo.State.ENQUEUED,
+            androidx.work.WorkInfo.State.CANCELLED,
             requireNotNull(workManager.getWorkInfoById(request.id).get(10, TimeUnit.SECONDS)).state,
         )
-        assertNotNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        assertNull(database.workManagerHandoffCarrierDao.get(handoffId))
+        val restored = requireNotNull(SchedulerSettingsTransitionCoordinator.readForTesting(context))
+        assertEquals(SchedulerSettingsTransitionCoordinator.Kind.RESTORE, restored.checkedKind())
+        assertFalse(restored.targetUseScheduler)
+        assertTrue(restored.priorOwnersRevoked)
+        assertEquals("COMPLETE", restored.phase)
     }
 
     @Test

@@ -1,11 +1,15 @@
 package com.ireum.ytdl.work
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.preference.PreferenceManager
 import com.google.gson.Gson
 import com.google.gson.JsonParseException
 import com.ireum.ytdl.database.RestoreMutationAdmission
 import com.ireum.ytdl.database.RestoreTransactionCoordinator
+import com.ireum.ytdl.database.RestoreOperationStore
+import com.ireum.ytdl.database.models.BackupSettingsItem
+import java.util.Calendar
 import java.util.UUID
 
 /**
@@ -23,6 +27,7 @@ internal object SchedulerSettingsTransitionCoordinator {
     private const val TRANSITION_PREFIX = "scheduler_settings_transition_"
     private const val PHASE_PREPARED = "PREPARED"
     private const val PHASE_EFFECT_IN_PROGRESS = "EFFECT_IN_PROGRESS"
+    private const val PHASE_COMPLETE = "COMPLETE"
 
     private val gson = Gson()
 
@@ -30,6 +35,7 @@ internal object SchedulerSettingsTransitionCoordinator {
         SCHEDULE_START,
         SCHEDULE_END,
         USE_SCHEDULER,
+        RESTORE,
     }
 
     internal data class Transition(
@@ -41,6 +47,12 @@ internal object SchedulerSettingsTransitionCoordinator {
         val phase: String,
         val createdAt: Long,
         val successorAttempt: Int = 0,
+        val restoreOperationId: String = "",
+        val startAt: Long = 0L,
+        val endAt: Long = 0L,
+        val priorOwnersRevoked: Boolean = false,
+        val startPublished: Boolean = false,
+        val endPublished: Boolean = false,
     ) {
         fun checkedKind(): Kind = runCatching { Kind.valueOf(kind) }
             .getOrElse { throw IllegalStateException("Unknown scheduler transition kind: $kind") }
@@ -49,15 +61,18 @@ internal object SchedulerSettingsTransitionCoordinator {
             check(runCatching { UUID.fromString(id) }.isSuccess) {
                 "Malformed scheduler transition identity"
             }
-            checkedKind()
-            check(targetScheduleStart.matches(Regex("\\d{2}:\\d{2}"))) {
-                "Malformed scheduler start target"
-            }
-            check(targetScheduleEnd.matches(Regex("\\d{2}:\\d{2}"))) {
-                "Malformed scheduler end target"
-            }
-            check(phase == PHASE_PREPARED || phase == PHASE_EFFECT_IN_PROGRESS) {
+            val kind = checkedKind()
+            SchedulerSettingsValidation.requireTime(targetScheduleStart)
+            SchedulerSettingsValidation.requireTime(targetScheduleEnd)
+            check(phase == PHASE_PREPARED || phase == PHASE_EFFECT_IN_PROGRESS ||
+                (kind == Kind.RESTORE && phase == PHASE_COMPLETE)) {
                 "Malformed scheduler transition phase"
+            }
+            if (kind == Kind.RESTORE) {
+                check(restoreOperationId.isBlank() || restoreOperationId == id) {
+                    "Scheduler Restore operation identity mismatch"
+                }
+                check(startAt > 0L && endAt > 0L) { "Scheduler Restore has no fixed boundaries" }
             }
             return this
         }
@@ -138,6 +153,10 @@ internal object SchedulerSettingsTransitionCoordinator {
         applyEffect: (Transition) -> Unit,
     ) {
         val existing = read(context) ?: return
+        if (existing.phase == PHASE_COMPLETE) return
+        if (existing.checkedKind() == Kind.RESTORE) {
+            check(existing.restoreOperationId.isBlank()) { "Reset owns scheduler recovery" }
+        }
         ensureTargetPreferences(context, existing)
         val inProgress = if (existing.phase == PHASE_PREPARED) {
             val next = existing.copy(phase = PHASE_EFFECT_IN_PROGRESS)
@@ -164,6 +183,7 @@ internal object SchedulerSettingsTransitionCoordinator {
     ) {
         RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        if (read(context)?.let { it.checkedKind() == Kind.RESTORE && it.restoreOperationId == authority.operationId } == true) return
         if (preferences.contains(TRANSITION_KEY)) {
             check(preferences.edit().remove(TRANSITION_KEY).commit()) {
                 "Scheduler transition supersession was not durable"
@@ -172,6 +192,83 @@ internal object SchedulerSettingsTransitionCoordinator {
     }
 
     internal fun readForTesting(context: Context): Transition? = read(context)
+
+    /** Called with the existing Merge or Reset preference-publication admission held. */
+    internal fun prepareRestoredPreferences(
+        context: Context,
+        editor: SharedPreferences.Editor,
+        settings: List<BackupSettingsItem>,
+        resetOperationId: String? = null,
+    ) {
+        if (resetOperationId == null && settings.none { it.key in setOf("schedule_start", "schedule_end", "use_scheduler") }) return
+        if (resetOperationId != null) {
+            check(RestoreOperationStore.load(context)?.journal?.operationId == resetOperationId) {
+                "Scheduler preference publication has no exact Reset owner"
+            }
+        } else {
+            reconcilePendingWithinOrdinaryMutation(context) {
+                AlarmScheduler(context).applySchedulerTransitionEffectWithinOrdinaryMutation(it)
+            }
+        }
+        val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+        val start = settings.lastOrNull { it.key == "schedule_start" }?.value
+            ?: if (resetOperationId != null) "00:00" else preferences.getString("schedule_start", "00:00")!!
+        val end = settings.lastOrNull { it.key == "schedule_end" }?.value
+            ?: if (resetOperationId != null) "05:00" else preferences.getString("schedule_end", "05:00")!!
+        val enabled = settings.lastOrNull { it.key == "use_scheduler" }?.value?.toBooleanStrict()
+            ?: (resetOperationId == null && preferences.getBoolean("use_scheduler", false))
+        val existing = read(context)
+        val transition = if (resetOperationId != null && existing?.id == resetOperationId &&
+            existing.checkedKind() == Kind.RESTORE) {
+            check(existing.targetScheduleStart == start && existing.targetScheduleEnd == end &&
+                existing.targetUseScheduler == enabled) { "Scheduler Reset target changed" }
+            existing
+        } else {
+            val now = Calendar.getInstance()
+            val window = ScheduledDownloadWindow(start, end)
+            Transition(resetOperationId ?: UUID.randomUUID().toString(), Kind.RESTORE.name,
+                start, end, enabled, PHASE_PREPARED, now.timeInMillis,
+                restoreOperationId = resetOperationId.orEmpty(),
+                startAt = window.nextStart(now).timeInMillis, endAt = window.nextEnd(now).timeInMillis).checked()
+        }
+        // Persist the decision before the generic preference commit. Merge
+        // has no Reset journal; this record remains recovery authority even
+        // if SharedPreferences reports failure after updating its process map.
+        writeTransition(context, transition)
+        beforePreferencePublicationForTesting?.invoke(transition)
+        editor.putString(TRANSITION_KEY, gson.toJson(transition))
+            .putString("schedule_start", start).putString("schedule_end", end)
+            .putBoolean("use_scheduler", enabled)
+    }
+
+    internal fun reconcileForRestore(
+        context: Context,
+        authority: RestoreTransactionCoordinator.RestoreReconciliationAuthority,
+    ) {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        val existing = read(context) ?: return
+        check(existing.checkedKind() == Kind.RESTORE && existing.restoreOperationId == authority.operationId) {
+            "Scheduler transition is not owned by this Reset"
+        }
+        if (existing.phase == PHASE_COMPLETE) return
+        ensureTargetPreferences(context, existing)
+        beforeExternalEffectForTesting?.invoke(existing)
+        AlarmScheduler(context).applyRestoredSchedulerEffectWithinMutation(existing, authority)
+        afterExternalEffectForTesting?.invoke(existing)
+    }
+
+    internal fun persistRestoreProgress(context: Context, transition: Transition) {
+        check(read(context)?.id == transition.id) { "Scheduler Restore owner changed" }
+        writeTransition(context, transition.checked())
+    }
+
+    internal fun completeRestore(context: Context, transition: Transition) {
+        persistRestoreProgress(context, transition.copy(phase = PHASE_COMPLETE))
+    }
+
+    internal fun pendingMergeRestore(context: Context): Transition? = read(context)?.takeIf {
+        it.checkedKind() == Kind.RESTORE && it.restoreOperationId.isBlank() && it.phase != PHASE_COMPLETE
+    }
 
     internal fun advanceSuccessorAttemptWithinOrdinaryMutation(
         context: Context,
@@ -245,6 +342,7 @@ internal object SchedulerSettingsTransitionCoordinator {
         val preferences = PreferenceManager.getDefaultSharedPreferences(context)
         val current = read(context)
         if (current?.id != transition.id) return
+        if (transition.checkedKind() == Kind.RESTORE) return // COMPLETE is the Reset replay witness.
         check(preferences.edit().remove(TRANSITION_KEY).commit()) {
             "Scheduler transition retirement was not durable"
         }
