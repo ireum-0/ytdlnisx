@@ -611,6 +611,69 @@ class F11SchedulerSettingsTransitionProductionWiringTest {
             workManager.getWorkInfosForUniqueWork(uniqueName).get(10, TimeUnit.SECONDS).single().id)
     }
 
+    @Test
+    fun failedAcceptedSchedulerCannotReplaceRestoredWindowAfterRestart(): Unit = runBlocking {
+        terminalSchedulerCannotReplaceRestoredWindow(WorkInfo.State.FAILED)
+    }
+
+    @Test
+    fun cancelledAcceptedSchedulerCannotReplaceRestoredWindowAfterRestart(): Unit = runBlocking {
+        terminalSchedulerCannotReplaceRestoredWindow(WorkInfo.State.CANCELLED)
+    }
+
+    private suspend fun terminalSchedulerCannotReplaceRestoredWindow(state: WorkInfo.State) {
+        val oldIds = seedWindow(true)
+        val old = oldIds.map { id ->
+            val carrier = requireNotNull(database.workManagerHandoffCarrierDao.get(id))
+            assertEquals(1, database.workManagerHandoffCarrierDao.markAccepted(
+                id, carrier.requestId, System.currentTimeMillis(),
+            ))
+            requireNotNull(database.workManagerHandoffCarrierDao.get(id))
+        }
+        val oldRequestIds = old.map { it.requestId }.toSet()
+        fun workInfo(requestId: String): WorkInfo? = if (requestId in oldRequestIds) {
+            WorkInfo(id = UUID.fromString(requestId), state = state, tags = emptySet())
+        } else {
+            workManager.getWorkInfoById(UUID.fromString(requestId)).get(10, TimeUnit.SECONDS)
+        }
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = ::workInfo
+        // Force the real Restore path to own durable WorkManager fallback requests.
+        AlarmScheduler.exactAlarmPublicationForTesting = { _, _, _ -> error("use restored fallback") }
+
+        assertTrue(RestoreTransactionCoordinator.begin(context, restoredWindowPlan(true)) is RestoreOutcome.Completed)
+        val transition = assertRestoredImage(true, "11:12", "13:14", oldIds)
+        val restored = listOf(
+            WorkManagerHandoffCarrier.SCHEDULE_START to WorkManagerHandoffRecovery.RESTORED_WINDOW_START,
+            WorkManagerHandoffCarrier.SCHEDULE_END to WorkManagerHandoffRecovery.RESTORED_WINDOW_END,
+        ).map { (kind, boundary) ->
+            requireNotNull(database.workManagerHandoffCarrierDao.getOutstandingForBoundary(kind, boundary)).also {
+                assertEquals(WorkManagerHandoffCarrier.ACCEPTED, it.state)
+                val info = requireNotNull(workInfo(it.requestId))
+                assertEquals(it.requestId, info.id.toString())
+                assertFalse(info.state.isFinished)
+            }
+        }
+        android.util.Log.i("SchedulerTerminalRecovery", "restore=$transition old=$old current=$restored terminal=$state")
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = ::workInfo
+
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        old.forEach {
+            assertNull(database.workManagerHandoffCarrierDao.get(it.handoffId))
+            assertTrue(WorkManagerHandoffRecovery.enqueueAndAwait(context, it.handoffId).await().superseded)
+        }
+        restored.forEach {
+            assertEquals(it, database.workManagerHandoffCarrierDao.get(it.handoffId))
+            val info = requireNotNull(workInfo(it.requestId))
+            assertFalse(info.state.isFinished)
+            assertEquals(1, workManager.getWorkInfosForUniqueWork(it.uniqueWorkName).get(10, TimeUnit.SECONDS)
+                .count { current -> !current.state.isFinished && current.id.toString() == it.requestId })
+        }
+        assertEquals(transition, SchedulerSettingsTransitionCoordinator.readForTesting(context))
+    }
+
     private suspend fun seedWindow(enabled: Boolean): List<String> {
         preferences.edit().putString("schedule_start", "00:00").putString("schedule_end", "05:00")
             .putBoolean("use_scheduler", enabled).commit()

@@ -93,9 +93,7 @@ class RealWorkManagerHandoffProductionTest {
         if (!startWork.state.isFinished) {
             assertEquals(startId, database.workManagerHandoffCarrierDao.get(startId)?.handoffId)
         }
-        awaitWorkFinished(startCarrier.requestId)
-        WorkManagerHandoffRecovery.reconcile(context)
-        awaitCarrierGone(startId)
+        assertSchedulerTerminalRecovery(startCarrier, awaitWorkFinished(startCarrier.requestId), "scheduledDownload")
 
         val endId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
             context,
@@ -113,9 +111,7 @@ class RealWorkManagerHandoffProductionTest {
         if (!endWork.state.isFinished) {
             assertEquals(endId, database.workManagerHandoffCarrierDao.get(endId)?.handoffId)
         }
-        awaitWorkFinished(endCarrier.requestId)
-        WorkManagerHandoffRecovery.reconcile(context)
-        awaitCarrierGone(endId)
+        assertSchedulerTerminalRecovery(endCarrier, awaitWorkFinished(endCarrier.requestId), "cancelScheduledDownload")
     }
 
     @Test
@@ -134,6 +130,65 @@ class RealWorkManagerHandoffProductionTest {
         assertTrue(workInfo.tags.contains(HardSubScanWorker.TAG))
         awaitCarrierGone(handoffId)
     }
+
+    private suspend fun assertSchedulerTerminalRecovery(
+        carrier: WorkManagerHandoffCarrier,
+        terminal: WorkInfo,
+        tag: String,
+    ) {
+        assertEquals(UUID.fromString(carrier.requestId), terminal.id)
+        if (terminal.state == WorkInfo.State.SUCCEEDED) {
+            WorkManagerHandoffRecovery.reconcile(context)
+            awaitCarrierGone(carrier.handoffId)
+            return
+        }
+        assertTrue(terminal.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED))
+        val accepted = checkNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        assertEquals(carrier.requestId, accepted.requestId)
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, accepted.state)
+
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val retry = checkNotNull(database.workManagerHandoffCarrierDao.get(carrier.handoffId))
+        android.util.Log.i("SchedulerTerminalRecovery", "real before=$accepted after=$retry terminal=$terminal")
+        assertEquals(
+            accepted,
+            retry.copy(
+                requestId = accepted.requestId,
+                state = accepted.state,
+                attempt = accepted.attempt,
+                updatedAt = accepted.updatedAt,
+            ),
+        )
+        assertEquals(accepted.attempt + 1, retry.attempt)
+        assertTrue(retry.requestId.isNotBlank() && retry.requestId != accepted.requestId)
+        assertTrue(retry.state in setOf(WorkManagerHandoffCarrier.PENDING_ENQUEUE, WorkManagerHandoffCarrier.ACCEPTED))
+        assertEquals(
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.STALE,
+            schedulerDisposition(accepted),
+        )
+        val retryWork = awaitWorkInfo(retry.requestId)
+        assertEquals(UUID.fromString(retry.requestId), retryWork.id)
+        assertTrue(retryWork.tags.contains(tag))
+        val published = checkNotNull(database.workManagerHandoffCarrierDao.get(retry.handoffId))
+        assertEquals(retry.requestId, published.requestId)
+        assertEquals(retry.generationId, published.generationId)
+        assertEquals(retry.attempt, published.attempt)
+        assertTrue(published.state in setOf(WorkManagerHandoffCarrier.PENDING_ENQUEUE, WorkManagerHandoffCarrier.ACCEPTED))
+        assertTrue(
+            schedulerDisposition(published) in setOf(
+                WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.PENDING,
+                WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT,
+            ),
+        )
+        android.util.Log.i("SchedulerTerminalRecovery", "real published=$published work=$retryWork")
+    }
+
+    private suspend fun schedulerDisposition(carrier: WorkManagerHandoffCarrier) =
+        WorkManagerHandoffRecovery.schedulerWorkRequestDisposition(
+            context, carrier.handoffId, carrier.requestId, carrier.generationId,
+            carrier.boundary, carrier.kind, carrier.requestId,
+        )
 
     private suspend fun awaitWorkInfo(requestId: String): WorkInfo {
         val id = UUID.fromString(requestId)

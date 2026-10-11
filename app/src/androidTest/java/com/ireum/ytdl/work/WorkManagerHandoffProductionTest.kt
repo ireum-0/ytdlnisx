@@ -11,6 +11,7 @@ import androidx.preference.PreferenceManager
 import androidx.work.ExistingWorkPolicy
 import androidx.work.Operation
 import androidx.work.OneTimeWorkRequest
+import androidx.work.WorkInfo
 import androidx.work.impl.utils.futures.SettableFuture
 import com.google.common.util.concurrent.ListenableFuture
 import com.ireum.ytdl.database.Converters
@@ -42,6 +43,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.Collections
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -835,6 +837,206 @@ class WorkManagerHandoffProductionTest {
             )?.handoffId)
         assertEquals(WorkManagerHandoffCarrier.SUPERSEDED,
             database.workManagerHandoffCarrierDao.get(firstId)?.state)
+    }
+
+    @Test
+    fun acceptedSchedulerStartFailedRetriesExactRequestAfterRestart(): Unit = runBlocking {
+        acceptedSchedulerTerminalRetries(WorkManagerHandoffCarrier.START_BOUNDARY, WorkInfo.State.FAILED)
+    }
+
+    @Test
+    fun acceptedSchedulerEndFailedRetriesExactRequestAfterRestart(): Unit = runBlocking {
+        acceptedSchedulerTerminalRetries(WorkManagerHandoffCarrier.END_BOUNDARY, WorkInfo.State.FAILED)
+    }
+
+    @Test
+    fun acceptedSchedulerStartCancelledRetriesExactRequestAfterRestart(): Unit = runBlocking {
+        acceptedSchedulerTerminalRetries(WorkManagerHandoffCarrier.START_BOUNDARY, WorkInfo.State.CANCELLED)
+    }
+
+    @Test
+    fun acceptedSchedulerEndCancelledRetriesExactRequestAfterRestart(): Unit = runBlocking {
+        acceptedSchedulerTerminalRetries(WorkManagerHandoffCarrier.END_BOUNDARY, WorkInfo.State.CANCELLED)
+    }
+
+    @Test
+    fun failedSchedulerGenerationCannotResurrectAfterReplacement(): Unit = runBlocking {
+        terminalSchedulerCannotReplaceNewGeneration(WorkInfo.State.FAILED)
+    }
+
+    @Test
+    fun cancelledSchedulerGenerationCannotResurrectAfterReplacement(): Unit = runBlocking {
+        terminalSchedulerCannotReplaceNewGeneration(WorkInfo.State.CANCELLED)
+    }
+
+    @Test
+    fun retiredSchedulerStartIsNotReplayedAfterRestart(): Unit = runBlocking {
+        retiredSchedulerIsNotReplayed(WorkManagerHandoffCarrier.START_BOUNDARY)
+    }
+
+    @Test
+    fun retiredSchedulerEndIsNotReplayedAfterRestart(): Unit = runBlocking {
+        retiredSchedulerIsNotReplayed(WorkManagerHandoffCarrier.END_BOUNDARY)
+    }
+
+    @Test
+    fun acceptedSchedulerStartUnfinishedWorkInfoRetainsExactRequest(): Unit = runBlocking {
+        unfinishedSchedulerRetainsExactRequest(WorkManagerHandoffCarrier.START_BOUNDARY)
+    }
+
+    @Test
+    fun acceptedSchedulerEndUnfinishedWorkInfoRetainsExactRequest(): Unit = runBlocking {
+        unfinishedSchedulerRetainsExactRequest(WorkManagerHandoffCarrier.END_BOUNDARY)
+    }
+
+    private suspend fun acceptScheduler(boundary: String): WorkManagerHandoffCarrier {
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { null }
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
+            workNames += name
+            policies += policy
+            requests += request
+            ControlledOperation().also { operations += it }
+        }
+        val id = WorkManagerHandoffRecovery.prepareSchedulerBoundary(context, boundary, 0L)
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, id)
+        awaitOperation().succeed()
+        assertTrue(withTimeout(20_000L) { attempt.await() }.accepted)
+        return requireNotNull(database.workManagerHandoffCarrierDao.get(id)).also {
+            assertEquals(WorkManagerHandoffCarrier.ACCEPTED, it.state)
+        }
+    }
+
+    private fun schedulerWorkInfo(requestId: String, state: WorkInfo.State): WorkInfo =
+        WorkInfo(id = UUID.fromString(requestId), state = state, tags = emptySet())
+
+    private suspend fun acceptedSchedulerTerminalRetries(boundary: String, state: WorkInfo.State) {
+        val accepted = acceptScheduler(boundary)
+        // Recreate process-local ownership; retain only Room and exact terminal WorkInfo.
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { requestId ->
+            if (requestId == accepted.requestId) schedulerWorkInfo(requestId, state) else null
+        }
+        val publication = CompletableDeferred<OneTimeWorkRequest>()
+        val operation = ControlledOperation()
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
+            assertEquals(accepted.uniqueWorkName, name)
+            assertEquals(ExistingWorkPolicy.REPLACE, policy)
+            publication.complete(request)
+            operation
+        }
+
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        val retry = requireNotNull(database.workManagerHandoffCarrierDao.get(accepted.handoffId))
+        android.util.Log.i("SchedulerTerminalRecovery", "before=$accepted after=$retry terminal=$state")
+        assertEquals(WorkManagerHandoffCarrier.PENDING_ENQUEUE, retry.state)
+        assertEquals(accepted.handoffId, retry.handoffId)
+        assertEquals(accepted.generationId, retry.generationId)
+        assertEquals(accepted.kind, retry.kind)
+        assertEquals(accepted.boundary, retry.boundary)
+        assertEquals(accepted.notBeforeAt, retry.notBeforeAt)
+        assertEquals(accepted.attempt + 1, retry.attempt)
+        assertTrue(retry.requestId.isNotBlank() && retry.requestId != accepted.requestId)
+        val request = withTimeout(20_000L) { publication.await() }
+        assertEquals(retry.requestId, request.id.toString())
+        assertEquals(retry.handoffId, request.workSpec.input.getString("handoffId"))
+        assertEquals(retry.requestId, request.workSpec.input.getString("handoffRequestId"))
+        assertEquals(retry.generationId, request.workSpec.input.getString(WorkManagerHandoffRecovery.INPUT_GENERATION_ID))
+        assertEquals(retry.boundary, request.workSpec.input.getString(WorkManagerHandoffRecovery.INPUT_BOUNDARY))
+        assertEquals(
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.STALE,
+            schedulerDisposition(accepted),
+        )
+        assertEquals(
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.PENDING,
+            schedulerDisposition(retry),
+        )
+        val attempt = WorkManagerHandoffRecovery.enqueueAndAwait(context, retry.handoffId)
+        operation.succeed()
+        assertTrue(withTimeout(20_000L) { attempt.await() }.accepted)
+        val republished = requireNotNull(database.workManagerHandoffCarrierDao.get(retry.handoffId))
+        assertEquals(retry.requestId, republished.requestId)
+        assertEquals(WorkManagerHandoffCarrier.ACCEPTED, republished.state)
+        assertEquals(
+            WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.CURRENT,
+            schedulerDisposition(republished),
+        )
+    }
+
+    private suspend fun schedulerDisposition(carrier: WorkManagerHandoffCarrier) =
+        WorkManagerHandoffRecovery.schedulerWorkRequestDisposition(
+            context, carrier.handoffId, carrier.requestId, carrier.generationId,
+            carrier.boundary, carrier.kind, carrier.requestId,
+        )
+
+    private suspend fun terminalSchedulerCannotReplaceNewGeneration(state: WorkInfo.State) {
+        for (boundary in listOf(WorkManagerHandoffCarrier.START_BOUNDARY, WorkManagerHandoffCarrier.END_BOUNDARY)) {
+            val old = acceptScheduler(boundary)
+            val newerId = WorkManagerHandoffRecovery.prepareSchedulerBoundary(
+                context, boundary, System.currentTimeMillis() + 600_000L,
+            )
+            val newer = requireNotNull(database.workManagerHandoffCarrierDao.get(newerId))
+            WorkManagerHandoffRecovery.clearForTesting()
+            WorkManagerHandoffRecovery.databaseForTesting = database
+            WorkManagerHandoffRecovery.workInfoOverrideForTesting = { requestId ->
+                if (requestId == old.requestId) schedulerWorkInfo(requestId, state) else null
+            }
+            val published = Collections.synchronizedList(mutableListOf<String>())
+            WorkManagerHandoffRecovery.enqueueOverrideForTesting = { _, _, request ->
+                published += request.id.toString()
+                ControlledOperation().also { it.succeed() }
+            }
+
+            WorkManagerHandoffRecovery.reconcile(context)
+
+            assertNull(database.workManagerHandoffCarrierDao.get(old.handoffId))
+            assertEquals(newer, database.workManagerHandoffCarrierDao.get(newerId))
+            assertTrue(WorkManagerHandoffRecovery.enqueueAndAwait(context, old.handoffId).await().superseded)
+            assertFalse(published.contains(old.requestId))
+            assertEquals(WorkManagerHandoffRecovery.SchedulerWorkRequestDisposition.STALE, schedulerDisposition(old))
+        }
+    }
+
+    private suspend fun retiredSchedulerIsNotReplayed(boundary: String) {
+        val accepted = acceptScheduler(boundary)
+        WorkManagerHandoffRecovery.retireSchedulerWorkRequest(context, accepted.handoffId, accepted.requestId)
+        assertNull(database.workManagerHandoffCarrierDao.get(accepted.handoffId))
+        WorkManagerHandoffRecovery.clearForTesting()
+        WorkManagerHandoffRecovery.databaseForTesting = database
+        WorkManagerHandoffRecovery.workInfoOverrideForTesting = { requestId ->
+            schedulerWorkInfo(requestId, WorkInfo.State.SUCCEEDED)
+        }
+        val published = AtomicInteger(0)
+        WorkManagerHandoffRecovery.enqueueOverrideForTesting = { _, _, _ ->
+            published.incrementAndGet()
+            ControlledOperation().also { it.succeed() }
+        }
+
+        WorkManagerHandoffRecovery.reconcile(context)
+
+        assertNull(database.workManagerHandoffCarrierDao.get(accepted.handoffId))
+        assertEquals(0, published.get())
+        assertTrue(WorkManagerHandoffRecovery.enqueueAndAwait(context, accepted.handoffId).await().superseded)
+    }
+
+    private suspend fun unfinishedSchedulerRetainsExactRequest(boundary: String) {
+        val accepted = acceptScheduler(boundary)
+        for (state in listOf(WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING, WorkInfo.State.BLOCKED)) {
+            WorkManagerHandoffRecovery.clearForTesting()
+            WorkManagerHandoffRecovery.databaseForTesting = database
+            WorkManagerHandoffRecovery.workInfoOverrideForTesting = { requestId -> schedulerWorkInfo(requestId, state) }
+            val published = AtomicInteger(0)
+            WorkManagerHandoffRecovery.enqueueOverrideForTesting = { _, _, _ ->
+                published.incrementAndGet()
+                ControlledOperation().also { it.succeed() }
+            }
+
+            WorkManagerHandoffRecovery.reconcile(context)
+
+            assertEquals(accepted, database.workManagerHandoffCarrierDao.get(accepted.handoffId))
+            assertEquals(0, published.get())
+        }
     }
 
     private suspend fun lateAcceptedSchedulerRequestIsRevoked(boundary: String) {

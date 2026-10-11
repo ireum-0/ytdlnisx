@@ -1491,6 +1491,12 @@ internal object WorkManagerHandoffRecovery {
                 }
                 carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH &&
                     workInfo?.state == WorkInfo.State.SUCCEEDED -> Unit
+                carrier.kind in setOf(
+                    WorkManagerHandoffCarrier.SCHEDULE_START,
+                    WorkManagerHandoffCarrier.SCHEDULE_END,
+                ) && workInfo?.state in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) -> {
+                    retryAfterFailure(context, carrier, null)
+                }
                 retainsCarrierUntilWorkerTerminal(carrier.kind) && workInfo == null -> {
                     // Operation.result acceptance is durable authority; a transiently
                     // absent WorkInfo must not advance the request identity and
