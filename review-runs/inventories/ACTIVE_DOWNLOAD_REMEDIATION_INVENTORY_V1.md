@@ -11,26 +11,32 @@ implementation_verification_sha=db339e1e90392cfd994e2d42bca7ce88afb3be21
 CANONICAL_P0=0
 CANONICAL_P1=0
 CANONICAL_P2=6
+ROOT_STATUS_VOCABULARY=OPEN,CLOSED,AMBIGUOUS
+ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=6
+ACTIVE_REMEDIATION_AMBIGUOUS_ROOT_COUNT=0
+STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__derived-root-status-vocabulary-reconciliation.md
+
+The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. This is a presentation-only translation of pre-existing decisions, not a new source review.
 
 ## Canonical roots
 
-1. BUG-FORMAT-BG-01 — P2 — VERIFIED_OPEN
+1. BUG-FORMAT-BG-01 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
-2. BUG-FORMAT-BG-02 — P2 — VERIFIED_OPEN
+2. BUG-FORMAT-BG-02 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
-3. BUG-FORMAT-BG-03 — P2 — VERIFIED_OPEN
+3. BUG-FORMAT-BG-03 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
-4. BUG-FORMAT-BG-04 — P2 — VERIFIED_OPEN
+4. BUG-FORMAT-BG-04 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
-5. BUG-FORMAT-BG-05 — P2 — VERIFIED_OPEN
+5. BUG-FORMAT-BG-05 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
-6. BUG-INCOGNITO-01 — P2 — VERIFIED_OPEN
+6. BUG-INCOGNITO-01 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
 
-## Verified closed and removed from current OPEN inventory
+## CLOSED and removed from current unresolved inventory
 
-- BUG-SCHEDULER-WINDOW-01 — VERIFIED_CLOSED at db339e1 — independently reviewed source and V3 final exact-SHA window/END ownership execution evidence; preserves 2026-10-06 false-closure/reopen history.
-- BUG-SCHEDULER-RESTORE-01 — VERIFIED_CLOSED at db339e1 — independently reviewed validated Restore/settings transitions, external authority convergence and V3 exact-SHA production-wiring execution evidence.
+- BUG-SCHEDULER-WINDOW-01 — CLOSED at db339e1 — independently reviewed source and V3 final exact-SHA window/END ownership execution evidence; preserves 2026-10-06 false-closure/reopen history.
+- BUG-SCHEDULER-RESTORE-01 — CLOSED at db339e1 — independently reviewed validated Restore/settings transitions, external authority convergence and V3 exact-SHA production-wiring execution evidence.
 - Canonical final decision: review-runs/checkpoints/2026-10-12__db339e1__scheduler-window01-restore01-independent-final-closures.md
 
 ## Current implementation priority
