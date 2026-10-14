@@ -207,77 +207,55 @@ class FormatSelectionBottomSheetDialog(
                 shimmers.startShimmer()
 
                 updateFormatsJob = launch(Dispatchers.IO) {
-                    try{
-                        //simple download
-                        if (items.size == 1) {
-                            kotlin.runCatching {
-                                val res = resultViewModel.getFormats(items.first().url, currentFormatSource)
-                                if (!isActive) return@launch
-                                res.filter { it.format_note != "storyboard" }
-                                val chosenFormats = if (items.first().type == DownloadType.audio) {
-                                    res.filter { it.format_note.contains("audio", ignoreCase = true) }
-                                } else {
-                                    res
-                                }
-                                if (chosenFormats.isEmpty()) throw Exception()
-
-                                items.first().allFormats.clear()
-                                items.first().allFormats.addAll(chosenFormats)
-
-                                withContext(Dispatchers.Main){
-                                    formatViewModel.setItem(items.first(), false)
-                                    listener.onFormatsUpdated(res)
-                                }
-                            }.onFailure { err ->
-                                withContext(Dispatchers.Main){
-                                    UiUtil.handleNoResults(requireActivity(), err.message.toString(), null, false, continued = {}, closed = {}, cookieFetch = {})
-                                }
-                            }
-
-                        //list format filtering
-                        }else{
-                            var progressInt = 0
-                            val formatCollection = itemsThatHaveFormats.map { it.allFormats }.toMutableList()
-
-                            var progress = "0/${itemsWithMissingFormats.size}"
+                    var actor: String? = null
+                    try {
+                        val requestedUrls = if (items.size == 1) setOf(items.first().url)
+                            else itemsWithMissingFormats.map { it.url }.toSet()
+                        val captured = downloadViewModel.captureFormatRefresh(
+                            items.filter { it.url in requestedUrls }, currentFormatSource, items.size != 1)
+                        actor = captured.firstOrNull()?.actor
+                        check(captured.isNotEmpty()) { "Format refresh members changed before admission" }
+                        var progressInt = 0
+                        for (lease in captured) {
+                            if (!isActive) throw CancellationException()
+                            // Each request is explicitly associated with one URL; no shared urls.txt/positional callback.
+                            val result = downloadViewModel.fetchCapturedFormats(lease)
+                            if (!isActive) throw CancellationException()
+                            check(result.isNotEmpty()) { "No formats returned for captured member" }
+                            if (items.size == 1 && items.first().type == DownloadType.audio)
+                                check(result.any { it.format_note.contains("audio", ignoreCase = true) })
+                            check(downloadViewModel.publishCapturedFormats(lease, result)) { "Format refresh authority superseded" }
+                            if (!isActive) throw CancellationException()
                             withContext(Dispatchers.Main) {
-                                refreshBtn.text = progress
-                            }
-
-                            val res = resultViewModel.getFormatsMultiple(itemsWithMissingFormats.map { it.url }, currentFormatSource) {
-                                if (!isActive) return@getFormatsMultiple
-
-                                if (it.unavailable) {
-                                    lifecycleScope.launch {
-                                        multipleFormatsListener.onItemUnavailable(it.url)
-                                        items.removeAt(items.indexOfFirst { item -> item.url == it.url })
-                                        withContext(Dispatchers.Main) {
-                                            Snackbar.make(view, it.unavailableMessage, Snackbar.LENGTH_SHORT).show()
-                                        }
+                                if (items.size == 1) {
+                                    val chosenFormats = if (items.first().type == DownloadType.audio)
+                                        result.filter { it.format_note.contains("audio", ignoreCase = true) } else result
+                                    check(chosenFormats.isNotEmpty())
+                                    items.first().allFormats.clear()
+                                    items.first().allFormats.addAll(chosenFormats)
+                                    formatViewModel.setItem(items.first(), false)
+                                    listener.onFormatsUpdated(result)
+                                } else {
+                                    val ids = lease.members.map { it.id }.toSet()
+                                    items.filter { it.id in ids }.forEach { item ->
+                                        item.allFormats.clear()
+                                        item.allFormats.addAll(result)
                                     }
-                                }else{
-                                    multipleFormatsListener.onFormatUpdated(it.url, it.formats)
-                                    items.filter { item -> item.url == it.url }.forEach { d ->
-                                        d.allFormats.clear()
-                                        d.allFormats.addAll(it.formats)
-                                    }
-                                    progressInt++
-                                    lifecycleScope.launch(Dispatchers.Main) {
-                                        progress = "${progressInt}/${itemsWithMissingFormats.size}"
-                                        refreshBtn.text = progress
-                                    }
+                                    multipleFormatsListener.onFormatUpdated(lease.cache.url, result)
+                                    progressInt += lease.members.count { member -> itemsWithMissingFormats.any { it.id == member.id } }
+                                    refreshBtn.text = "$progressInt/${itemsWithMissingFormats.size}"
                                 }
                             }
-
-                            formatViewModel.setItems(items, false)
                         }
-
-                        withContext(Dispatchers.Main){
+                        if (items.size != 1) formatViewModel.setItems(items, false)
+                        withContext(Dispatchers.Main) {
                             filterBtn.isEnabled = true
                             okBtn.isEnabled = true
                             refreshBtn.isEnabled = true
                         }
-                    }catch (e: Exception){
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
                         withContext(Dispatchers.Main) {
                             refreshBtn.isEnabled = true
                             filterBtn.isEnabled = true
@@ -286,9 +264,11 @@ class FormatSelectionBottomSheetDialog(
                             recyclerView.isVisible = true
                             shimmers.visibility = View.GONE
                             shimmers.stopShimmer()
-                            e.printStackTrace()
+                            failure.printStackTrace()
                             Toast.makeText(context, getString(R.string.error_updating_formats), Toast.LENGTH_SHORT).show()
                         }
+                    } finally {
+                        actor?.let { downloadViewModel.releaseFormatRefresh(it) }
                     }
                 }
                 updateFormatsJob?.start()

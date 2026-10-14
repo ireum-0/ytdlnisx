@@ -86,6 +86,8 @@ import kotlin.math.abs
 
 class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), ConfigureMultipleDownloadsAdapter.OnItemClickListener, View.OnClickListener,
     ConfigureDownloadBottomSheetDialog.OnDownloadItemUpdateListener {
+    private var backgroundHandoffRequested = false
+
     private lateinit var downloadViewModel: DownloadViewModel
     private lateinit var historyViewModel: HistoryViewModel
     private lateinit var commandTemplateViewModel: CommandTemplateViewModel
@@ -346,9 +348,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
                         downloadViewModel.deleteAllWithID(currentDownloadIDs)
                     }
 
-                    downloadViewModel.processingItemsJob?.cancel(CancellationException())
-                    downloadViewModel.processingItemsJob = null
-
+                    // Captured members transferred; late members remain with their creator.
                     dismiss()
                 }
             }
@@ -362,14 +362,15 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
             }
 
             override fun onFormatUpdated(url: String, formats: List<Format>) {
-                downloadViewModel.updateProcessingFormatByUrl(url, formats)
+                // Formats were atomically published for captured members before this UI callback.
             }
 
             override fun onItemUnavailable(url: String) {
-                downloadViewModel.removeUnavailableDownloadAndResultByURL(url)
+                // A network observation alone does not authorize deleting later rows by URL.
             }
 
             override fun onContinueOnBackground() {
+                backgroundHandoffRequested = true
                 requireActivity().lifecycleScope.launch {
                     withContext(Dispatchers.IO){
                         downloadViewModel.continueUpdatingFormatsOnBackground(listAdapter.getCheckedItemsOrNull())
@@ -1313,7 +1314,7 @@ class DownloadMultipleBottomSheetDialog : BottomSheetDialogFragment(), Configure
 
     override fun onDismiss(dialog: DialogInterface) {
         abandonUndoPresentation()
-        lifecycleScope.launch {
+        if (!backgroundHandoffRequested) lifecycleScope.launch {
             withContext(Dispatchers.IO){
                 downloadViewModel.processingItemsJob?.cancel(CancellationException())
                 downloadViewModel.processingItemsJob = null

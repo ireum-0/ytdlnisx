@@ -78,6 +78,9 @@ import com.ireum.ytdl.work.DownloadWorker
 import com.ireum.ytdl.work.LowQualityRedownloadLedger
 import com.ireum.ytdl.work.UpdateMultipleDownloadsDataWorker
 import com.ireum.ytdl.work.UpdateMultipleDownloadsFormatsWorker
+import com.ireum.ytdl.work.CapturedFormatDownload
+import com.ireum.ytdl.work.FormatBatchHandoff
+import com.ireum.ytdl.work.WorkManagerHandoffRecovery
 import com.ireum.ytdl.work.withDownloadWorkerExecutionSideEffectLease
 import com.ireum.ytdl.work.withDownloadWorkerExecutionLock
 import com.ireum.ytdl.util.storage.ConfiguredDownloadArchiveRead
@@ -2900,74 +2903,40 @@ class DownloadViewModel private constructor(
 
     }
 
-    fun updateDownloadItemFormats(id: Long, list: List<Format>) = viewModelScope.launch(Dispatchers.IO) {
+    internal suspend fun captureFormatRefresh(items: List<DownloadItem>, source: String?, writeDownloads: Boolean): List<com.ireum.ytdl.work.FormatFetchAuthority> = withContext(Dispatchers.IO) {
         ensureRestoreAdmission()
-        val item = repository.getItemByID(id)
-        item.allFormats.clear()
-        item.allFormats.addAll(list)
-        item.format = getFormat(list, item.type, item.url)
-
-        runCatching {
-            resultRepository.getAllByURL(item.url).forEach {
-                it.formats = list
-                resultRepository.update(it)
-            }
-        }
+        val policies = items.associate { item -> item.id to com.ireum.ytdl.work.FormatRequestPolicy.capture(application, dbManager, item.type, item.url, source) }
+        com.ireum.ytdl.work.FormatAuthority.captureForeground(application, dbManager, items, policies, writeDownloads)
     }
 
-    fun updateProcessingFormatByUrl(url: String, list: List<Format>) = viewModelScope.launch(Dispatchers.IO) {
-        ensureRestoreAdmission()
-        val items = repository.getProcessingDownloadsByUrl(url)
-        items.forEach { item ->
-            item.allFormats.clear()
-            item.allFormats.addAll(list)
-            item.format = getFormat(list, item.type, item.url)
-            repository.update(item)
-        }
-
-        kotlin.runCatching {
-            resultRepository.getAllByURL(url).forEach {
-                it.formats = list
-                resultRepository.update(it)
-            }
-        }
+    internal fun fetchCapturedFormats(lease: com.ireum.ytdl.work.FormatFetchAuthority): List<Format> {
+        val policy = lease.members.first().policy
+        return resultRepository.getFormats(lease.cache.url, policy.source, policy.allowFallback)
     }
 
-    fun removeUnavailableDownloadAndResultByURL(url: String) = viewModelScope.launch(Dispatchers.IO) {
-        ensureRestoreAdmission()
-        repository.deleteProcessingByUrl(url)
-        resultRepository.deleteByUrl(url)
-    }
+    internal suspend fun publishCapturedFormats(lease: com.ireum.ytdl.work.FormatFetchAuthority, formats: List<Format>): Boolean =
+        com.ireum.ytdl.work.FormatAuthority.publish(application, dbManager, lease, formats)
+
+    internal suspend fun releaseFormatRefresh(actor: String) =
+        com.ireum.ytdl.work.FormatAuthority.releaseForeground(application, dbManager, actor)
 
     suspend fun continueUpdatingFormatsOnBackground(selectedItems: List<Long>?){
         ensureRestoreAdmission()
-        val allProcessing = repository.getAllProcessingDownloads().map { it.id }
-
-        val ids = if (selectedItems.isNullOrEmpty()) {
-            allProcessing
-        }else {
-            selectedItems
+        withContext(Dispatchers.IO) {
+            val captured = FormatBatchHandoff.capture(application, dbManager, repository.getAllProcessingDownloads())
+            FormatBatchHandoff.afterCaptureForTesting?.invoke(captured)
+            val staged = FormatBatchHandoff.stage(application, dbManager, captured, selectedItems)
+            staged.refusedOrStaleIds.forEach { id ->
+                val snapshot = captured.first { it.id == id }
+                repository.convergeHistoryReplacementRefusal(
+                    id = id, expectedExecutionId = snapshot.executionId, forceError = true,
+                )
+            }
+            staged.handoffId?.let { handoffId ->
+                // Observes the asynchronous Operation; failure leaves exact durable retry debt.
+                WorkManagerHandoffRecovery.enqueueAndAwait(application, handoffId).await()
+            }
         }
-
-        moveProcessingToSavedCategory()
-
-        val id = System.currentTimeMillis().toInt()
-        val workRequest = OneTimeWorkRequestBuilder<UpdateMultipleDownloadsFormatsWorker>()
-            .setInputData(
-                Data.Builder()
-                    .putLongArray("ids", ids.toLongArray())
-                    .putLongArray("other_ids_in_bundle", allProcessing.filter { !ids.contains(it) }.toLongArray())
-                    .putInt("id", id)
-                    .build())
-            .addTag("updateFormats")
-            .build()
-        val context = App.instance
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            id.toString(),
-            ExistingWorkPolicy.REPLACE,
-            workRequest
-        )
-
     }
 
     private fun continueUpdatingDataInBackground(ids: List<Long>){

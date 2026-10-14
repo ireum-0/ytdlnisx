@@ -146,6 +146,21 @@ interface WorkManagerHandoffCarrierDao {
         updatedAt: Long,
     ): Int
 
+    @Query(
+        "UPDATE work_manager_handoff_carriers SET state='RESOLVED', updatedAt=:updatedAt " +
+            "WHERE handoffId=:handoffId AND generationId=:generationId AND requestId=:requestId " +
+            "AND kind='FORMAT_BATCH' AND state IN ('PENDING_ENQUEUE','ACCEPTED')"
+    )
+    suspend fun markFormatResolved(
+        handoffId: String, generationId: String, requestId: String, updatedAt: Long,
+    ): Int
+
+    @Query("SELECT * FROM work_manager_handoff_carriers WHERE kind='FORMAT_BATCH' AND requestId=:requestId AND state IN ('PENDING_ENQUEUE','ACCEPTED')")
+    suspend fun getCurrentFormatRequests(requestId: String): List<WorkManagerHandoffCarrier>
+
+    @Query("UPDATE work_manager_handoff_carriers SET requestId=:nextRequestId, attempt=attempt+1, state='PENDING_ENQUEUE', updatedAt=:now WHERE handoffId=:handoffId AND generationId=:generationId AND requestId=:requestId AND kind='FORMAT_BATCH' AND state IN ('PENDING_ENQUEUE','ACCEPTED')")
+    suspend fun revokeFormatRequest(handoffId: String, generationId: String, requestId: String, nextRequestId: String, now: Long): Int
+
     /** A failed WorkManager generation keeps the same semantic handoff id. */
     @Query(
         "UPDATE work_manager_handoff_carriers SET requestId = :newRequestId, " +

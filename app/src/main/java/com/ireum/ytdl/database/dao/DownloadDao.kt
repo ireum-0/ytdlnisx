@@ -1147,6 +1147,30 @@ interface DownloadDao {
     )
     suspend fun updateProcessingtoSavedStatus()
 
+    /** Exact captured membership and current ownership, never a status-wide sweep/upsert. */
+    @Query(
+        "UPDATE downloads SET status='Saved' WHERE id=:id AND status='Processing' " +
+            "AND url=:url AND type=:type AND executionId=:executionId AND executionId='' " +
+            "AND operationId=:operationId AND retryAttempt=:retryAttempt " +
+            "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN " +
+            "('HISTORY_REPLACEMENT_SOURCE_MISMATCH','HISTORY_REPLACEMENT_TYPE_MISMATCH','HISTORY_TARGET_DELETED')) " +
+            "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId=downloads.id) " +
+            LOW_QUALITY_REPLACEMENT_RUNNABLE_GUARD
+    )
+    suspend fun saveCapturedProcessing(
+        id: Long, url: String, type: String, executionId: String, operationId: String, retryAttempt: Int,
+    ): Int
+
+    @Query("SELECT COUNT(*) FROM downloads WHERE id=:id AND status IN (:statuses) AND executionId='' " +
+        "AND (lastIssueCode IS NULL OR lastIssueCode NOT IN ('HISTORY_REPLACEMENT_SOURCE_MISMATCH','HISTORY_REPLACEMENT_TYPE_MISMATCH','HISTORY_TARGET_DELETED')) " +
+        "AND NOT EXISTS (SELECT 1 FROM history_replacement_barriers b WHERE b.downloadId=downloads.id) " +
+        LOW_QUALITY_REPLACEMENT_RUNNABLE_GUARD)
+    suspend fun formatEligible(id: Long, statuses: List<String>): Int
+
+    /** Called only inside the exact FormatAuthority effect transaction. */
+    @Query("UPDATE downloads SET format=:format, allFormats=:formats WHERE id=:id AND url=:url AND status=:status")
+    suspend fun publishOwnedFormats(id: Long, url: String, status: String, format: Format, formats: List<Format>): Int
+
     @Transaction
     suspend fun putAtTopOfTheQueue(existingIDs: List<Long>) {
         val current = getQueuedDownloadsListIDs()

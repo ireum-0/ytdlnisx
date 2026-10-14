@@ -975,7 +975,7 @@ class NotificationUtil(var context: Context) {
     @SuppressLint("MissingPermission")
     fun updateFormatUpdateNotification(
         workID: Int,
-        workTag: String,
+        requestId: java.util.UUID,
         progress: Int,
         queue: Int,
     ) {
@@ -985,7 +985,8 @@ class NotificationUtil(var context: Context) {
 
 
         val cancelIntent = Intent(context, CancelWorkReceiver::class.java)
-        cancelIntent.putExtra("workTag", workTag)
+        cancelIntent.data = android.net.Uri.parse("ytdlnisx://format-request/" + requestId)
+        cancelIntent.putExtra(com.ireum.ytdl.work.FormatBatchCancellation.REQUEST_ID, requestId.toString())
         val cancelNotificationPendingIntent = PendingIntent.getBroadcast(
             context,
             workID,

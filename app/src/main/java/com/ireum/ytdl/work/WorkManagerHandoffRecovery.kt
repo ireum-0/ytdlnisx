@@ -65,6 +65,7 @@ internal object WorkManagerHandoffRecovery {
         RETRYING,
         SUPERSEDED,
         FAILED,
+        USER_ACTION_REQUIRED,
     }
 
     internal data class EnqueueOutcome(
@@ -1062,11 +1063,13 @@ internal object WorkManagerHandoffRecovery {
     internal fun clearForTesting() {
         val jobs = (attemptJobs.values.map { it as Job } + retryJobs.values.toList()).distinct()
         jobs.forEach { it.cancel() }
-        runBlocking {
+        val quiesced = runBlocking {
             withTimeoutOrNull(5_000L) {
                 jobs.joinAll()
+                true
             }
         }
+        check(quiesced == true) { "Handoff test jobs did not quiesce before seam cleanup" }
         attemptJobs.clear()
         retryJobs.clear()
         latestGenerationByBoundary.clear()
@@ -1156,6 +1159,61 @@ internal object WorkManagerHandoffRecovery {
         return enqueueAndAwaitInternal(context, handoffId, authority)
     }
 
+    /** Replay the format namespace quiesced by Reset without borrowing ordinary admission. */
+    internal suspend fun reconcileFormatsForRestore(
+        context: Context,
+        authority: RestoreReconciliationAuthority,
+    ) {
+        RestoreTransactionCoordinator.requireCurrentReconciliationAuthority(context, authority)
+        val db = database(context)
+        withCarrierMutation(context, authority) {
+            db.withTransaction { FormatRecoveryIssues.discoverRetainedWithinTransaction(db) }
+        }
+        db.workManagerHandoffCarrierDao.getOutstanding()
+            .filter { it.kind == WorkManagerHandoffCarrier.FORMAT_BATCH }
+            .forEach { snapshot ->
+                if (formatIssueOutcome(context, snapshot, authority) != null) return@forEach
+                // A cancelled/terminal SDK carrier did not acknowledge its semantic effects.
+                // Missing or unfinished WorkInfo does not invalidate accepted ownership.
+                if (workInfo(context, snapshot.requestId)?.state?.isFinished == true) {
+                    retryAfterFailure(context, snapshot, null, authority)
+                }
+                val current = db.workManagerHandoffCarrierDao.get(snapshot.handoffId)
+                    ?: return@forEach
+                if (formatIssueOutcome(context, current, authority) != null) return@forEach
+                if (current.state == WorkManagerHandoffCarrier.PENDING_ENQUEUE) {
+                    // SDK observation is outside Room and mutation admission. Failure leaves
+                    // the existing Restore journal in reconciliation, rather than claiming
+                    // completion with an unaccepted successor.
+                    val outcome = withTimeoutOrNull(30_000L) {
+                        enqueueAndAwaitForRestore(context, current.handoffId, authority).await()
+                    }
+                    val latest = db.workManagerHandoffCarrierDao.get(current.handoffId)
+                    check(outcome?.accepted == true ||
+                        outcome?.kind == OutcomeKind.USER_ACTION_REQUIRED ||
+                        (outcome?.superseded == true && latest?.state !in setOf(
+                            WorkManagerHandoffCarrier.PENDING_ENQUEUE,
+                            WorkManagerHandoffCarrier.ACCEPTED,
+                        ))) { "Format scheduling reconciliation was not accepted" }
+                }
+            }
+        withCarrierMutation(context, authority) {
+            db.withTransaction {
+                // Another exact retry may have replaced a snapshot while its SDK
+                // result was observed. Do not finish Restore over that pending debt.
+                db.workManagerHandoffCarrierDao.getOutstanding()
+                    .filter { it.kind == WorkManagerHandoffCarrier.FORMAT_BATCH &&
+                        it.state == WorkManagerHandoffCarrier.PENDING_ENQUEUE }
+                    .forEach { current ->
+                        check(FormatRecoveryIssues.carrierDispositionWithinTransaction(db, current) !=
+                            FormatRecoveryIssues.CarrierDisposition.PROCEED) {
+                            "Format scheduling reconciliation still has pending authority"
+                        }
+                    }
+            }
+        }
+    }
+
     private suspend fun enqueueAndAwaitInternal(
         context: Context,
         handoffId: String,
@@ -1180,6 +1238,16 @@ internal object WorkManagerHandoffRecovery {
         val appContext = context.applicationContext
         if (RestoreGate.isRestoreInProgress(appContext)) return
         val dao = database(appContext).workManagerHandoffCarrierDao
+        FormatRecoveryIssues.discoverRetained(appContext, database(appContext))
+        try {
+            // Relevant public candidates only; actual worker inputs supply provenance later.
+            FormatRecoveryIssues.observeCandidates(appContext)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            Log.w(TAG, "Format candidate observation unavailable; no legacy origin inferred", failure)
+        }
+        FormatBatchCancellation.reconcile(appContext, database(appContext))
         RestoreMutationAdmission.withOrdinaryMutation(appContext) {
             dao.deleteResolved()
         }
@@ -1413,6 +1481,7 @@ internal object WorkManagerHandoffRecovery {
             kind == WorkManagerHandoffCarrier.SCHEDULE_END ||
             kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE ||
             kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            kind == WorkManagerHandoffCarrier.FORMAT_BATCH ||
             kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH
     private suspend fun reconcileSuperseded(
         context: Context,
@@ -1442,12 +1511,14 @@ internal object WorkManagerHandoffRecovery {
 
     private fun retainsSupersededTombstone(kind: String): Boolean =
         kind == WorkManagerHandoffCarrier.AUTOMATIC_KEYWORD_SYNC ||
+            kind == WorkManagerHandoffCarrier.FORMAT_BATCH ||
             kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH
     private suspend fun reconcileCarrier(
         context: Context,
         carrier: WorkManagerHandoffCarrier,
     ) {
         if (RestoreGate.isRestoreInProgress(context)) return
+        if (formatIssueOutcome(context, carrier, null) != null) return
         if (retireStaleObserveCarrier(context, carrier)) return
         if (!isCurrentGeneration(carrier)) return
         if (!isCurrentObserveExecutionAuthority(context, carrier) ||
@@ -1458,6 +1529,12 @@ internal object WorkManagerHandoffRecovery {
             return
         }
         val workInfo = workInfo(context, carrier.requestId)
+        if (carrier.kind == WorkManagerHandoffCarrier.FORMAT_BATCH && workInfo?.state?.isFinished == true) {
+            // Only the exact worker acknowledgement retires this payload. A terminal
+            // WorkInfo without that acknowledgement still has durable responsibility.
+            retryAfterFailure(context, carrier, null)
+            return
+        }
         if (carrier.state == WorkManagerHandoffCarrier.ACCEPTED) {
             when {
                 carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RETRY_DOWNLOAD &&
@@ -1860,6 +1937,24 @@ internal object WorkManagerHandoffRecovery {
         return stale
     }
 
+    private suspend fun formatIssueOutcome(
+        context: Context,
+        carrier: WorkManagerHandoffCarrier,
+        authority: RestoreReconciliationAuthority?,
+    ): EnqueueOutcome? {
+        if (carrier.kind != WorkManagerHandoffCarrier.FORMAT_BATCH) return null
+        return withCarrierMutation(context, authority) {
+            val db = database(context)
+            db.withTransaction {
+                when (FormatRecoveryIssues.carrierDispositionWithinTransaction(db, carrier)) {
+                    FormatRecoveryIssues.CarrierDisposition.PROCEED -> null
+                    FormatRecoveryIssues.CarrierDisposition.USER_ACTION_REQUIRED -> EnqueueOutcome(OutcomeKind.USER_ACTION_REQUIRED)
+                    FormatRecoveryIssues.CarrierDisposition.RETIRED -> EnqueueOutcome(OutcomeKind.SUPERSEDED)
+                }
+            }
+        }
+    }
+
     private suspend fun performAttempt(
         context: Context,
         handoffId: String,
@@ -1871,6 +1966,7 @@ internal object WorkManagerHandoffRecovery {
             scheduleRetry(context, handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING)
         }
+        formatIssueOutcome(context, carrier, authority)?.let { return it }
         if (retireStaleObserveCarrier(context, carrier, authority)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED)
         }
@@ -1889,6 +1985,16 @@ internal object WorkManagerHandoffRecovery {
                     OutcomeKind.SUPERSEDED
                 }
             )
+        }
+        if (carrier.kind == WorkManagerHandoffCarrier.FORMAT_BATCH) {
+            val existingWork = workInfo(context, carrier.requestId)
+            if (existingWork != null) {
+                return if (existingWork.state.isFinished) {
+                    retryAfterFailure(context, carrier, null, authority)
+                } else {
+                    finalizeAccepted(context, carrier, authority)
+                }
+            }
         }
         if (carrier.kind == WorkManagerHandoffCarrier.TERMINAL_DISPATCH) {
             // Once TerminalExecutionRecovery has a witness, this subject is
@@ -2122,6 +2228,7 @@ internal object WorkManagerHandoffRecovery {
             scheduleRetry(context, carrier.handoffId, authority)
             return EnqueueOutcome(OutcomeKind.RETRYING, failure)
         }
+        formatIssueOutcome(context, carrier, authority)?.let { return it }
         if (retireStaleObserveCarrier(context, carrier, authority)) {
             return EnqueueOutcome(OutcomeKind.SUPERSEDED, failure)
         }
@@ -2135,7 +2242,7 @@ internal object WorkManagerHandoffRecovery {
         val existingWork = workInfo(context, carrier.requestId)
         if (existingWork != null &&
             existingWork.state !in setOf(WorkInfo.State.FAILED, WorkInfo.State.CANCELLED) &&
-            !(carrier.kind == WorkManagerHandoffCarrier.OBSERVE_RECURRENCE &&
+            !(carrier.kind in setOf(WorkManagerHandoffCarrier.OBSERVE_RECURRENCE, WorkManagerHandoffCarrier.FORMAT_BATCH) &&
                 existingWork.state.isFinished)
         ) {
             val outcome = try {
@@ -2243,6 +2350,21 @@ internal object WorkManagerHandoffRecovery {
                         failure,
                     )
                 }
+                if (carrier.kind == WorkManagerHandoffCarrier.FORMAT_BATCH) {
+                    // Issue admission and retry CAS share one transaction; no R1 issue can lose to R2.
+                    val db = database(context)
+                    return@withCarrierMutation db.withTransaction {
+                        when (FormatRecoveryIssues.carrierDispositionWithinTransaction(db, carrier)) {
+                            FormatRecoveryIssues.CarrierDisposition.USER_ACTION_REQUIRED -> EnqueueOutcome(OutcomeKind.USER_ACTION_REQUIRED)
+                            FormatRecoveryIssues.CarrierDisposition.RETIRED -> EnqueueOutcome(OutcomeKind.SUPERSEDED)
+                            FormatRecoveryIssues.CarrierDisposition.PROCEED -> {
+                                val advanced = dao.advanceRetry(carrier.handoffId, carrier.requestId,
+                                    UUID.randomUUID().toString(), carrier.attempt + 1, System.currentTimeMillis())
+                                EnqueueOutcome(if (advanced == 1) OutcomeKind.RETRYING else OutcomeKind.SUPERSEDED, failure)
+                            }
+                        }
+                    }
+                }
                 val newRequestId = UUID.randomUUID().toString()
                 val advanced = dao.advanceRetry(
                     handoffId = carrier.handoffId,
@@ -2312,7 +2434,7 @@ internal object WorkManagerHandoffRecovery {
                 firstAttempt = false
 
                 val outcome = enqueueAndAwaitInternal(context, handoffId, authority).await()
-                if (outcome.accepted || outcome.superseded) return@launch
+                if (outcome.accepted || outcome.superseded || outcome.kind == OutcomeKind.USER_ACTION_REQUIRED) return@launch
                 delay(backoff)
                 backoff = (backoff * 2L).coerceAtMost(RETRY_MAX_BACKOFF_MS)
             }
@@ -2488,6 +2610,12 @@ internal object WorkManagerHandoffRecovery {
             .putString(INPUT_BOUNDARY, carrier.boundary)
             .build()
         return when (carrier.kind) {
+            WorkManagerHandoffCarrier.FORMAT_BATCH -> OneTimeWorkRequestBuilder<UpdateMultipleDownloadsFormatsWorker>()
+                .setId(requestId)
+                .addTag("updateFormats")
+                .setInputData(input)
+                .build()
+
             WorkManagerHandoffCarrier.HARD_SUB_SCAN -> OneTimeWorkRequestBuilder<HardSubScanWorker>()
                 .setId(requestId)
                 .setConstraints(
@@ -2646,8 +2774,8 @@ internal object WorkManagerHandoffRecovery {
         }
     }
 
-    private const val INPUT_HANDOFF_ID = "handoffId"
-    private const val INPUT_REQUEST_ID = "handoffRequestId"
+    internal const val INPUT_HANDOFF_ID = "handoffId"
+    internal const val INPUT_REQUEST_ID = "handoffRequestId"
     internal const val INPUT_GENERATION_ID = "handoffGenerationId"
     internal const val INPUT_BOUNDARY = "handoffBoundary"
     private const val TERMINAL_DISPATCH_DECISION = "EXECUTE"

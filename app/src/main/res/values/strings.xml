@@ -1005,4 +1005,11 @@
     <string name="automatic_keyword_managed_source_name">Keyword discovery: %1$s</string>
     <string name="automatic_keyword_discovery_complete">Keyword rule discovery completed</string>
     <string name="automatic_keyword_automatic_preserved">Some keywords are managed by an automatic rule and were kept.</string>
+    <string name="format_recovery_issues">Format recovery</string>
+    <string name="format_recovery_issue_count">Format recovery (%1$d)</string>
+    <string name="format_recovery_issue_number">Unfinished format refresh %1$d</string>
+    <string name="format_recovery_no_issues">No format refreshes need a decision.</string>
+    <string name="format_recovery_issue_explanation">This earlier format refresh cannot be safely recovered. Dismissing it leaves downloads and cached formats unchanged. To try again, select current downloads and start a new format refresh.</string>
+    <string name="format_recovery_dismiss">Dismiss refresh</string>
+    <string name="format_recovery_unavailable">The refresh record changed or is temporarily unavailable. Open Format recovery again after the current operation finishes.</string>
 </resources>

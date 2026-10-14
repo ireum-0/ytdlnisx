@@ -95,9 +95,16 @@ import com.ireum.ytdl.database.models.YoutuberMeta
         HistoryDateFetchItem::class,
         HistoryReplacementBarrier::class,
         PendingUndoCarrier::class,
-        WorkManagerHandoffCarrier::class
+        WorkManagerHandoffCarrier::class,
+        com.ireum.ytdl.database.models.FormatBatchPayload::class,
+        com.ireum.ytdl.database.models.FormatAuthorityClock::class,
+        com.ireum.ytdl.database.models.FormatRowAuthority::class,
+        com.ireum.ytdl.database.models.FormatForegroundClaim::class,
+        com.ireum.ytdl.database.models.FormatLegacyDebt::class,
+        com.ireum.ytdl.database.models.FormatRecoveryIssue::class,
+        com.ireum.ytdl.database.models.FormatRequestCancellation::class
     ],
-    version = 63,
+    version = 65,
     autoMigrations = [
         AutoMigration (from = 1, to = 2),
         AutoMigration (from = 2, to = 3),
@@ -151,6 +158,8 @@ abstract class DBManager : RoomDatabase(){
     abstract val historyReplacementBarrierDao: HistoryReplacementBarrierDao
     abstract val pendingUndoCarrierDao: PendingUndoCarrierDao
     abstract val workManagerHandoffCarrierDao: WorkManagerHandoffCarrierDao
+    abstract val formatBatchPayloadDao: com.ireum.ytdl.database.dao.FormatBatchPayloadDao
+    abstract val formatAuthorityDao: com.ireum.ytdl.database.dao.FormatAuthorityDao
 
     enum class SORTING{
         DESC, ASC

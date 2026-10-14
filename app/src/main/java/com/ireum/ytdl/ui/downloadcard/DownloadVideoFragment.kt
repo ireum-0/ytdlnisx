@@ -296,7 +296,6 @@ class DownloadVideoFragment(
                                 }
 
                                 currentDownloadItem?.apply {
-                                    downloadViewModel.updateDownloadItemFormats(this.id, allFormats.filter { !genericVideoFormats.contains(it) })
                                 }
                             }
                         }

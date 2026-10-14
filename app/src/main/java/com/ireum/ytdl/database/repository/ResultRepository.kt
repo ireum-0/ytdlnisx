@@ -348,13 +348,13 @@ class ResultRepository(private val resultDao: ResultDao, private val commandTemp
         return itemsToReturn
     }
 
-    fun getFormats(url: String, source : String? = null) : List<Format> {
+    fun getFormats(url: String, source : String? = null, allowFallback: Boolean = source == null) : List<Format> {
         val formatSource = source ?: sharedPreferences.getString("formats_source", "yt-dlp")
         val res = if (url.isYoutubeURL()) {
             when(formatSource) {
                 "newpipe" -> {
                     val tmpRes = NewPipeUtil(context).getFormats(url)
-                    if (tmpRes.isFailure && source != null) {
+                    if (tmpRes.isFailure && !allowFallback) {
                         Result.success(listOf())
                     }else{
                         tmpRes

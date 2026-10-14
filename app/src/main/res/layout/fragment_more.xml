@@ -55,6 +55,21 @@
 
 
             <TextView
+                android:id="@+id/format_recovery_issues"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/format_recovery_issues"
+                android:textStyle="bold"
+                android:clickable="true"
+                android:focusable="true"
+                android:background="?android:attr/selectableItemBackground"
+                android:paddingHorizontal="15dp"
+                android:paddingVertical="15dp"
+                android:drawablePadding="35dp"
+                android:textSize="16sp"
+                app:drawableStartCompat="@drawable/ic_baseline_file_open_24" />
+
+            <TextView
                 android:id="@+id/command_templates"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

@@ -263,7 +263,6 @@ class DownloadAudioFragment(
                             }
 
                             currentDownloadItem?.apply {
-                                downloadViewModel.updateDownloadItemFormats(this.id, allFormats.filter { !genericAudioFormats.contains(it) })
                             }
                         }
                         formats = allFormats.filter { !genericAudioFormats.contains(it) }.toMutableList()

@@ -529,6 +529,20 @@ object Migrations {
                     "SET sourceConfigurationGeneration=1 " +
                     "WHERE kind='OBSERVE_RETRY_DOWNLOAD' AND sourceId IN (SELECT id FROM sources)"
             )
+        },
+        Migration(63, 64) { database ->
+            // Additive only: all old carriers retain their kind/generation/request semantics.
+            database.execSQL(
+                "CREATE TABLE IF NOT EXISTS `format_batch_payloads` (" +
+                    "`handoffId` TEXT NOT NULL, `capturedIds` TEXT NOT NULL, " +
+                    "`selectedIds` TEXT NOT NULL, `otherIds` TEXT NOT NULL, `notificationId` INTEGER NOT NULL, " +
+                    "PRIMARY KEY(`handoffId`), FOREIGN KEY(`handoffId`) " +
+                    "REFERENCES `work_manager_handoff_carriers`(`handoffId`) ON UPDATE NO ACTION ON DELETE CASCADE)"
+            )
+        },
+        Migration(64, 65) { database ->
+            database.execSQL("ALTER TABLE format_batch_payloads ADD COLUMN authority TEXT NOT NULL DEFAULT '[]'")
+            FormatAuthoritySchema.create(database)
         }
     )
 

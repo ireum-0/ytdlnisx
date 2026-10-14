@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.util.Base64
 import androidx.preference.PreferenceManager
+import androidx.room.withTransaction
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.test.core.app.ApplicationProvider
@@ -38,8 +39,10 @@ import com.ireum.ytdl.work.CleanupSchedulePolicy
 import com.ireum.ytdl.work.LowQualityRedownloadWorker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asContextElement
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -1535,6 +1538,135 @@ class BackupResetTransactionProductionWiringTest {
         }
         historicalPreferenceSnapshot?.let { restore(preferences, it) }
         historicalProvenanceSnapshot?.let { restore(UpdateUtil.destinationProvenancePreferences(context), it) }
+    }
+
+    @Test
+    fun rowlessFormatIssuesSurviveHistoryAndDownloadCategoryRestore() = runBlocking {
+        val issue = com.ireum.ytdl.work.FormatAuthority.retainLegacy(
+            context, database, java.util.UUID.randomUUID().toString(), listOf(7),
+            "LEGACY_IDS_REQUIRE_CURRENT_PRODUCER",
+        )
+        val settings = SettingsViewModel(context as Application)
+        val partial = settings.restoreData(RestoreAppDataItem(downloads = emptyList()), context, resetData = true)
+        assertTrue(partial is RestoreOutcome.Completed)
+        assertEquals(issue, database.formatAuthorityDao.recoveryIssue(issue.issueId))
+        val allDownloadCategories = settings.restoreData(RestoreAppDataItem(
+            downloads = emptyList(), queued = emptyList(), paused = emptyList(), scheduled = emptyList(),
+            cancelled = emptyList(), errored = emptyList(), saved = emptyList(),
+        ), context, resetData = true)
+        assertTrue(allDownloadCategories is RestoreOutcome.Completed)
+        assertFalse(RestoreGate.isRestoreInProgress(context))
+        val observed = com.ireum.ytdl.work.FormatRecoveryIssues.discoverRetained(context, database)
+            .single { it.issueId == issue.issueId }
+        assertEquals(issue, observed)
+        assertTrue(com.ireum.ytdl.work.FormatRecoveryIssues.acknowledge(context, database, observed))
+        assertEquals(com.ireum.ytdl.database.models.FormatRecoveryIssue.ACKNOWLEDGED,
+            database.formatAuthorityDao.recoveryIssue(issue.issueId)?.state)
+    }
+
+    @Test
+    fun unaffectedFormatCarrierCancelledByRestoreReplaysExactGeneration() = runBlocking {
+        val manager = WorkManager.getInstance(context)
+        val previousConvergence = com.ireum.ytdl.work.FormatBatchHandoff.convergenceForTesting
+        val previousEnqueue = com.ireum.ytdl.work.WorkManagerHandoffRecovery.enqueueOverrideForTesting
+        val previousInfo = com.ireum.ytdl.work.WorkManagerHandoffRecovery.workInfoOverrideForTesting
+        val stageMarker = ThreadLocal<String>()
+        val marker = java.util.UUID.randomUUID().toString()
+        val capturedHandoff = java.util.concurrent.atomic.AtomicReference<String>()
+        val requests = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val states = java.util.concurrent.ConcurrentHashMap<String, WorkInfo>()
+        try {
+            // Only this coroutine's exact stage dispatch is deferred. Other batches,
+            // including H2 on the same dispatcher, retain their production convergence.
+            com.ireum.ytdl.work.FormatBatchHandoff.convergenceForTesting = { handoff ->
+                if (stageMarker.get() == marker) {
+                    check(capturedHandoff.compareAndSet(null, handoff))
+                } else if (previousConvergence != null) previousConvergence(handoff)
+                else com.ireum.ytdl.work.WorkManagerHandoffRecovery.ensureConvergence(context, handoff)
+            }
+            val id = database.downloadDao.insert(queuedDownload(921).copy(
+                status = DownloadRepository.Status.Processing.name, operationId = "",
+            ))
+            val staged = withContext(stageMarker.asContextElement(marker)) {
+                val capture = com.ireum.ytdl.work.FormatBatchHandoff.capture(
+                    context, database, listOf(database.downloadDao.getDownloadById(id)),
+                )
+                com.ireum.ytdl.work.FormatBatchHandoff.stage(context, database, capture, listOf(id))
+            }
+            val handoff = checkNotNull(staged.handoffId)
+            assertEquals(handoff, capturedHandoff.get())
+            val first = checkNotNull(database.workManagerHandoffCarrierDao.get(handoff))
+            requests.add(first.requestId)
+            com.ireum.ytdl.work.WorkManagerHandoffRecovery.workInfoOverrideForTesting = { requestId ->
+                if (requestId in requests) states[requestId]
+                else if (previousInfo != null) previousInfo(requestId)
+                else manager.getWorkInfoById(java.util.UUID.fromString(requestId)).get(5, TimeUnit.SECONDS)
+            }
+            com.ireum.ytdl.work.WorkManagerHandoffRecovery.enqueueOverrideForTesting = { name, policy, request ->
+                if (name == first.uniqueWorkName) {
+                    requests.add(request.id.toString())
+                    AcceptedFormatOperation()
+                } else if (previousEnqueue != null) previousEnqueue(name, policy, request)
+                else manager.enqueueUniqueWork(name, policy, request)
+            }
+            assertTrue(withTimeout(10_000L) {
+                com.ireum.ytdl.work.WorkManagerHandoffRecovery.enqueueAndAwait(context, handoff).await().accepted
+            })
+            val row = database.downloadDao.getDownloadById(id)
+            val member = database.formatAuthorityDao.get("DOWNLOAD", id.toString())
+            // The SDK frontier is deterministic; this does not claim a real SDK
+            // cancellation. Reset and the Room carrier/retry/publication are real.
+            states[first.requestId] = WorkInfo(java.util.UUID.fromString(first.requestId),
+                WorkInfo.State.CANCELLED, emptySet(), androidx.work.Data.EMPTY, androidx.work.Data.EMPTY, 0, 0)
+            val outcome = SettingsViewModel(context as Application).restoreData(
+                RestoreAppDataItem(downloads = emptyList()), context, resetData = true,
+            )
+            assertTrue(outcome is RestoreOutcome.Completed)
+            val successor = checkNotNull(database.workManagerHandoffCarrierDao.get(handoff))
+            assertEquals(first.generationId, successor.generationId)
+            assertFalse(first.requestId == successor.requestId)
+            assertEquals(first.attempt + 1, successor.attempt)
+            assertEquals(WorkManagerHandoffCarrier.ACCEPTED, successor.state)
+            assertTrue(successor.requestId in requests)
+            assertEquals(row, database.downloadDao.getDownloadById(id))
+            assertEquals(member, database.formatAuthorityDao.get("DOWNLOAD", id.toString()))
+            assertNotNull(database.formatBatchPayloadDao.get(handoff))
+            assertFalse(database.formatAuthorityDao.recoveryIssues().any { it.handoffId == handoff })
+            assertFalse(RestoreGate.isRestoreInProgress(context))
+        } catch (failure: Throwable) {
+            android.util.Log.e("FormatRestoreDiagnostic", "Restore format replay failed: handoff=${capturedHandoff.get()}", failure)
+            runCatching {
+                capturedHandoff.get()?.let { handoff ->
+                    android.util.Log.e("FormatRestoreDiagnostic",
+                        "carrier=${database.workManagerHandoffCarrierDao.get(handoff)} payload=${database.formatBatchPayloadDao.get(handoff)}")
+                }
+            }
+            throw failure
+        } finally {
+            com.ireum.ytdl.work.FormatBatchHandoff.convergenceForTesting = previousConvergence
+            com.ireum.ytdl.work.WorkManagerHandoffRecovery.enqueueOverrideForTesting = previousEnqueue
+            com.ireum.ytdl.work.WorkManagerHandoffRecovery.workInfoOverrideForTesting = previousInfo
+            if (!RestoreGate.isRestoreInProgress(context)) {
+                RestoreMutationAdmission.withOrdinaryMutation(context) {
+                    database.withTransaction {
+                        capturedHandoff.get()?.let { handoff ->
+                            val own = database.workManagerHandoffCarrierDao.get(handoff)
+                            if (own?.kind == WorkManagerHandoffCarrier.FORMAT_BATCH && own.requestId in requests) {
+                                database.workManagerHandoffCarrierDao.deleteExact(handoff, own.requestId)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private class AcceptedFormatOperation : androidx.work.Operation {
+        private val state = androidx.lifecycle.MutableLiveData<androidx.work.Operation.State>(androidx.work.Operation.SUCCESS)
+        private val result = androidx.work.impl.utils.futures.SettableFuture.create<androidx.work.Operation.State.SUCCESS>()
+            .also { it.set(androidx.work.Operation.SUCCESS) }
+        override fun getState(): androidx.lifecycle.LiveData<androidx.work.Operation.State> = state
+        override fun getResult(): com.google.common.util.concurrent.ListenableFuture<androidx.work.Operation.State.SUCCESS> = result
     }
 
     private fun plan(

@@ -692,6 +692,8 @@ object RestoreTransactionCoordinator {
             add(CleanupScheduleCoordinator.TAG)
             if (hasDownloadReset) add("low_quality_redownload")
         }
+        // Exact targeted SQL mutations revoke format members during apply.
+        // Quiescence cancellation retains unaffected carriers for post-Restore retry.
         if (hasKeywordReset) {
             val db = DBManager.getInstance(context)
             RestoreMutationAdmission.withRestoreMutation {
@@ -1618,6 +1620,10 @@ object RestoreTransactionCoordinator {
                     authority,
                 )
             ) { "LocalAdd responsibility reconciliation was not accepted for $sessionId" }
+        }
+
+        if ("updateFormats" in quiescedTags) {
+            com.ireum.ytdl.work.WorkManagerHandoffRecovery.reconcileFormatsForRestore(context, authority)
         }
 
         val downloadRepository = DownloadRepository(db)

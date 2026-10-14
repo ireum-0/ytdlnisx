@@ -47,6 +47,10 @@ interface ResultDao {
     @Query("SELECT * FROM results WHERE id IN (:ids)")
     fun getAllByIDs(ids: List<Long>) : List<ResultItem>
 
+    /** No upsert or unrelated metadata overwrite; FormatAuthority validates current C(K). */
+    @Query("UPDATE results SET formats=:formats WHERE id=:id AND url=:url")
+    suspend fun publishOwnedFormats(id: Long, url: String, formats: List<com.ireum.ytdl.database.models.Format>): Int
+
     @Update(onConflict = OnConflictStrategy.REPLACE)
     suspend fun update(item: ResultItem)
 

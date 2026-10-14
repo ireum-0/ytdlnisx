@@ -11,8 +11,7 @@ import com.ireum.ytdl.database.models.Format
 import kotlin.math.max
 import kotlin.math.min
 
-class FormatUtil(private var context: Context) {
-    private val sharedPreferences : SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+class FormatUtil(private var context: Context, private val sharedPreferences: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)) {
     private val videoFormatIDPreference : List<String> = sharedPreferences.getString("format_id", "").toString().split(",").filter { it.isNotEmpty() }
     private val audioFormatIDPreference : List<String> = sharedPreferences.getString("format_id_audio", "").toString().split(",").filter { it.isNotEmpty() }
     private val videoQualityPreference : String = sharedPreferences.getString("video_quality", "best").toString()

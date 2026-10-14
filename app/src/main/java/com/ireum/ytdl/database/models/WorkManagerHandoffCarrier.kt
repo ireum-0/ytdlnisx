@@ -48,6 +48,7 @@ data class WorkManagerHandoffCarrier(
         const val OBSERVE_RECURRENCE = "OBSERVE_RECURRENCE"
         const val AUTOMATIC_KEYWORD_SYNC = "AUTOMATIC_KEYWORD_SYNC"
         const val TERMINAL_DISPATCH = "TERMINAL_DISPATCH"
+        const val FORMAT_BATCH = "FORMAT_BATCH"
 
         const val START_BOUNDARY = "START"
         const val END_BOUNDARY = "END"

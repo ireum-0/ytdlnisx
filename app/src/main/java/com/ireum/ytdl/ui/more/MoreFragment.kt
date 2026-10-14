@@ -90,6 +90,7 @@ class MoreFragment : Fragment() {
         logs.setOnClickListener {
             findNavController().navigate(R.id.downloadLogListFragment)
         }
+        FormatRecoveryIssueDialog.bind(this, view.findViewById<TextView>(R.id.format_recovery_issues))
 
         commandTemplates.setOnClickListener {
             findNavController().navigate(R.id.commandTemplatesFragment)
