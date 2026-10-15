@@ -4,11 +4,11 @@ DERIVED_INDEX=YES
 CANONICAL_COUNT_AUTHORITY=NO
 
 implementation_verification_sha=eda6a7589af3a19a97eb38e869b47dabaf74388b
-REPOSITORY_DISCOVERED_CANONICAL_ROOTS_TOTAL=148
-REPOSITORY_SEMANTIC_ROOTS_CURRENT_OPEN=55
+REPOSITORY_DISCOVERED_CANONICAL_ROOTS_TOTAL=149
+REPOSITORY_SEMANTIC_ROOTS_CURRENT_OPEN=56
 REPOSITORY_SEMANTIC_ROOTS_CURRENT_CLOSED=93
 REPOSITORY_SEMANTIC_ROOTS_CURRENT_AMBIGUOUS=0
-REPOSITORY_SEMANTIC_ROOTS_CURRENT_UNRESOLVED=55
+REPOSITORY_SEMANTIC_ROOTS_CURRENT_UNRESOLVED=56
 ROOT_STATUS_VOCABULARY=OPEN,CLOSED,AMBIGUOUS
 STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__derived-root-status-vocabulary-reconciliation.md
 
@@ -16,7 +16,7 @@ This is a derived semantic-root lineage index. It does not replace TASKS.md, TAS
 or historical finding/closure checkpoints. Repository-wide roots do not enter the active download inventory
 without a separate explicit scope-adoption decision.
 
-Only the **Current disposition** column holds a root status (OPEN, CLOSED or AMBIGUOUS). Original VERIFIED/REOPENED and source-absence/reconciliation qualifications are historical provenance, not additional current status values; consult the linked checkpoints, existing Reopen history/cause and verification-SHA cells. The old index audit base SHA is not a blanket re-review of every root at db339e1. All 148 current row statuses are translations of the already-recorded semantic decisions, not new source findings.
+Only the **Current disposition** column holds a root status (OPEN, CLOSED or AMBIGUOUS). Original VERIFIED/REOPENED and source-absence/reconciliation qualifications are historical provenance, not additional current status values; consult the linked checkpoints, existing Reopen history/cause and verification-SHA cells. The old index audit base SHA is not a blanket re-review of every root at db339e1. The original 148 row statuses are translations of pre-existing semantic decisions. One new independently verified V34 production SQL-trigger root was added at exact 57d8d8f, for 149 current rows; other historical statuses are unchanged.
 
 | Root ID | Title | Severity | Current disposition | First discovery | Current verification SHA | Latest authoritative evidence | Historical closure evidence | Reopen history/cause | Root/alias/subcase relationship | Correction contract | Current download canonical membership |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -73,6 +73,7 @@ Only the **Current disposition** column holds a root status (OPEN, CLOSED or AMB
 | BUG-FORMAT-BG-03 | Preserve per-item background format failure truth | P2 | OPEN | current-review lineage before repository inventory extraction | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT; aliases/subcases: BUG-FORMAT-01, BULK-FORMAT-SILENT-PARTIAL-SUCCESS-01 | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | YES |
 | BUG-FORMAT-BG-04 | Fence stale background format snapshots and row writes | P2 | OPEN | current-review lineage before repository inventory extraction | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | YES |
 | BUG-FORMAT-BG-05 | Use exact work identity for format-progress cancellation | P2 | OPEN | current-review lineage before repository inventory extraction | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | YES |
+| BUG-FORMAT-AUTHORITY-TRIGGER-01 | Preserve primary-key-safe durable format authority stamping under Room UPDATE OR ABORT | P2 | OPEN | V34 G5 actual instrumented failure and exact-X source review | 57d8d8f1b4993d72177c12ac705f7f2137fa92a1 | review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md | NONE | NEW_IN_X | DISTINCT_REPRESENTATIVE_ROOT_NOT_BG01_BG05_ALIAS | Repair existing-key stamping and preserve incarnation/revision/owner/lineage and migration/reopen paths across Download and Result writers, with exact corrected-SHA focused and 197-method verification. | YES |
 | BUG-GROUP-01 | Make keyword and Youtuber group deletion atomic | P2 | OPEN | TASKS.md | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-final14-group-hardsub.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT; aliases/subcases: BUG-GROUP-TXN-01 | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | NO |
 | BUG-HARDSUB-01 | Preserve ambiguous subtitle lookup failures instead of excluding scan candidates | P2 | OPEN | TASKS.md | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-final14-group-hardsub.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | NO |
 | BUG-HARDSUB-02 | Preserve hard-sub guarantees across History re-download replacement | P2 | OPEN | TASKS.md | eda6a7589af3a19a97eb38e869b47dabaf74388b | review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-final14-group-hardsub.md | NONE_OR_NOT_CURRENTLY_APPLICABLE | NONE_RECORDED | REPRESENTATIVE_ROOT | Follow the exact open correction boundary in latest evidence; preserve producer/carrier/consumer/recovery/final-effect identity. | NO |
@@ -193,7 +194,9 @@ The historical BUG-BACKUP-09 filename token is not a distinct root; it belongs t
 - current AMBIGUOUS: 0 (no new ambiguity classification was made during the label translation)
 - current CLOSED: 93
 - these replace the stale pre-closure footer snapshot of 57 OPEN / 91 CLOSED; the two scheduler closures are independently evidenced by `review-runs/checkpoints/2026-10-12__db339e1__scheduler-window01-restore01-independent-final-closures.md`.
-- invariant: 55 OPEN + 0 AMBIGUOUS + 93 CLOSED = 148 canonical semantic roots.
+- historical pre-V34 invariant: 55 OPEN + 0 AMBIGUOUS + 93 CLOSED = 148 canonical semantic roots.
+
+Post-V34 canonical independent-review update: 56 OPEN + 0 AMBIGUOUS + 93 CLOSED = 149 distinct semantic roots. One new active download P2 root BUG-FORMAT-AUTHORITY-TRIGGER-01 entered from exact-X V34 G5 source and runtime evidence; no alias inflation. Source implementation remained exactly X during review.
 
 production_source_changed=NO
 implementation_prompt_changed=NO
