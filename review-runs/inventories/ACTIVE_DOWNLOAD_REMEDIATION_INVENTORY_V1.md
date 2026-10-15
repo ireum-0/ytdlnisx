@@ -19,7 +19,9 @@ STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__der
 The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. This derived index includes the independently established V34 exact-X SQL trigger conflict as one additional root; prior six root statuses are unchanged.
 
 LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md
-LATEST_ACTIVE_SCOPE_VERIFIED_IMPL_SHA=57d8d8f1b4993d72177c12ac705f7f2137fa92a1 This is a presentation-only translation of pre-existing decisions, not a new source review.
+LATEST_ACTIVE_SCOPE_VERIFIED_IMPL_SHA=57d8d8f1b4993d72177c12ac705f7f2137fa92a1
+
+The first six root statuses above derive from pre-existing decisions; the seventh OPEN root is a new production finding independently reviewed at exact X.
 
 ## Canonical roots
 
