@@ -10,13 +10,16 @@ implementation_verification_sha=db339e1e90392cfd994e2d42bca7ce88afb3be21
 
 CANONICAL_P0=0
 CANONICAL_P1=0
-CANONICAL_P2=6
+CANONICAL_P2=7
 ROOT_STATUS_VOCABULARY=OPEN,CLOSED,AMBIGUOUS
-ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=6
+ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=7
 ACTIVE_REMEDIATION_AMBIGUOUS_ROOT_COUNT=0
 STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__derived-root-status-vocabulary-reconciliation.md
 
-The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. This is a presentation-only translation of pre-existing decisions, not a new source review.
+The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. This derived index includes the independently established V34 exact-X SQL trigger conflict as one additional root; prior six root statuses are unchanged.
+
+LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md
+LATEST_ACTIVE_SCOPE_VERIFIED_IMPL_SHA=57d8d8f1b4993d72177c12ac705f7f2137fa92a1 This is a presentation-only translation of pre-existing decisions, not a new source review.
 
 ## Canonical roots
 
@@ -33,6 +36,10 @@ The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); c
 6. BUG-INCOGNITO-01 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-07__eda6a758__repository-current-existence-audit-current-review-roots.md
 
+7. BUG-FORMAT-AUTHORITY-TRIGGER-01 — P2 — OPEN
+   Latest evidence: review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md
+   Single production cause: Room generated UPDATE OR ABORT and existing-key trigger INSERT OR REPLACE conflict-policy inheritance abort normal Download/Result authority stamping; do not duplicate by test/writer path.
+
 ## CLOSED and removed from current unresolved inventory
 
 - BUG-SCHEDULER-WINDOW-01 — CLOSED at db339e1 — independently reviewed source and V3 final exact-SHA window/END ownership execution evidence; preserves 2026-10-06 false-closure/reopen history.
@@ -41,9 +48,7 @@ The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); c
 
 ## Current implementation priority
 
-The completed scheduler authority implementation is published at db339e1. No implementation agent is active.
-Reviewer-owned next action is independent review of BUG-FORMAT-BG-01 at this exact SHA;
-any later correction prompt requires separate source-semantic preflight and persistence.
+The earlier scheduler authority implementation db339e1 remains a historical reviewed basis. Existing 41-path candidate X 57d8d8f is now published after six actual old-schema migration PASSES; the V34 exact-X G5 gate failed on a new SQL-trigger primary-key root after 20 PASS, with 176 NOT_REACHED. This index does not promote X to CLEAN. The next possible source correction concerns the explicitly OPEN trigger root and its cross-writer/trigger/recovery compatibility, but an implementation prompt and launch need separate authorization.
 
 Latest canonical scheduler root closures:
 review-runs/checkpoints/2026-10-12__db339e1__scheduler-window01-restore01-independent-final-closures.md
