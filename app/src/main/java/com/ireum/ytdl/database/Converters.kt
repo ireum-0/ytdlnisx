@@ -60,7 +60,11 @@ class Converters {
     fun stringToVideoPreferences(string: String): VideoPreferences = gson.fromJson(string, VideoPreferences::class.java)
 
     @TypeConverter
-    fun stringToListOfChapters(value: String?) = gson.fromJson(value, Array<ChapterItem>::class.java).toMutableList()
+    fun stringToListOfChapters(value: String?): MutableList<ChapterItem>? {
+        // Unknown chapters stay distinct from an empty array; corrupt data must still fail.
+        if (value == null || value.trim() == "null") return null
+        return gson.fromJson(value, Array<ChapterItem>::class.java).toMutableList()
+    }
 
     @TypeConverter
     fun listOfChaptersToString(list: List<ChapterItem?>?): String {

@@ -19,31 +19,62 @@ internal object FormatAuthoritySchema {
     private const val mint = "INSERT INTO format_authority_clock(id) VALUES(NULL);"
     private const val trim = "DELETE FROM format_authority_clock WHERE id < (SELECT max(id) FROM format_authority_clock);"
 
-    private fun stamp(kind: String, target: String, replace: Boolean, deleted: Boolean = false, condition: String = ""): String {
+    private fun stamp(kind: String, target: String, replace: String, deleted: Boolean = false, condition: String = ""): String {
         val lookup = "kind='$kind' AND target=$target"
-        val incarnation = if (replace) serial else "COALESCE((SELECT incarnation FROM format_row_authorities WHERE $lookup),$serial)"
-        val lineage = if (kind == "DOWNLOAD" && !replace && !deleted)
-            "COALESCE((SELECT lineage FROM format_row_authorities WHERE $lookup),'')" else "''"
+        val incarnation = "CASE WHEN $replace THEN $serial ELSE incarnation END"
+        val lineage = if (kind == "DOWNLOAD" && !deleted)
+            "CASE WHEN $replace THEN '' ELSE lineage END" else "''"
         val allocation = if (condition.isEmpty()) mint else "INSERT INTO format_authority_clock(id) SELECT NULL WHERE $condition;"
-        val where = if (condition.isEmpty()) "" else " WHERE $condition"
-        return allocation + "INSERT OR REPLACE INTO format_row_authorities(kind,target,revision,incarnation,owner,lineage,completedLineage,state) " +
-            "SELECT '$kind',$target,$serial,$incarnation,'',$lineage,'','${if (deleted) "DELETED" else "CURRENT"}'$where;" + trim
+        val guard = if (condition.isEmpty()) "" else " AND ($condition)"
+        val state = if (deleted) "DELETED" else "CURRENT"
+        // The outer writer's OR ABORT/IGNORE/REPLACE overrides a trigger's conflict policy.
+        // Never attempt a conflicting insert: both statements run in the writer's transaction.
+        return allocation + "UPDATE format_row_authorities SET revision=$serial,incarnation=$incarnation," +
+            "owner='',lineage=$lineage,completedLineage='',state='$state' WHERE $lookup$guard;" +
+            "INSERT INTO format_row_authorities(kind,target,revision,incarnation,owner,lineage,completedLineage,state) " +
+            "SELECT '$kind',$target,$serial,$serial,'','','','$state' WHERE NOT EXISTS " +
+            "(SELECT 1 FROM format_row_authorities WHERE $lookup)$guard;" + trim
     }
 
     fun install(database: SupportSQLiteDatabase) {
+        // Also used on current-version open: old Room65 already has these named triggers.
+        // A nested failure marks the enclosing migration/authority transaction for rollback too.
+        database.beginTransaction()
+        try {
+            installInTransaction(database)
+            database.setTransactionSuccessful()
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    private fun installInTransaction(database: SupportSQLiteDatabase) {
         listOf("downloads" to "DOWNLOAD", "results" to "RESULT_ROW").forEach { (table, kind) ->
             listOf("INSERT", "UPDATE", "DELETE").forEach { operation ->
                 val row = if (operation == "DELETE") "OLD" else "NEW"
-                var body = stamp(kind, "CAST($row.id AS TEXT)", operation == "INSERT", operation == "DELETE")
+                val replace = when (operation) {
+                    "INSERT" -> "1"
+                    "UPDATE" -> "OLD.id != NEW.id"
+                    else -> "0"
+                }
+                var body = stamp(kind, "CAST($row.id AS TEXT)", replace, operation == "DELETE")
                 if (table == "results") {
-                    if (operation != "INSERT") body += stamp("RESULT_URL", "OLD.url", false)
-                    if (operation != "DELETE") body += stamp("RESULT_URL", "NEW.url", false)
+                    if (operation != "INSERT") body += stamp("RESULT_URL", "OLD.url", "0")
+                    if (operation != "DELETE") body += stamp("RESULT_URL", "NEW.url", "0")
                 }
                 if (operation == "UPDATE") {
                     // Primary-key changes revoke the old identity as well; ID is not incarnation.
-                    body += stamp(kind, "CAST(OLD.id AS TEXT)", false, true, "OLD.id != NEW.id")
+                    body += stamp(kind, "CAST(OLD.id AS TEXT)", "0", true, "OLD.id != NEW.id")
                 }
-                database.execSQL("CREATE TRIGGER IF NOT EXISTS format_authority_${table}_${operation.lowercase()} AFTER $operation ON $table BEGIN $body END")
+                val name = "format_authority_${table}_${operation.lowercase()}"
+                val sql = "CREATE TRIGGER $name AFTER $operation ON $table BEGIN $body END"
+                val old = database.query("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", arrayOf(name)).use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                }
+                if (old != sql) {
+                    database.execSQL("DROP TRIGGER IF EXISTS $name")
+                    database.execSQL(sql)
+                }
             }
         }
         // Existing rows acquire a durable incarnation, never a fabricated format owner.

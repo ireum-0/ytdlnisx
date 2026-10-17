@@ -173,18 +173,23 @@ abstract class DBManager : RoomDatabase(){
         fun getInstance(context: Context) : DBManager {
             return instance ?: synchronized(this){
 
-                val dbInstance = Room.databaseBuilder(
-                    context.applicationContext,
-                    DBManager::class.java,
-                    "YTDLnisxDatabase"
-                )
-                    .addTypeConverter(Converters())
-                    .addMigrations(*Migrations.migrationList)
-                    .build()
+                val dbInstance = create(context.applicationContext, "YTDLnisxDatabase")
                 instance = dbInstance
                 dbInstance
             }
         }
+
+        /** Every production open repairs owned Room65 triggers before the first DAO statement. */
+        internal fun create(context: Context, name: String): DBManager =
+            Room.databaseBuilder(context, DBManager::class.java, name)
+                .addTypeConverter(Converters())
+                .addMigrations(*Migrations.migrationList)
+                .addCallback(object : Callback() {
+                    override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                        FormatAuthoritySchema.install(db)
+                    }
+                })
+                .build()
 
     }
 
