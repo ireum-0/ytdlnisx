@@ -10,18 +10,18 @@ implementation_verification_sha=db339e1e90392cfd994e2d42bca7ce88afb3be21
 
 CANONICAL_P0=0
 CANONICAL_P1=0
-CANONICAL_P2=7
+CANONICAL_P2=8
 ROOT_STATUS_VOCABULARY=OPEN,CLOSED,AMBIGUOUS
-ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=7
+ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=8
 ACTIVE_REMEDIATION_AMBIGUOUS_ROOT_COUNT=0
 STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__derived-root-status-vocabulary-reconciliation.md
 
-The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. This derived index includes the independently established V34 exact-X SQL trigger conflict as one additional root; prior six root statuses are unchanged.
+The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current active roots are all confirmed OPEN. The V34 independently verified SQL trigger conflict and the V38 independently verified nullable chapter converter failure are distinct production roots, each counted once. All earlier six roots remain OPEN.
 
-LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md
+LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-17__57d8d8f__v39-converter-root-adoption-and-prompt-scope.md
 LATEST_ACTIVE_SCOPE_VERIFIED_IMPL_SHA=57d8d8f1b4993d72177c12ac705f7f2137fa92a1
 
-The first six root statuses above derive from pre-existing decisions; the seventh OPEN root is a new production finding independently reviewed at exact X.
+The first six root statuses derive from pre-existing decisions; the seventh SQL-trigger and eighth nullable chapter converter OPEN roots were independently reviewed at exact X. V38 production code changes remain uncommitted and cannot count as a closure.
 
 ## Canonical roots
 
@@ -41,6 +41,10 @@ The first six root statuses above derive from pre-existing decisions; the sevent
 7. BUG-FORMAT-AUTHORITY-TRIGGER-01 — P2 — OPEN
    Latest evidence: review-runs/checkpoints/2026-10-16__57d8d8f__v34-g5-sqlite-trigger-primarykey-independent-final.md
    Single production cause: Room generated UPDATE OR ABORT and existing-key trigger INSERT OR REPLACE conflict-policy inheritance abort normal Download/Result authority stamping; do not duplicate by test/writer path.
+
+8. BUG-RESULT-NULL-CHAPTER-CONVERTER-01 — P2 — OPEN
+   Latest evidence: review-runs/checkpoints/2026-10-17__57d8d8f__v39-converter-root-adoption-and-prompt-scope.md
+   Separate result DAO conversion contract: nullable ResultItem.chapters is persisted as JSON null; an unconditional Gson fromJson(...).toMutableList() in Converters.kt:63 crashes on real ResultDao readback before a Handoff worker. Distinct from SQLite trigger uniqueness, confirmed at X, adopted by owner-requested next prompt.
 
 ## CLOSED and removed from current unresolved inventory
 
