@@ -1,6 +1,7 @@
 package com.ireum.ytdl.database
 
 import android.app.Application
+import android.util.Log
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -16,6 +17,9 @@ import com.ireum.ytdl.util.download.DownloadIssueCode
 import com.ireum.ytdl.util.download.DownloadIssueStage
 import com.ireum.ytdl.work.DownloadWorkerExecutionOwners
 import com.ireum.ytdl.work.DownloadWorkerProcessOwners
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -32,6 +36,8 @@ class DownloadFormatNotificationAuthorityProductionWiringTest {
     private lateinit var context: Application
     private lateinit var database: DBManager
     private lateinit var viewModel: DownloadViewModel
+    private var replayDiagnostic: ((String) -> Unit)? = null
+    private var replayCompletionHandle: DisposableHandle? = null
 
     @Before
     fun setUp() {
@@ -47,10 +53,20 @@ class DownloadFormatNotificationAuthorityProductionWiringTest {
 
     @After
     fun tearDown() = runBlocking {
-        viewModel.clearForTesting()
-        DownloadWorkerExecutionOwners.clearForTesting()
-        DownloadWorkerProcessOwners.clearForTesting()
-        database.close()
+        captureReplayDiagnostic("before_teardown")
+        try {
+            viewModel.clearForTesting()
+            captureReplayDiagnostic("after_viewmodel_clear")
+            DownloadWorkerExecutionOwners.clearForTesting()
+            DownloadWorkerProcessOwners.clearForTesting()
+            database.close()
+        } finally {
+            captureReplayDiagnostic("teardown_exit")
+            // Disposing an observation never cancels or joins its Job.
+            runCatching { replayCompletionHandle?.dispose() }
+            replayCompletionHandle = null
+            replayDiagnostic = null
+        }
     }
 
     @Test
@@ -188,11 +204,55 @@ class DownloadFormatNotificationAuthorityProductionWiringTest {
     }
 
     private suspend fun replayFormatNotification(vararg ids: Long) {
-        viewModel.turnDownloadItemsToProcessingDownloads(ids.toList(), deleteExisting = true)
-        withTimeout(10_000L) {
-            while (viewModel.processingItemsJob == null) delay(5L)
-            viewModel.processingItemsJob?.join()
+        val submittedAtNs = System.nanoTime()
+        val outerJob = viewModel.turnDownloadItemsToProcessingDownloads(ids.toList(), deleteExisting = true)
+        val outerCompletion = AtomicReference("NOT_VERIFIED")
+        var waitStage = "before_timeout"
+        var innerFirstObservedAtNs: Long? = null
+        replayCompletionHandle = outerJob.invokeOnCompletion { cause ->
+            // Observation only: never read payload, query Room, or change the Job outcome.
+            try {
+                outerCompletion.set("atNs=" + System.nanoTime() +
+                    ",causeClass=" + (cause?.javaClass?.name ?: "NONE"))
+            } catch (_: Throwable) {
+                // A diagnostic failure must not escape a completion handler.
+            }
         }
+        replayDiagnostic = { boundary ->
+            val innerJob = viewModel.processingItemsJob
+            Log.i("FormatNotificationDiag",
+                "boundary=$boundary waitStage=$waitStage submittedAtNs=$submittedAtNs " +
+                    "outer=" + jobState(outerJob) + " outerCompletion=" + outerCompletion.get() +
+                    " innerFirstObservedAtNs=$innerFirstObservedAtNs inner=" + jobState(innerJob) +
+                    " actualPublicationAtNs=NOT_VERIFIED restoreDecision=NOT_VERIFIED " +
+                    "mutexOwner=NOT_VERIFIED roomRows=NOT_VERIFIED " +
+                    "fixtureIdentity=" + System.identityHashCode(database) +
+                    " detachedUndoCompletion=NOT_VERIFIED")
+        }
+        try {
+            withTimeout(10_000L) {
+                waitStage = "poll"
+                while (viewModel.processingItemsJob == null) delay(5L)
+                // First observation is not the production publication timestamp.
+                innerFirstObservedAtNs = System.nanoTime()
+                waitStage = "join"
+                viewModel.processingItemsJob?.join()
+                waitStage = "complete"
+            }
+        } finally {
+            // Runs before JUnit @After can cancel the Jobs or close the fixture.
+            captureReplayDiagnostic("replay_exit")
+        }
+    }
+
+    private fun jobState(job: Job?): String =
+        job?.let { "active=${it.isActive},completed=${it.isCompleted},cancelled=${it.isCancelled}" }
+            ?: "NULL_AT_SNAPSHOT"
+
+    private fun captureReplayDiagnostic(boundary: String) {
+        // Bounded metadata output is outside the original timeout/poll/join path.
+        // Only diagnostic errors are contained; the original test failure propagates unchanged.
+        runCatching { replayDiagnostic?.invoke(boundary) }
     }
 
     private suspend fun insert(
