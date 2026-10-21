@@ -10,15 +10,15 @@ implementation_verification_sha=141b5199592369ab953f52c55ebdb72ba300f1a4
 
 CANONICAL_P0=0
 CANONICAL_P1=0
-CANONICAL_P2=7
+CANONICAL_P2=8
 ROOT_STATUS_VOCABULARY=OPEN,CLOSED,AMBIGUOUS
-ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=3
+ACTIVE_REMEDIATION_CONFIRMED_OPEN_ROOT_COUNT=4
 ACTIVE_REMEDIATION_AMBIGUOUS_ROOT_COUNT=4
 STATUS_NORMALIZATION_CHECKPOINT=review-runs/checkpoints/2026-10-12__db339e1__derived-root-status-vocabulary-reconciliation.md
 
-The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current exact-141b519 active unresolved roots comprise three confirmed OPEN and four AMBIGUOUS (two former roots are now CLOSED). The V34 independently verified SQL trigger conflict and the V38 independently verified nullable chapter converter failure are distinct production roots, each counted once. Historical six-root classification is superseded by the 2026-10-21 pinned manual review; BG02 and BG03 are now CLOSED while BG04 and BG05 are AMBIGUOUS.
+The legacy `CANONICAL_P*` totals count unresolved blockers (OPEN + AMBIGUOUS); current exact-141b519 active unresolved roots after WP0-B comprise four confirmed OPEN and four AMBIGUOUS (two original roots remain CLOSED). The V34 independently verified SQL trigger conflict and the V38 independently verified nullable chapter converter failure are distinct production roots, each counted once. Historical six-root classification is superseded by the 2026-10-21 pinned manual review; BG02 and BG03 are now CLOSED while BG04 and BG05 are AMBIGUOUS.
 
-LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-21__141b519__manual-active-root-disposition-in-progress.md
+LATEST_ACTIVE_SCOPE_EVIDENCE=review-runs/checkpoints/2026-10-21__141b519__wp0-b-replacement-pre-admission-destruction-independent-source-final.md
 LATEST_ACTIVE_SCOPE_VERIFIED_IMPL_SHA=141b5199592369ab953f52c55ebdb72ba300f1a4
 
 Historical note: the first six original root states, the seventh trigger OPEN at X, and eighth converter OPEN at X remain immutable findings for those earlier SHAs. At 141b519 source changed; current statuses and runtime evidence gates are reclassified below. The earlier uncommitted V38 candidate did not itself close any root.
@@ -50,6 +50,10 @@ Historical note: the first six original root states, the seventh trigger OPEN at
     Latest evidence: review-runs/checkpoints/2026-10-21__141b519__manual-l3-command-member-in-progress.md
     A valid command download intentionally has blank URL, but FormatAuthority.proven requires nonblank URL; FormatBatchHandoff.members validates all selected/unselected members and worker creates a false unproven-payload issue. Independent from BG01 unselected status-wide publication.
 
+10. BUG-RECONFIGURE-PREADMISSION-DELETE-01 — P2 — OPEN
+    Latest evidence: review-runs/checkpoints/2026-10-21__141b519__wp0-b-replacement-pre-admission-destruction-independent-source-final.md
+    Explicitly adopted as an active WP1 dependency after independent 141b519 source review: Saved/Errored/Cancelled multi-item reconfiguration deletes original row/linked ownership before new Processing queue/schedule admission, so duplicate/refused publication can leave original gone. This is separate from old CLOSED notification sibling cleanup and from incognito setting propagation. Old-ID ABA is an alias/subcase of existing OPEN BUG-DOWNLOAD-DELETE-SNAPSHOT-01, not a second new root.
+
 ## Excluded false-positive candidate (not a root)
 
 - BUG-FORMAT-SESSION-FIRST-USE-RACE-01 — REJECTED at 141b519 after proof that one process-global RestoreMutationAdmission mutex encloses both Room session commit and process-cache publication. Immutable correction: review-runs/checkpoints/2026-10-21__141b519__manual-l1-session-root-rejection-in-progress.md. The earlier L3 OPEN hypothesis is superseded and not counted as a CLOSED production defect.
@@ -62,7 +66,7 @@ Historical note: the first six original root states, the seventh trigger OPEN at
 
 ## Current independently reviewed state — no implementation routing authorization
 
-At 141b519, the nine discovered active-scope real roots are 3 OPEN, 4 AMBIGUOUS, 2 CLOSED; unresolved blocker total is 7 (OPEN + AMBIGUOUS), and CLEAN remains NO. BG02 and BG03 original wrong-effect contracts were closed with exact-source review and attributed V39 PASS; BG04, BG05, trigger authority, and converter remain AMBIGUOUS for individually named missing exact final-sha Android/Room or notification-action execution gates. No new task or prompt is authorized by this review. Historical candidate X 57d8d8f and V34 original trigger failure remain immutable evidence, not the current-source outcome.
+At 141b519, after the independently accepted WP0-B original-destruction finding, the ten real active-scope roots are 4 OPEN, 4 AMBIGUOUS, 2 CLOSED; unresolved blocker total is 8 (OPEN + AMBIGUOUS), and CLEAN remains NO. BG02 and BG03 original wrong-effect contracts were closed with exact-source review and attributed V39 PASS; BG04, BG05, trigger authority, and converter remain AMBIGUOUS for individually named missing exact final-sha Android/Room or notification-action execution gates. No new task or prompt is authorized by this review. Historical candidate X 57d8d8f and V34 original trigger failure remain immutable evidence, not the current-source outcome.
 
 Latest canonical scheduler root closures:
 review-runs/checkpoints/2026-10-12__db339e1__scheduler-window01-restore01-independent-final-closures.md
@@ -85,3 +89,11 @@ implementation_prompt_changed=NO
 - This reconciliation is reviewer-only, not an agent prompt, code change, next-task authorization, or declaration of a test PASS. V39 exact-SHA reported PASS and V51/V52 incomplete/failed verification counts remain historical distinct evidence.
 - L1 manual same-SHA review: candidate SESSION_FIRST_USE rejected after global mutex proof; real-root count nine and canonical P2 unresolved seven, pending FINAL. See checkpoint review-runs/checkpoints/2026-10-21__141b519__manual-l1-restored-carry-and-ambiguous-assessment-in-progress.md.
 
+## 2026-10-21 WP0-B later canonical adoption (supersedes the L1 snapshot above only for current arithmetic)
+
+- Review checkpoint: review-runs/checkpoints/2026-10-21__141b519__wp0-b-replacement-pre-admission-destruction-independent-source-final.md.
+- Same exact implementation source: 141b5199592369ab953f52c55ebdb72ba300f1a4; no implementation patch, build or Android execution.
+- Newly SOURCE_VERIFIED distinct original-replacement pre-admission destructive root: BUG-RECONFIGURE-PREADMISSION-DELETE-01 — P2 OPEN, explicitly in DOWNLOAD_ACTIVE_BLOCKER_CLOSURE as a blocker to current BUG-INCOGNITO-01 WP1 refusal semantics.
+- Identical old-original ID/ABA deletion mechanism is a subcase of pre-existing BUG-DOWNLOAD-DELETE-SNAPSHOT-01 and is NOT counted again; existing P1 CLOSED BUG-RECONFIGURE-01 (notification deleteExisting=true sibling cleanup) is unchanged.
+- New active current totals: ten real roots = 4 OPEN (BG01, INCOGNITO01, SOURCELESS_COMMAND, RECONFIGURE_PREADMISSION_DELETE) + 4 AMBIGUOUS (BG04, BG05, FORMAT_AUTHORITY_TRIGGER01, RESULT_NULL_CHAPTER_CONVERTER01) + 2 CLOSED (BG02, BG03); unresolved P2=8, CLEAN=NO.
+- Previous manual-review nine-root/seven-unresolved notes and V1.8 advisory are historical pinned snapshots, not current count. No new prompt or agent/device authorization is implied.
